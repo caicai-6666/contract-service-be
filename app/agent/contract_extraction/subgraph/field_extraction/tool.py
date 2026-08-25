@@ -1,0 +1,437 @@
+"""Core 与 Special 共享的严格扁平对象提取工具。"""
+
+from __future__ import annotations
+
+import json
+from math import isfinite
+from typing import Any, Final, Literal, TypeAlias
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+
+from app.agent.contract_extraction.subgraph.field_extraction.definition import (
+    FieldCardinality,
+    FieldDefinition,
+    FieldPropertyDefinition,
+    FieldValueType,
+)
+
+EXTRACTION_REASON_PREFIX: Final[str] = "因此，接下来的提取对象为："
+ABANDON_REASON_SUFFIX: Final[str] = "因此，当前对象无法从该合同中可靠提取。"
+FINISH_REASON_SUFFIX: Final[str] = "因此，当前对象定义已提取完毕。"
+FIELD_TOOL_CHOICE: Final[Literal["required"]] = "required"
+
+FieldValue: TypeAlias = StrictStr | StrictInt | StrictFloat | StrictBool
+FieldObjectValue: TypeAlias = dict[str, FieldValue]
+
+
+class StrictFieldToolModel(BaseModel):
+    """禁止额外参数的不可变字段工具模型。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class NormalizedBoundingBox(StrictFieldToolModel):
+    """以单页 0～1000 坐标系描述对象证据位置。"""
+
+    x_min: int
+    y_min: int
+    x_max: int
+    y_max: int
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> "NormalizedBoundingBox":
+        values = (self.x_min, self.y_min, self.x_max, self.y_max)
+        if any(value < 0 or value > 1000 for value in values):
+            raise ValueError("坐标必须位于 0～1000")
+        if self.x_min >= self.x_max or self.y_min >= self.y_max:
+            raise ValueError("坐标框必须满足 x_min < x_max 且 y_min < y_max")
+        return self
+
+
+class FieldEvidence(StrictFieldToolModel):
+    """支持单个扁平对象的最小页面证据。"""
+
+    page_number: int
+    content: str
+    bbox: NormalizedBoundingBox | None
+
+    @field_validator("page_number")
+    @classmethod
+    def validate_page_number(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("物理页码必须大于等于 1")
+        return value
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("证据内容不能为空")
+        return normalized
+
+
+class ThinkArguments(StrictFieldToolModel):
+    """think 只记录当前对象定义的一段自然语言推理。"""
+
+    reasoning: str
+
+    @field_validator("reasoning")
+    @classmethod
+    def validate_reasoning(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("思考理由不能为空")
+        return normalized
+
+
+class AbandonExtractionArguments(StrictFieldToolModel):
+    """没有任何可靠对象时提交的终止决定。"""
+
+    reasoning: str
+
+    @field_validator("reasoning")
+    @classmethod
+    def validate_reasoning(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("放弃理由不能为空")
+        if not normalized.endswith(ABANDON_REASON_SUFFIX):
+            raise ValueError(
+                f"放弃理由必须以“{ABANDON_REASON_SUFFIX}”结束"
+            )
+        return normalized
+
+
+class FinishExtractionArguments(StrictFieldToolModel):
+    """multiple 已穷尽全部对象时提交的显式终止决定。"""
+
+    reasoning: str
+
+    @field_validator("reasoning")
+    @classmethod
+    def validate_reasoning(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("结束理由不能为空")
+        if not normalized.endswith(FINISH_REASON_SUFFIX):
+            raise ValueError(
+                f"结束理由必须以“{FINISH_REASON_SUFFIX}”结束"
+            )
+        return normalized
+
+
+class ExtractObjectArguments(StrictFieldToolModel):
+    """一次对象提交的固定外层参数；value 的内部 Schema 动态生成。"""
+
+    evidence: list[FieldEvidence]
+    reasoning: str
+    value: dict[str, Any]
+
+    @field_validator("evidence")
+    @classmethod
+    def validate_evidence(cls, value: list[FieldEvidence]) -> list[FieldEvidence]:
+        if not value:
+            raise ValueError("提取对象至少需要一条证据")
+        return value
+
+    @field_validator("reasoning")
+    @classmethod
+    def validate_reasoning(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("提取理由不能为空")
+        return normalized
+
+
+FieldToolArguments: TypeAlias = (
+    ThinkArguments
+    | AbandonExtractionArguments
+    | FinishExtractionArguments
+    | ExtractObjectArguments
+)
+
+
+class FieldObjectValidationError(ValueError):
+    """带明确参数位置和修正方向的扁平对象校验错误。"""
+
+    def __init__(self, path: str, problem: str, correction: str) -> None:
+        super().__init__(problem)
+        self.path = path
+        self.problem = problem
+        self.correction = correction
+
+
+def canonical_field_value(value: FieldObjectValue) -> str:
+    """使用紧凑 JSON 表达一个扁平对象，供反馈和理由结尾复用。"""
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _property_schema(property_definition: FieldPropertyDefinition) -> dict[str, Any]:
+    description = (
+        f"{property_definition.meaning} 排除边界：{property_definition.excludes}"
+    )
+    return {
+        "type": property_definition.type.value,
+        "description": description,
+    }
+
+
+def _function_tool(
+    *,
+    name: str,
+    description: str,
+    arguments_model: type[StrictFieldToolModel],
+) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": arguments_model.model_json_schema(),
+            "strict": True,
+        },
+    }
+
+
+THINK_TOOL: Final[dict[str, Any]] = _function_tool(
+    name="think",
+    description=(
+        "记录当前对象定义的一段简洁自然语言推理，用于比较证据、已提取对象"
+        "和剩余候选；不提交正式对象。"
+    ),
+    arguments_model=ThinkArguments,
+)
+
+ABANDON_EXTRACTION_TOOL: Final[dict[str, Any]] = _function_tool(
+    name="abandon_extraction",
+    description=(
+        "当前合同没有出现该对象、对象不适用或证据不足以支持任何一个完整对象时，"
+        "提交零对象终止决定。"
+    ),
+    arguments_model=AbandonExtractionArguments,
+)
+
+FINISH_EXTRACTION_TOOL: Final[dict[str, Any]] = _function_tool(
+    name="finish_extraction",
+    description=(
+        "仅用于 multiple 定义；确认已提取对象之外不存在更多可靠对象时，"
+        "结束当前对象定义。"
+    ),
+    arguments_model=FinishExtractionArguments,
+)
+
+
+def build_extract_object_tool(definition: FieldDefinition) -> dict[str, Any]:
+    """根据 properties 构造禁止额外属性的 strict 扁平对象 Schema。"""
+    tool = _function_tool(
+        name="extract_object",
+        description=(
+            f"为当前定义“{definition.name}”提交一个完整、独立的扁平对象。"
+            "参数依次提供页面证据、推理摘要和对象值。"
+        ),
+        arguments_model=ExtractObjectArguments,
+    )
+    value_schema = {
+        "type": "object",
+        "properties": {
+            item.name: _property_schema(item) for item in definition.properties
+        },
+        "required": [
+            item.name for item in definition.properties if item.required
+        ],
+        "additionalProperties": False,
+    }
+    tool["function"]["parameters"]["properties"]["value"] = value_schema
+    return tool
+
+
+def build_field_tools(
+    definition: FieldDefinition,
+    *,
+    has_extracted_objects: bool,
+) -> tuple[dict[str, Any], ...]:
+    """根据短期记忆状态返回当前轮真正允许调用的工具。"""
+    base = (THINK_TOOL, build_extract_object_tool(definition))
+    if has_extracted_objects:
+        if definition.cardinality is FieldCardinality.MULTIPLE:
+            return base + (FINISH_EXTRACTION_TOOL,)
+        return base
+    return base + (ABANDON_EXTRACTION_TOOL,)
+
+
+def _decode_embedded_json(value: Any) -> Any:
+    """兼容 Qwen 工具解析器把嵌套参数编码成 JSON 字符串的情况。"""
+    if isinstance(value, str) and value.lstrip().startswith(("{", "[")):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return value
+        return _decode_embedded_json(decoded)
+    if isinstance(value, list):
+        return [_decode_embedded_json(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _decode_embedded_json(item) for key, item in value.items()}
+    return value
+
+
+def _type_correction(property_definition: FieldPropertyDefinition) -> str:
+    return {
+        FieldValueType.STRING: "传入非空 JSON 字符串，并保留必要的原文字符",
+        FieldValueType.INTEGER: "仅传入不带单位和小数点的 JSON 整数",
+        FieldValueType.NUMBER: "仅传入不带币种、单位或百分号的 JSON 数值",
+        FieldValueType.BOOLEAN: "仅传入 JSON 布尔值 true 或 false",
+    }[property_definition.type]
+
+
+def _validate_property_value(
+    property_definition: FieldPropertyDefinition,
+    value: Any,
+) -> FieldValue:
+    expected_type = property_definition.type
+    valid = {
+        FieldValueType.STRING: type(value) is str,
+        FieldValueType.INTEGER: type(value) is int,
+        FieldValueType.NUMBER: type(value) in {int, float},
+        FieldValueType.BOOLEAN: type(value) is bool,
+    }[expected_type]
+    if not valid:
+        raise FieldObjectValidationError(
+            f"value.{property_definition.name}",
+            f"要求 {expected_type.value}，但收到 {value!r}",
+            _type_correction(property_definition),
+        )
+    if expected_type is FieldValueType.STRING and not value.strip():
+        raise FieldObjectValidationError(
+            f"value.{property_definition.name}",
+            "字符串不能为空",
+            "传入包含合同原文事实的非空字符串",
+        )
+    if expected_type is FieldValueType.NUMBER and not isfinite(value):
+        raise FieldObjectValidationError(
+            f"value.{property_definition.name}",
+            "数值不能是 NaN 或无穷大",
+            "传入有限 JSON 数值",
+        )
+    return value
+
+
+def validate_object_value(
+    definition: FieldDefinition,
+    value: dict[str, Any],
+) -> FieldObjectValue:
+    """按定义顺序验证必填、额外属性和每个基本类型。"""
+    definitions = {item.name: item for item in definition.properties}
+    extra = [name for name in value if name not in definitions]
+    if extra:
+        raise FieldObjectValidationError(
+            "value",
+            f"包含未定义属性 {extra}",
+            f"只提交已定义属性 {list(definitions)}",
+        )
+    missing = [
+        item.name
+        for item in definition.properties
+        if item.required and item.name not in value
+    ]
+    if missing:
+        raise FieldObjectValidationError(
+            "value",
+            f"缺少必填属性 {missing}",
+            "补充每个必填属性及其直接证据",
+        )
+    normalized: FieldObjectValue = {}
+    for item in definition.properties:
+        if item.name in value:
+            normalized[item.name] = _validate_property_value(item, value[item.name])
+    return normalized
+
+
+def _validate_reasoning_value(
+    reasoning: str,
+    value: FieldObjectValue,
+) -> None:
+    marker_at = reasoning.rfind(EXTRACTION_REASON_PREFIX)
+    serialized = reasoning[marker_at + len(EXTRACTION_REASON_PREFIX) :].strip()
+    try:
+        if marker_at < 0:
+            raise json.JSONDecodeError("缺少固定前缀", serialized, 0)
+        stated_value, consumed = json.JSONDecoder().raw_decode(serialized)
+        # 理由末句允许正常的中英文句号，但不允许在 JSON
+        # 对象之后继续追加新的判断或未审计内容。
+        trailing = serialized[consumed:].strip()
+        if trailing not in {"", ".", "。"}:
+            stated_value = None
+    except (json.JSONDecodeError, ValueError):
+        stated_value = None
+    if stated_value != value:
+        expected = f"{EXTRACTION_REASON_PREFIX}{canonical_field_value(value)}"
+        raise FieldObjectValidationError(
+            "reasoning",
+            "提取理由结尾没有给出与 value 语义一致的完整 JSON 对象",
+            f"使用固定结尾“{expected}”",
+        )
+
+
+def parse_field_tool_arguments(
+    definition: FieldDefinition,
+    name: str,
+    raw_arguments: str,
+) -> FieldToolArguments:
+    """解析工具参数并再次执行本地 strict 扁平对象校验。"""
+    models: dict[str, type[StrictFieldToolModel]] = {
+        "think": ThinkArguments,
+        "extract_object": ExtractObjectArguments,
+        "abandon_extraction": AbandonExtractionArguments,
+        "finish_extraction": FinishExtractionArguments,
+    }
+    try:
+        arguments_model = models[name]
+    except KeyError as exc:
+        raise ValueError(f"未知的对象提取工具：{name}") from exc
+    try:
+        payload = json.loads(raw_arguments)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"工具 {name} 的参数不是有效 JSON") from exc
+    arguments = arguments_model.model_validate(_decode_embedded_json(payload))
+    if not isinstance(arguments, ExtractObjectArguments):
+        return arguments
+    value = validate_object_value(definition, arguments.value)
+    _validate_reasoning_value(arguments.reasoning, value)
+    return arguments.model_copy(update={"value": value})
+
+
+__all__ = [
+    "ABANDON_EXTRACTION_TOOL",
+    "ABANDON_REASON_SUFFIX",
+    "EXTRACTION_REASON_PREFIX",
+    "FIELD_TOOL_CHOICE",
+    "FINISH_EXTRACTION_TOOL",
+    "FINISH_REASON_SUFFIX",
+    "THINK_TOOL",
+    "AbandonExtractionArguments",
+    "ExtractObjectArguments",
+    "FieldEvidence",
+    "FieldObjectValidationError",
+    "FieldObjectValue",
+    "FieldToolArguments",
+    "FieldValue",
+    "FinishExtractionArguments",
+    "NormalizedBoundingBox",
+    "ThinkArguments",
+    "build_extract_object_tool",
+    "build_field_tools",
+    "canonical_field_value",
+    "parse_field_tool_arguments",
+    "validate_object_value",
+]

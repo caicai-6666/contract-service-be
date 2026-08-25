@@ -1,0 +1,16 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+
+# 实验内容和产物仅在本地保留，Git 只保留根目录。
+/experiment/**
+!/experiment/.gitkeep
+
+# 测试代码与产物不纳入 Git。
+/test/
+
+# 数据与定义文件不纳入 Git，仅保留 data/input 目录。
+/data/**
+!/data/input/
+!/data/input/.gitkeep
