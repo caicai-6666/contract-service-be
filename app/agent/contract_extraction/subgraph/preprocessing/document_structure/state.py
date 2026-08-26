@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 from typing_extensions import TypedDict
 
 from app.agent.contract_extraction.state import (
@@ -35,7 +35,7 @@ class DocumentScope(DocumentStructureModel):
     decision: DocumentScopeDecision
 
     @classmethod
-    def from_arguments(cls, arguments: SummaryArguments) -> "DocumentScope":
+    def from_arguments(cls, arguments: SummaryArguments) -> DocumentScope:
         """把已校验的 summary 参数转换为稳定结果。"""
         return cls(
             evidence=tuple(arguments.evidence),
@@ -57,7 +57,7 @@ class DocumentUnit(DocumentStructureModel):
         cls,
         unit_id: str,
         arguments: GenerateUnitArguments,
-    ) -> "DocumentUnit":
+    ) -> DocumentUnit:
         """把已接受的 generate_unit 参数转换为稳定结果。"""
         return cls(
             unit_id=unit_id,
@@ -100,12 +100,39 @@ class UnitDiscoveryResult(DocumentStructureModel):
     tool_calls: tuple[ToolCallAudit, ...]
 
 
+class UnitLocationRegion(DocumentStructureModel):
+    """视觉定位节点接受的一个单页单元区域。"""
+
+    anchor_ids: tuple[str, ...]
+    page_number: int
+    bbox_2d: tuple[int, int, int, int]
+
+
+class UnitLocation(DocumentStructureModel):
+    """一个语义单元的最终视觉定位状态。"""
+
+    unit_id: str
+    status: Literal["located", "failed"]
+    regions: tuple[UnitLocationRegion, ...]
+    error: str | None
+
+    @model_validator(mode="after")
+    def validate_status(self) -> UnitLocation:
+        """成功结果必须有区域，失败结果不得暴露不完整区域。"""
+        if self.status == "located" and (not self.regions or self.error is not None):
+            raise ValueError("located 单元必须包含区域且不能包含错误")
+        if self.status == "failed" and (self.regions or not self.error):
+            raise ValueError("failed 单元必须包含错误且不能暴露不完整区域")
+        return self
+
+
 class DocumentStructureMetadata(DocumentStructureModel):
-    """单元发现节点提供给下游的权威文档结构元数据。"""
+    """预处理子图提供给下游的权威文档结构与视觉定位元数据。"""
 
     document_id: str
     scope: DocumentScope
     units: tuple[DocumentUnit, ...]
+    unit_locations: tuple[UnitLocation, ...] = ()
 
 
 class DocumentStructureState(TypedDict, total=False):
@@ -115,6 +142,8 @@ class DocumentStructureState(TypedDict, total=False):
     prompt_context: PDFPromptContext
     unit_discovery: UnitDiscoveryResult
     document_structure: DocumentStructureMetadata
+
+
 __all__ = [
     "DocumentScope",
     "DocumentStructureMetadata",
@@ -122,4 +151,6 @@ __all__ = [
     "DocumentUnit",
     "ToolCallAudit",
     "UnitDiscoveryResult",
+    "UnitLocation",
+    "UnitLocationRegion",
 ]

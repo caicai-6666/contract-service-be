@@ -1,29 +1,32 @@
-"""核心字段目录加载与并行单字段提取节点。"""
+"""核心字段快照选择、公共任务预热与并行单字段提取节点。"""
 
 from __future__ import annotations
 
 import asyncio
-from hashlib import sha256
-from pathlib import Path
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from time import perf_counter
-from typing import Any, Iterable
 
 from pydantic import ValidationError
-import yaml
 
-from app.agent.contract_extraction.subgraph.field_extraction.core_field.prompt import (
-    CORE_FIELD_EXTRACTION_PROMPT_VERSION,
-    build_core_field_messages,
+from app.agent.contract_extraction.context import context_sha256
+from app.agent.contract_extraction.subgraph.field_extraction.core.prompt import (
+    CORE_COMMON_PROMPT_VERSION,
+    CORE_EXTRACTION_PROMPT_VERSION,
+    append_core_prefill_task,
+    build_core_common_messages,
+    build_core_messages,
 )
-from app.agent.contract_extraction.subgraph.field_extraction.core_field.state import (
-    AbandonedCoreField,
-    CoreFieldCatalog,
-    CoreFieldExtractionResult,
-    CoreFieldOutcome,
-    CoreFieldSubgraphState,
-    ExtractedCoreField,
+from app.agent.contract_extraction.subgraph.field_extraction.core.state import (
+    AbandonedCore,
+    CoreContext,
+    CoreExtractionResult,
+    CoreOutcome,
+    CorePreheatResult,
+    CoreSubgraphState,
+    ExtractedCore,
     ExtractedFieldObject,
-    FailedCoreField,
+    FailedCore,
     FieldToolCallAudit,
     FieldToolFeedback,
 )
@@ -50,16 +53,10 @@ from app.infrastructure.mllm import (
     MLLMUnavailableError,
 )
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[6]
-_CORE_FIELD_DIRECTORY = _PROJECT_ROOT / "data/definition/field/core"
 _MAXIMUM_SINGLE_ROUNDS = 8
 _MAXIMUM_MULTIPLE_ROUNDS = 32
 _MAXIMUM_CONSECUTIVE_THINKS = 2
 _MAXIMUM_COMPLETION_TOKENS = 2048
-
-
-class CoreFieldDefinitionError(RuntimeError):
-    """核心字段目录缺失、重复或不符合机器契约。"""
 
 
 def _sum_optional(values: Iterable[int | None]) -> int | None:
@@ -67,56 +64,82 @@ def _sum_optional(values: Iterable[int | None]) -> int | None:
     return sum(known) if known else None
 
 
-def load_core_field_definitions(
-    state: CoreFieldSubgraphState,
-) -> CoreFieldSubgraphState:
-    """节点一：按文件名稳定加载并校验一个文件一个字段的 Core 目录。"""
-    del state
-    paths = sorted(_CORE_FIELD_DIRECTORY.glob("*.yaml"))
-    if not paths:
-        raise CoreFieldDefinitionError(
-            f"核心字段目录没有 YAML 定义：{_CORE_FIELD_DIRECTORY}"
-        )
+def select_core_definitions(
+    state: CoreSubgraphState,
+) -> CoreSubgraphState:
+    """从应用启动期内存快照选择 Core 定义，不执行文件 I/O。"""
+    return {"core_definitions": state["field_definition_catalog"].core}
 
-    definitions: list[FieldDefinition] = []
-    seen_names: dict[str, Path] = {}
-    digest = sha256()
-    for path in paths:
-        raw = path.read_bytes()
-        digest.update(path.name.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(raw)
-        digest.update(b"\0")
+
+def assemble_core_context(
+    state: CoreSubgraphState,
+) -> CoreSubgraphState:
+    """节点一：在最终合同前缀后追加全部 Core 字段共享的任务规则。"""
+    prepared_pdf = state["prepared_pdf"]
+    prefill_context = state["prefill_context"]
+    if prepared_pdf.document_id != prefill_context.document_id:
+        raise ValueError("核心字段输入 PDF 与最终公共前缀的 document_id 不一致")
+
+    messages = build_core_common_messages(prefill_context)
+    return {
+        "core_context": CoreContext(
+            document_id=prefill_context.document_id,
+            prompt_version=CORE_COMMON_PROMPT_VERSION,
+            messages=tuple(messages),
+            prefix_sha256=context_sha256(messages),
+        )
+    }
+
+
+async def prefill_core_context(
+    state: CoreSubgraphState,
+) -> CoreSubgraphState:
+    """节点二：用单 token 异步请求预热 Core 公共任务前缀。"""
+    context = state["core_context"]
+    settings = get_settings().mllm
+    started_at = perf_counter()
+
+    async with MLLMClient(settings) as client:
         try:
-            payload = yaml.safe_load(raw)
-            definition = FieldDefinition.model_validate(payload)
-        except (yaml.YAMLError, ValidationError, ValueError, TypeError) as exc:
-            raise CoreFieldDefinitionError(
-                f"核心字段定义无效：{path.name}：{exc}"
-            ) from exc
-        previous = seen_names.get(definition.name)
-        if previous is not None:
-            raise CoreFieldDefinitionError(
-                f"核心字段名称重复：{definition.name} 同时出现在 "
-                f"{previous.name} 与 {path.name}"
+            completion = await client.create_chat_completion(
+                messages=append_core_prefill_task(context.messages),
+                max_completion_tokens=1,
+                min_tokens=1,
+                temperature=0,
+                enable_thinking=False,
             )
-        seen_names[definition.name] = path
-        definitions.append(definition)
+        except MLLMUnavailableError as exc:
+            return {
+                "core_preheat": CorePreheatResult(
+                    status="degraded",
+                    document_id=context.document_id,
+                    prompt_version=context.prompt_version,
+                    model=settings.model,
+                    completed_at=datetime.now(UTC),
+                    prefix_sha256=context.prefix_sha256,
+                    elapsed_ms=round((perf_counter() - started_at) * 1000, 3),
+                    error=str(exc),
+                )
+            }
 
     return {
-        "core_field_catalog": CoreFieldCatalog(
-            directory="data/definition/field/core",
-            sha256=digest.hexdigest(),
-            definitions=tuple(definitions),
+        "core_preheat": CorePreheatResult(
+            status="warmed",
+            document_id=context.document_id,
+            prompt_version=context.prompt_version,
+            model=completion.model or settings.model,
+            completed_at=datetime.now(UTC),
+            prefix_sha256=context.prefix_sha256,
+            elapsed_ms=round((perf_counter() - started_at) * 1000, 3),
+            prompt_tokens=completion.prompt_tokens,
+            completion_tokens=completion.completion_tokens,
+            cached_tokens=completion.cached_tokens,
         )
     }
 
 
 def _validation_feedback(
     error: Exception,
-    *,
-    definition: FieldDefinition,
-    raw_arguments: str,
 ) -> FieldToolFeedback:
     """把工具解析错误转为包含位置、问题和修正方向的短反馈。"""
     if isinstance(error, FieldObjectValidationError):
@@ -138,12 +161,12 @@ def _validation_feedback(
     for item in errors[:3]:
         path = ".".join(str(part) for part in item["loc"]) or "arguments"
         problem = str(item["msg"]).removeprefix("Value error, ")
-        if "reasoning" in path or "理由" in problem:
+        if ("reasoning" in path or "理由" in problem) and "必须以" in problem:
             suggestion = "按照错误给出的固定结尾改写 reasoning"
+        elif "reasoning" in path or "理由" in problem:
+            suggestion = "补充证据如何支持或不支持当前对象的简洁推理摘要"
         elif "page_number" in path:
             suggestion = "使用当前合同范围内的物理页码"
-        elif "bbox" in path:
-            suggestion = "使用 0～1000 的有效矩形坐标，无法定位时传 null"
         elif path.startswith("evidence"):
             suggestion = "提供至少一条带页码和可核对内容的页面证据"
         elif path.startswith("value"):
@@ -199,8 +222,8 @@ def _failed_field(
     audits: list[FieldToolCallAudit],
     extracted_objects: list[ExtractedFieldObject],
     error: str,
-) -> FailedCoreField:
-    return FailedCoreField(
+) -> FailedCore:
+    return FailedCore(
         name=definition.name,
         cardinality=definition.cardinality,
         property_names=tuple(item.name for item in definition.properties),
@@ -213,17 +236,17 @@ def _failed_field(
     )
 
 
-async def _extract_one_core_field(
+async def _extract_one_core(
     definition: FieldDefinition,
     *,
-    state: CoreFieldSubgraphState,
+    state: CoreSubgraphState,
     client: MLLMClient,
     semaphore: asyncio.Semaphore,
-) -> CoreFieldOutcome:
+) -> CoreOutcome:
     """为一个定义维护隔离短期记忆，并按 cardinality 收集对象。"""
     started_at = perf_counter()
     prepared_pdf = state["prepared_pdf"]
-    messages = build_core_field_messages(state["prefill_context"], definition)
+    messages = build_core_messages(state["core_context"], definition)
     settings = get_settings().mllm
     generation = settings.generation
     audits: list[FieldToolCallAudit] = []
@@ -261,6 +284,7 @@ async def _extract_one_core_field(
                     repetition_penalty=generation.repetition_penalty,
                     seed=generation.seed,
                     enable_thinking=False,
+                    tool_placement="after_task",
                 )
         except (MLLMRequestError, MLLMUnavailableError) as exc:
             return _failed_field(
@@ -302,8 +326,6 @@ async def _extract_one_core_field(
         except (ValueError, ValidationError) as exc:
             feedback = _validation_feedback(
                 exc,
-                definition=definition,
-                raw_arguments=call.arguments,
             )
         else:
             if isinstance(arguments, ThinkArguments):
@@ -430,7 +452,7 @@ async def _extract_one_core_field(
             extracted_objects.append(accepted_object)
             extracted_fingerprints.add(canonical_field_value(accepted_object.value))
             if definition.cardinality is FieldCardinality.SINGLE:
-                return ExtractedCoreField(
+                return ExtractedCore(
                     name=definition.name,
                     cardinality=definition.cardinality,
                     property_names=tuple(
@@ -444,7 +466,7 @@ async def _extract_one_core_field(
                     **runtime,
                 )
         if accepted_abandon is not None:
-            return AbandonedCoreField(
+            return AbandonedCore(
                 name=definition.name,
                 cardinality=definition.cardinality,
                 property_names=tuple(item.name for item in definition.properties),
@@ -455,7 +477,7 @@ async def _extract_one_core_field(
                 **runtime,
             )
         if accepted_finish is not None:
-            return ExtractedCoreField(
+            return ExtractedCore(
                 name=definition.name,
                 cardinality=definition.cardinality,
                 property_names=tuple(item.name for item in definition.properties),
@@ -479,30 +501,33 @@ async def _extract_one_core_field(
     )
 
 
-async def extract_core_fields(
-    state: CoreFieldSubgraphState,
-) -> CoreFieldSubgraphState:
-    """节点二：并发提取全部 Core 字段，每个字段拥有独立短期记忆。"""
+async def extract_core(
+    state: CoreSubgraphState,
+) -> CoreSubgraphState:
+    """并发提取全部 Core 字段，每个字段拥有独立短期记忆。"""
     started_at = perf_counter()
     prepared_pdf = state["prepared_pdf"]
-    prefill_context = state["prefill_context"]
-    if prepared_pdf.document_id != prefill_context.document_id:
-        raise ValueError("核心字段输入 PDF 与公共前缀的 document_id 不一致")
+    core_context = state["core_context"]
+    core_preheat = state["core_preheat"]
+    if prepared_pdf.document_id != core_context.document_id:
+        raise ValueError("核心字段输入 PDF 与 Core 公共前缀的 document_id 不一致")
+    if core_preheat.prefix_sha256 != core_context.prefix_sha256:
+        raise ValueError("Core 预热结果与公共前缀指纹不一致")
 
-    catalog = state["core_field_catalog"]
+    definitions = state["core_definitions"]
     settings = get_settings().mllm
     semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
     async with MLLMClient(settings) as client:
         fields = tuple(
             await asyncio.gather(
                 *(
-                    _extract_one_core_field(
+                    _extract_one_core(
                         definition,
                         state=state,
                         client=client,
                         semaphore=semaphore,
                     )
-                    for definition in catalog.definitions
+                    for definition in definitions.definitions
                 )
             )
         )
@@ -515,12 +540,13 @@ async def extract_core_fields(
     else:
         status = "partial"
     return {
-        "core_field": CoreFieldExtractionResult(
+        "core": CoreExtractionResult(
             status=status,
             document_id=prepared_pdf.document_id,
             model=settings.model,
-            prompt_version=CORE_FIELD_EXTRACTION_PROMPT_VERSION,
-            catalog_sha256=catalog.sha256,
+            prompt_version=CORE_EXTRACTION_PROMPT_VERSION,
+            catalog_sha256=definitions.content_sha256,
+            preheat=state["core_preheat"],
             fields=fields,
             elapsed_ms=round((perf_counter() - started_at) * 1000, 3),
         )
@@ -528,7 +554,8 @@ async def extract_core_fields(
 
 
 __all__ = [
-    "CoreFieldDefinitionError",
-    "extract_core_fields",
-    "load_core_field_definitions",
+    "assemble_core_context",
+    "extract_core",
+    "prefill_core_context",
+    "select_core_definitions",
 ]

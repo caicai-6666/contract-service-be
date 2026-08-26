@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 from openai import (
     APIConnectionError,
@@ -21,6 +21,9 @@ class MLLMRequestError(RuntimeError):
 
 class MLLMUnavailableError(RuntimeError):
     """MLLM 暂时不可用，调用方可以降级或重试。"""
+
+
+ToolPlacement = Literal["before_task", "after_task"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +145,7 @@ class MLLMClient:
         repetition_penalty: float,
         seed: int,
         enable_thinking: bool = False,
+        tool_placement: ToolPlacement | None = None,
     ) -> MLLMToolCompletion:
         """异步调用 strict function tools，并返回可继续追加的助手消息。"""
         if self._settings.endpoint != "chat_completions":
@@ -150,6 +154,14 @@ class MLLMClient:
             )
         if not tools:
             raise ValueError("工具调用请求至少需要一个工具")
+
+        chat_template_kwargs: dict[str, Any] = {
+            "enable_thinking": enable_thinking,
+        }
+        # 布局由节点契约决定；未指定时不覆盖服务端模板默认值，便于尚未
+        # 完成消息边界设计的节点继续保持现状。
+        if tool_placement is not None:
+            chat_template_kwargs["tool_placement"] = tool_placement
 
         try:
             response = await self._client.chat.completions.create(
@@ -167,9 +179,7 @@ class MLLMClient:
                 extra_body={
                     "top_k": top_k,
                     "repetition_penalty": repetition_penalty,
-                    "chat_template_kwargs": {
-                        "enable_thinking": enable_thinking,
-                    },
+                    "chat_template_kwargs": chat_template_kwargs,
                 },
             )
         except (APITimeoutError, APIConnectionError) as exc:

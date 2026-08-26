@@ -166,6 +166,10 @@ class Settings(BaseModel):
     app_host: str = "127.0.0.1"
     app_port: int = Field(default=8000, ge=1, le=65535)
     log_level: str = "INFO"
+    contract_category_definition_dir: Path = Path(
+        "data/definition/contract-category"
+    )
+    field_definition_dir: Path = Path("data/definition/field")
     elasticsearch_hosts: tuple[str, ...] = ("https://localhost:9200",)
     elasticsearch_username: str | None = None
     elasticsearch_password: str | None = None
@@ -200,6 +204,20 @@ class Settings(BaseModel):
             return self.elasticsearch_ca_certs
         return _PROJECT_ROOT / self.elasticsearch_ca_certs
 
+    @property
+    def contract_category_definition_path(self) -> Path:
+        """将相对类别目录固定解析到项目根目录。"""
+        if self.contract_category_definition_dir.is_absolute():
+            return self.contract_category_definition_dir
+        return _PROJECT_ROOT / self.contract_category_definition_dir
+
+    @property
+    def field_definition_path(self) -> Path:
+        """将相对字段定义目录固定解析到项目根目录。"""
+        if self.field_definition_dir.is_absolute():
+            return self.field_definition_dir
+        return _PROJECT_ROOT / self.field_definition_dir
+
 
 def _optional_env(name: str) -> str | None:
     """将空环境变量统一解析为未配置。"""
@@ -233,6 +251,14 @@ def get_settings() -> Settings:
         app_host=_env("APP_HOST", "127.0.0.1"),
         app_port=_env("APP_PORT", "8000"),
         log_level=_env("LOG_LEVEL", "INFO"),
+        contract_category_definition_dir=_env(
+            "CONTRACT_CATEGORY_DEFINITION_DIR",
+            "data/definition/contract-category",
+        ),
+        field_definition_dir=_env(
+            "FIELD_DEFINITION_DIR",
+            "data/definition/field",
+        ),
         elasticsearch_hosts=_hosts_env(),
         elasticsearch_username=_optional_env("ELASTICSEARCH_USERNAME"),
         elasticsearch_password=_optional_env("ELASTICSEARCH_PASSWORD"),

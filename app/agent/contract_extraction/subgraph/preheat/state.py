@@ -1,23 +1,21 @@
-"""下游公共前缀预热子图状态。"""
+"""最终公共前缀预热子图状态。"""
 
 from typing_extensions import TypedDict
 
 from app.agent.contract_extraction.state import (
+    ContractBaseContext,
     ContractPrefillContext,
     ContractPreheatResult,
-    PDFPromptContext,
-    PreparedPDF,
 )
-from app.agent.contract_extraction.subgraph.preprocessing.document_structure.state import (
-    DocumentStructureMetadata,
+from app.agent.contract_extraction.subgraph.classification.state import (
+    ContractClassificationResult,
 )
 
 
 class PreheatSubgraphState(TypedDict, total=False):
     """两个预热节点之间传递的私有状态。"""
 
-    prepared_pdf: PreparedPDF
-    prompt_context: PDFPromptContext
-    document_structure: DocumentStructureMetadata
+    base_context: ContractBaseContext
+    classification: ContractClassificationResult
     prefill_context: ContractPrefillContext
     preheat: ContractPreheatResult

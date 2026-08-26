@@ -1,7 +1,7 @@
 """合同信息抽取工作流的输入、状态与占位输出契约。"""
 
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, SerializeAsAny
@@ -27,12 +27,12 @@ class WorkflowPlaceholder(BaseModel):
 
 
 class FieldExtractionResult(BaseModel):
-    """字段提取父子图汇总 Core 正式结果与 Special 当前结果。"""
+    """字段提取父子图汇总 Core 正式结果与 Attribute 当前结果。"""
 
     model_config = ConfigDict(frozen=True)
 
-    core_field: SerializeAsAny[BaseModel]
-    special_field: WorkflowPlaceholder
+    core: SerializeAsAny[BaseModel]
+    attribute: WorkflowPlaceholder
 
 
 class PreparedPDFPage(BaseModel):
@@ -85,8 +85,19 @@ class PDFPromptContext(BaseModel):
     pages: tuple[PDFPromptPage, ...]
 
 
+class ContractBaseContext(BaseModel):
+    """供合同分类读取的 PDF 与文档结构不可变基础前缀。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    document_id: str
+    prompt_version: str
+    messages: tuple[dict[str, Any], ...]
+    prefix_sha256: str
+
+
 class ContractPrefillContext(BaseModel):
-    """供预热与三个下游子图复用的不可变公共消息前缀。"""
+    """追加分类结果后，供最终预热与三个下游子图复用的不可变前缀。"""
 
     model_config = ConfigDict(frozen=True)
 
@@ -97,7 +108,7 @@ class ContractPrefillContext(BaseModel):
 
 
 class ContractPreheatResult(BaseModel):
-    """包含 PDF 与文档结构的下游公共前缀预热结果。"""
+    """包含 PDF、文档结构与分类结果的最终公共前缀预热结果。"""
 
     model_config = ConfigDict(frozen=True)
 
@@ -120,6 +131,7 @@ class ContractExtractionResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     pdf_path: Path
+    classification: SerializeAsAny[BaseModel]
     preheat: ContractPreheatResult
     document_structure: SerializeAsAny[BaseModel]
     field_extraction: FieldExtractionResult
@@ -131,8 +143,12 @@ class ContractExtractionState(TypedDict, total=False):
     """在预处理、并行子图和合并节点之间传递的共享状态。"""
 
     request: ContractExtractionRequest
+    category_catalog: BaseModel
+    field_definition_catalog: BaseModel
     prepared_pdf: PreparedPDF
     prompt_context: PDFPromptContext
+    base_context: ContractBaseContext
+    classification: BaseModel
     prefill_context: ContractPrefillContext
     preheat: ContractPreheatResult
     document_structure: BaseModel

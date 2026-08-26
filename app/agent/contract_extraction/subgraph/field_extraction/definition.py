@@ -1,8 +1,15 @@
 """模型可读动态提取对象的机器契约。"""
 
 from enum import StrEnum
+from pathlib import Path
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    field_validator,
+    model_validator,
+)
 
 
 class FieldValueType(StrEnum):
@@ -110,9 +117,86 @@ class FieldDefinition(FieldDefinitionModel):
         return self
 
 
+class FieldDefinitionCollection(FieldDefinitionModel):
+    """同一职责目录中按文件名稳定排列的字段定义快照。"""
+
+    kind: Literal["core", "attribute"]
+    definitions: tuple[FieldDefinition, ...]
+    content_sha256: str
+
+    @field_validator("content_sha256")
+    @classmethod
+    def validate_content_sha256(cls, value: str) -> str:
+        """目录内容指纹必须是小写 SHA-256。"""
+        if len(value) != 64 or any(
+            character not in "0123456789abcdef" for character in value
+        ):
+            raise ValueError("字段定义目录指纹必须是 64 位小写 SHA-256")
+        return value
+
+    @model_validator(mode="after")
+    def validate_unique_names(self) -> "FieldDefinitionCollection":
+        """同一职责目录内的对象名称必须唯一。"""
+        names = [definition.name for definition in self.definitions]
+        if len(names) != len(set(names)):
+            raise ValueError(f"{self.kind} 字段定义名称不能重复")
+        return self
+
+    def get(self, name: str) -> FieldDefinition:
+        """按稳定名称返回一个字段定义，不存在时明确失败。"""
+        for definition in self.definitions:
+            if definition.name == name:
+                return definition
+        raise KeyError(f"未知 {self.kind} 字段定义：{name}")
+
+
+class FieldDefinitionCatalog(FieldDefinitionModel):
+    """应用启动时加载的完整 Core 与 Attribute 定义快照。"""
+
+    root: Path
+    core: FieldDefinitionCollection
+    attribute: FieldDefinitionCollection
+    content_sha256: str
+
+    @field_validator("content_sha256")
+    @classmethod
+    def validate_content_sha256(cls, value: str) -> str:
+        """全目录内容指纹必须是小写 SHA-256。"""
+        if len(value) != 64 or any(
+            character not in "0123456789abcdef" for character in value
+        ):
+            raise ValueError("字段定义总目录指纹必须是 64 位小写 SHA-256")
+        return value
+
+    @model_validator(mode="after")
+    def validate_catalog(self) -> "FieldDefinitionCatalog":
+        """Core 必须可用，且两类定义不得出现身份冲突。"""
+        if self.core.kind != "core" or self.attribute.kind != "attribute":
+            raise ValueError("字段定义集合的 kind 与目录职责不一致")
+        if not self.core.definitions:
+            raise ValueError("Core 字段定义不能为空")
+        names = [
+            definition.name
+            for definition in (
+                *self.core.definitions,
+                *self.attribute.definitions,
+            )
+        ]
+        if len(names) != len(set(names)):
+            raise ValueError("Core 与 Attribute 字段定义名称不能重复")
+        return self
+
+    @property
+    def definition_count(self) -> int:
+        """返回当前内存快照中的字段定义总数。"""
+        return len(self.core.definitions) + len(self.attribute.definitions)
+
+
 __all__ = [
     "FieldCardinality",
     "FieldDefinition",
+    "FieldDefinitionCatalog",
+    "FieldDefinitionCollection",
     "FieldPropertyDefinition",
     "FieldValueType",
 ]

@@ -44,12 +44,14 @@ description/
 
 ## 架构与子图
 
-- [合同信息抽取 Agent 工作流](architecture/contract-extraction-agent-workflow.md)：说明预处理、正式预热、字段、条款、摘要与合并节点的总体拓扑。
+- [合同信息抽取 Agent 工作流](architecture/contract-extraction-agent-workflow.md)：说明预处理、基础前缀组装、分类、最终预热、三个并行任务与合并节点的总体拓扑。
 - [模型提取对象定义结构](architecture/field-definition.md)：定义单值或多值扁平对象的 YAML 结构、基数、基本类型及禁止嵌套约束。
+- [合同交易类别定义结构](architecture/contract-category-definition.md)：定义一类一文件的交易类别 YAML、类别边界与后续加载约束。
 - [PDF 预处理子图](architecture/subgraph/pdf-preprocessing.md)：定义 PDF 检查、逐页事实、动态渲染和文档结构发现。
 - [文档结构发现节点](architecture/subgraph/document-structure.md)：定义合同主题、宏观内容单元和精确边界表示。
-- [下游公共前缀预热子图](architecture/subgraph/preheat.md)：定义 PDF 与文档结构的稳定组装、vLLM 预热和下游复用契约。
-- [字段提取子图](architecture/subgraph/field-extraction.md)：定义 Core 两节点并行提取、共享工具及 Core → Special 状态边界。
+- [合同分类子图](architecture/subgraph/classification.md)：定义分类单节点的基础前缀输入、私有状态和当前占位边界。
+- [最终公共前缀预热子图](architecture/subgraph/preheat.md)：定义分类结果的稳定追加、vLLM 预热和下游复用契约。
+- [字段提取子图](architecture/subgraph/field-extraction.md)：定义 Core 两节点并行提取、共享工具及 Core → Attribute 状态边界。
 
 ---
 
@@ -58,6 +60,7 @@ description/
 - [FastAPI 后端应用骨架](capability/backend-application.md)：说明 API 分层、Elasticsearch 客户端和当前系统接口。
 - [Agent 工作流包](capability/agent-workflow.md)：说明 `app.agent` 与 API、服务层和基础设施的调用边界。
 - [PDF 页面压缩工具](capability/pdf-page-compression.md)：说明 PDF 渲染和动态视觉 token 预算。
+- [vLLM 自定义聊天模板](capability/vllm-chat-template.md)：说明 Qwen3.6 工具前后置布局、启动参数和接入边界。
 
 ---
 

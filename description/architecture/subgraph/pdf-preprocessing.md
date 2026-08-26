@@ -8,15 +8,18 @@
 
 PDF 预处理是合同信息抽取主图的第一个子图，为后续预热以及字段、条款、摘要子图提供标准页面和权威文档结构。它负责程序可确定的 PDF 事实和宏观结构发现，但不承担公共前缀预热，也不提取正式业务字段、逐条条款或最终检索摘要。
 
+子图按统一职责拆分：`node.py` 保存 `prepare_pdf` 与 `build_pdf_prompt_context` 节点实现，`state.py` 定义子图共享状态，`prompt.py` 保存公共阅读前缀及消息构造器，`__init__.py` 只负责装配并导出子图。文档结构发现所需的节点、状态、工具和专属提示词继续内聚在 `document_structure/` 中。
+
 ```mermaid
 flowchart TD
     input["合同 PDF"]
     prepare["prepare_pdf：检查、页面事实与动态渲染"]
-    prompt["build_pdf_prompt_context：逐页尺寸提示词计划"]
+    prompt["build_pdf_prompt_context：逐页页码提示词计划"]
     discover["discover_document_units：文档结构发现"]
+    locate["locate_document_units：并发单元视觉定位"]
     output["PreparedPDF + PDFPromptContext + DocumentStructureMetadata"]
 
-    input --> prepare --> prompt --> discover --> output
+    input --> prepare --> prompt --> discover --> locate --> output
 ```
 
 ---
@@ -51,33 +54,41 @@ content_sha256: "..."
 
 ## `build_pdf_prompt_context` 节点
 
-节点只读取 `PreparedPDFPage` 已有的页码和当前图像宽高，将其转换为轻量、确定性的 `PDFPromptContext`。它不重新打开 PDF、不重新计算尺寸，也不保存 Base64 图片副本。
+节点只读取 `PreparedPDFPage` 已有的页码和当前图像宽高，将其转换为轻量、确定性的 `PDFPromptContext`。它不重新打开 PDF、不重新计算尺寸，也不保存 Base64 图片副本。页码进入模型公共前缀；宽高继续保留为程序事实，只用于结果校验和坐标换算，不再写入模型可见文本。
 
 每页描述紧邻对应图片，格式固定为：
 
 ```text
-第 1 页，图像尺寸 1190 × 1682 像素
+第 1 页
 [第 1 页图像]
 
-第 2 页，图像尺寸 1134 × 1604 像素
+第 2 页
 [第 2 页图像]
 ```
 
-“图像尺寸”描述的是模型当前实际接收的图像，不向模型暴露渲染、压缩或缩放等实现细节。节点按整份 PDF 保存页码、宽高和描述文本，并校验每条描述与页面事实完全一致。
+页面尺寸不进入模型可见描述，避免把渲染尺寸与后续视觉定位使用的坐标系混淆。节点仍按整份 PDF 保存页码、宽高和描述文本，并校验每条描述与页面事实一致；视觉定位坐标契约确定后，可按对应页面自己的宽高执行坐标换算。
 
 ---
 
 ## `discover_document_units` 节点
 
-节点读取 `PreparedPDF` 和 `PDFPromptContext`，在稳定 PDF 公共前缀之后追加结构发现任务，通过异步 strict function calling 生成合同整体认识和宏观连续内容单元。它直接输出 `DocumentStructureMetadata`，不再装配独立的文档结构子图。
+节点读取 `PreparedPDF` 和 `PDFPromptContext`，在稳定 PDF 公共前缀之后追加结构发现任务，通过异步 strict function calling 生成合同整体认识和宏观连续内容单元。它使用 start、可空的有序 `navigation_anchors` 和 end 描述连续语义范围，不负责生成坐标，并直接输出 `DocumentStructureMetadata`。
 
 工具、状态、提示词和详细边界规则统一位于 `subgraph/preprocessing/document_structure/`，具体设计见[文档结构发现节点](document-structure.md)。
 
 ---
 
+## `locate_document_units` 节点
+
+节点位于结构发现之后，为所有语义单元并发建立独立的 `think / draw_bbox / finish` 工具循环。每个会话只选择该单元 start～end 涉及的页面，跨度外页面不编码进请求；每张选中图像仍由公共构造器在图像前标记明确物理页码。
+
+节点程序化生成有序锚点、补充无显式锚点中间页的 `page_body`，执行 strict 工具和坐标顺序校验，并把成功结果写入 `DocumentStructureMetadata.unit_locations`。详细状态机与失败隔离规则见[文档结构与视觉定位节点](document-structure.md)。
+
+---
+
 ## 输出与所有权
 
-`PreparedPDF` 是页面事实的唯一来源，保存文档标识、源文件、总页数、动态预算和完整页面列表；`PDFPromptContext` 是从页面事实生成的轻量提示词计划；`DocumentStructureMetadata` 保存合同主题与内容单元。这三项共同传给后续预热子图。
+`PreparedPDF` 是页面事实的唯一来源，保存文档标识、源文件、总页数、动态预算和完整页面列表；`PDFPromptContext` 是从页面事实生成的轻量提示词计划；`DocumentStructureMetadata` 保存合同主题、内容单元和逐单元视觉定位结果。这三项共同传给后续节点。
 
 结构发现节点只读使用页面产物。若模型语义结果与程序页面事实冲突，程序事实优先，冲突必须保留在证据或审核信息中，不能静默覆盖。
 
@@ -90,10 +101,12 @@ content_sha256: "..."
 - 每页渲染结果不超过单页视觉 token 预算。
 - 整份 PDF 的视觉 token 总量不超过动态请求预算。
 - 页码连续、唯一，页面事实与渲染结果一一对应。
-- 每页提示词描述与对应页面的页码、宽度和高度一致，且紧邻该页图片。
+- 每页提示词描述只包含对应物理页码并紧邻该页图片，不暴露渲染宽高。
 - 提示词不出现“压缩后尺寸”等模型无法直接验证的实现表述。
 - 同一输入重复构造时，公共消息前缀和前缀指纹保持稳定。
-- 同一 PDF 使用每页自己的尺寸进行坐标映射。
 - 文档结构结果与页面事实使用同一文档标识，且全部物理页面被宏观单元覆盖。
+- 每个视觉定位会话的图片页码集合与对应单元跨度完全一致。
+- 每张选中图片前具有对应物理页码标签，定位工具页码不能越出该集合。
+- 只有完成全部锚点并成功 `finish` 的定位框进入权威 `unit_locations`。
 
 现有验证入口包括[真实数据预处理边界实验](../../../experiment/preheat-boundary/README.md)和[文档结构发现实验](../../../experiment/document-structure/README.md)。完整公共前缀的缓存验证见[预热实验](../../../experiment/prefill/README.md)。

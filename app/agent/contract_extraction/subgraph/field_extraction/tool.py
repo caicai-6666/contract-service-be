@@ -1,10 +1,10 @@
-"""Core 与 Special 共享的严格扁平对象提取工具。"""
+"""Core 与 Attribute 共享的严格扁平对象提取工具。"""
 
 from __future__ import annotations
 
 import json
 from math import isfinite
-from typing import Any, Final, Literal, TypeAlias
+from typing import Any, Final, TypeAlias
 
 from pydantic import (
     BaseModel,
@@ -13,9 +13,7 @@ from pydantic import (
     StrictFloat,
     StrictInt,
     StrictStr,
-    ValidationError,
     field_validator,
-    model_validator,
 )
 
 from app.agent.contract_extraction.subgraph.field_extraction.definition import (
@@ -25,10 +23,9 @@ from app.agent.contract_extraction.subgraph.field_extraction.definition import (
     FieldValueType,
 )
 
-EXTRACTION_REASON_PREFIX: Final[str] = "因此，接下来的提取对象为："
 ABANDON_REASON_SUFFIX: Final[str] = "因此，当前对象无法从该合同中可靠提取。"
 FINISH_REASON_SUFFIX: Final[str] = "因此，当前对象定义已提取完毕。"
-FIELD_TOOL_CHOICE: Final[Literal["required"]] = "required"
+FIELD_TOOL_CHOICE: Final = "required"
 
 FieldValue: TypeAlias = StrictStr | StrictInt | StrictFloat | StrictBool
 FieldObjectValue: TypeAlias = dict[str, FieldValue]
@@ -37,25 +34,7 @@ FieldObjectValue: TypeAlias = dict[str, FieldValue]
 class StrictFieldToolModel(BaseModel):
     """禁止额外参数的不可变字段工具模型。"""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class NormalizedBoundingBox(StrictFieldToolModel):
-    """以单页 0～1000 坐标系描述对象证据位置。"""
-
-    x_min: int
-    y_min: int
-    x_max: int
-    y_max: int
-
-    @model_validator(mode="after")
-    def validate_bounds(self) -> "NormalizedBoundingBox":
-        values = (self.x_min, self.y_min, self.x_max, self.y_max)
-        if any(value < 0 or value > 1000 for value in values):
-            raise ValueError("坐标必须位于 0～1000")
-        if self.x_min >= self.x_max or self.y_min >= self.y_max:
-            raise ValueError("坐标框必须满足 x_min < x_max 且 y_min < y_max")
-        return self
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
 class FieldEvidence(StrictFieldToolModel):
@@ -63,7 +42,6 @@ class FieldEvidence(StrictFieldToolModel):
 
     page_number: int
     content: str
-    bbox: NormalizedBoundingBox | None
 
     @field_validator("page_number")
     @classmethod
@@ -238,7 +216,8 @@ def build_extract_object_tool(definition: FieldDefinition) -> dict[str, Any]:
         name="extract_object",
         description=(
             f"为当前定义“{definition.name}”提交一个完整、独立的扁平对象。"
-            "参数依次提供页面证据、推理摘要和对象值。"
+            "参数依次提供页面证据、推理摘要和对象值；value 是唯一正式决定，"
+            "reasoning 不重复 value 的 JSON。"
         ),
         arguments_model=ExtractObjectArguments,
     )
@@ -357,32 +336,6 @@ def validate_object_value(
     return normalized
 
 
-def _validate_reasoning_value(
-    reasoning: str,
-    value: FieldObjectValue,
-) -> None:
-    marker_at = reasoning.rfind(EXTRACTION_REASON_PREFIX)
-    serialized = reasoning[marker_at + len(EXTRACTION_REASON_PREFIX) :].strip()
-    try:
-        if marker_at < 0:
-            raise json.JSONDecodeError("缺少固定前缀", serialized, 0)
-        stated_value, consumed = json.JSONDecoder().raw_decode(serialized)
-        # 理由末句允许正常的中英文句号，但不允许在 JSON
-        # 对象之后继续追加新的判断或未审计内容。
-        trailing = serialized[consumed:].strip()
-        if trailing not in {"", ".", "。"}:
-            stated_value = None
-    except (json.JSONDecodeError, ValueError):
-        stated_value = None
-    if stated_value != value:
-        expected = f"{EXTRACTION_REASON_PREFIX}{canonical_field_value(value)}"
-        raise FieldObjectValidationError(
-            "reasoning",
-            "提取理由结尾没有给出与 value 语义一致的完整 JSON 对象",
-            f"使用固定结尾“{expected}”",
-        )
-
-
 def parse_field_tool_arguments(
     definition: FieldDefinition,
     name: str,
@@ -407,14 +360,12 @@ def parse_field_tool_arguments(
     if not isinstance(arguments, ExtractObjectArguments):
         return arguments
     value = validate_object_value(definition, arguments.value)
-    _validate_reasoning_value(arguments.reasoning, value)
     return arguments.model_copy(update={"value": value})
 
 
 __all__ = [
     "ABANDON_EXTRACTION_TOOL",
     "ABANDON_REASON_SUFFIX",
-    "EXTRACTION_REASON_PREFIX",
     "FIELD_TOOL_CHOICE",
     "FINISH_EXTRACTION_TOOL",
     "FINISH_REASON_SUFFIX",
@@ -427,7 +378,6 @@ __all__ = [
     "FieldToolArguments",
     "FieldValue",
     "FinishExtractionArguments",
-    "NormalizedBoundingBox",
     "ThinkArguments",
     "build_extract_object_tool",
     "build_field_tools",

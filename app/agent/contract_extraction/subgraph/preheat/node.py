@@ -1,17 +1,22 @@
-"""下游公共前缀预热子图节点。"""
+"""最终公共前缀预热子图节点。"""
 
 from datetime import UTC, datetime
 from time import perf_counter
 
+from app.agent.contract_extraction.context import (
+    CONTRACT_PREFILL_CONTEXT_VERSION,
+    build_contract_prefill_messages,
+    context_sha256,
+)
 from app.agent.contract_extraction.state import (
     ContractPrefillContext,
     ContractPreheatResult,
 )
+from app.agent.contract_extraction.subgraph.classification.state import (
+    ContractClassificationResult,
+)
 from app.agent.contract_extraction.subgraph.preheat.prompt import (
-    CONTRACT_PREFILL_PROMPT_VERSION,
     append_prefill_task,
-    build_contract_prefill_messages,
-    contract_prefill_sha256,
 )
 from app.agent.contract_extraction.subgraph.preheat.state import PreheatSubgraphState
 from app.core.config import get_settings
@@ -21,23 +26,27 @@ from app.infrastructure.mllm import MLLMClient, MLLMUnavailableError
 def assemble_prefill_context(
     state: PreheatSubgraphState,
 ) -> PreheatSubgraphState:
-    """组装“PDF 公共前缀 + 权威文档结构”的下游公共前缀。"""
-    prepared_pdf = state["prepared_pdf"]
-    structure = state["document_structure"]
-    if structure.document_id != prepared_pdf.document_id:
-        raise ValueError("文档结构与 PreparedPDF 的 document_id 不一致")
+    """在基础前缀末尾追加分类结果，形成最终下游公共前缀。"""
+    base_context = state["base_context"]
+    classification = state["classification"]
+    if not isinstance(classification, ContractClassificationResult):
+        raise TypeError(
+            "classification 必须是 ContractClassificationResult，"
+            "不能将占位对象或分类运行审计写入最终公共前缀"
+        )
+    if classification.document_id != base_context.document_id:
+        raise ValueError("分类结果与基础前缀的 document_id 不一致")
 
     messages = build_contract_prefill_messages(
-        prepared_pdf.pages,
-        state["prompt_context"].pages,
-        structure,
+        base_context.messages,
+        classification,
     )
     return {
         "prefill_context": ContractPrefillContext(
-            document_id=prepared_pdf.document_id,
-            prompt_version=CONTRACT_PREFILL_PROMPT_VERSION,
+            document_id=base_context.document_id,
+            prompt_version=CONTRACT_PREFILL_CONTEXT_VERSION,
             messages=tuple(messages),
-            prefix_sha256=contract_prefill_sha256(messages),
+            prefix_sha256=context_sha256(messages),
         )
     }
 

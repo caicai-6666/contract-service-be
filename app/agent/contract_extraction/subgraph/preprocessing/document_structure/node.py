@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from itertools import chain
-import json
 from time import perf_counter
-from typing import Iterable
 
 from pydantic import ValidationError
 
@@ -64,8 +63,6 @@ def _validation_suggestion(path: str) -> str:
     """根据字段路径提供可直接执行的最短修正方向。"""
     if "page_number" in path:
         return "改为 1 至合同总页数范围内的物理页码"
-    if "bbox" in path:
-        return "使用 0～1000 的有效矩形坐标，无法定位时传 null"
     if path.startswith("evidence"):
         return "提供至少一条带页码、类型和可核对内容的页面证据"
     if "span" in path:
@@ -85,9 +82,7 @@ def _validation_feedback(error: Exception) -> ToolFeedback:
     for item in error.errors(include_url=False)[:3]:
         path = ".".join(str(part) for part in item["loc"]) or "arguments"
         problem = str(item["msg"]).removeprefix("Value error, ")
-        messages.append(
-            f"{path}：{problem}；请{_validation_suggestion(path)}。"
-        )
+        messages.append(f"{path}：{problem}；请{_validation_suggestion(path)}。")
     return ToolFeedback(ok=False, message="\n".join(messages))
 
 
@@ -115,7 +110,9 @@ def _validate_page_numbers(
     path: str,
 ) -> ToolFeedback | None:
     """校验模型引用的物理页码没有越出合同。"""
-    invalid = sorted({number for number in page_numbers if not 1 <= number <= page_count})
+    invalid = sorted(
+        {number for number in page_numbers if not 1 <= number <= page_count}
+    )
     if invalid:
         return ToolFeedback(
             ok=False,
@@ -165,6 +162,7 @@ def _accept_unit(
     referenced_pages = chain(
         (evidence.page_number for evidence in arguments.evidence),
         (span.start.page_number, span.end.page_number),
+        (anchor.page_number for anchor in span.navigation_anchors),
     )
     page_error = _validate_page_numbers(
         referenced_pages,
@@ -327,9 +325,7 @@ async def discover_document_units(
                 messages=messages,
                 tools=list(FIRST_ROUND_TOOLS if first_round else DISCOVERY_TOOLS),
                 tool_choice=(
-                    FIRST_ROUND_TOOL_CHOICE
-                    if first_round
-                    else DISCOVERY_TOOL_CHOICE
+                    FIRST_ROUND_TOOL_CHOICE if first_round else DISCOVERY_TOOL_CHOICE
                 ),
                 max_completion_tokens=generation.max_completion_tokens,
                 temperature=generation.temperature,
@@ -339,6 +335,9 @@ async def discover_document_units(
                 repetition_penalty=generation.repetition_penalty,
                 seed=generation.seed,
                 enable_thinking=False,
+                # 首轮 summary 工具与后续发现工具不同，工具 Schema 必须位于
+                # 稳定的 PDF 与结构发现任务之后，避免在公共前缀之前分叉。
+                tool_placement="after_task",
             )
             elapsed_ms = round((perf_counter() - request_started_at) * 1000, 3)
             if len(response.tool_calls) != 1:
@@ -397,7 +396,9 @@ async def discover_document_units(
                         accepted_finish = arguments
                     consecutive_thinks = 0
                 else:
-                    expected = "summary" if first_round else "think、generate_unit 或 finish"
+                    expected = (
+                        "summary" if first_round else "think、generate_unit 或 finish"
+                    )
                     feedback = ToolFeedback(
                         ok=False,
                         message=(

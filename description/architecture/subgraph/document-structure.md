@@ -1,6 +1,6 @@
-# PDF 预处理子图的文档结构发现节点
+# PDF 预处理子图的文档结构与视觉定位节点
 
-> **用途：** 本文定义 PDF 预处理子图内部 `discover_document_units` 节点的结构分析职责。
+> **用途：** 本文定义 PDF 预处理子图内部的单元发现职责，以及后置视觉定位节点的当前边界。
 
 ---
 
@@ -21,12 +21,13 @@
 flowchart TD
     input["PreparedPDF + PDFPromptContext"]
     discover["discover_document_units：单元发现工具循环"]
-    output["DocumentStructureMetadata"]
+    locate["locate_document_units：并发单元视觉定位"]
+    output["DocumentStructureMetadata + UnitVisualGroundingResult"]
 
-    input --> discover --> output
+    input --> discover --> locate --> output
 ```
 
-`discover_document_units` 是预处理子图的最后一个节点，使用异步 `AsyncOpenAI` 适配器执行受 strict function calling 约束的单元发现循环，并在成功结束时直接生成 `DocumentStructureMetadata`。运行审计保留在预处理子图私有的 `unit_discovery` 状态中，对外结构结果不包含主观置信度或复核占位状态。
+`discover_document_units` 使用异步 `AsyncOpenAI` 适配器执行受 strict function calling 约束的单元发现循环，并生成不含坐标的语义结构。`locate_document_units` 随后为所有单元并发建立独立工具会话，把完整定位结果写入 `DocumentStructureMetadata.unit_locations`。发现与定位的详细审计分别保留在预处理子图私有的 `unit_discovery` 和 `unit_grounding` 状态中。
 
 ---
 
@@ -43,7 +44,7 @@ flowchart TD
 
 首轮只传递 `summary`，并通过具名 `tool_choice` 强制调用。程序接受该调用后，不再向模型传递 `summary`；后续只传递 `think`、`generate_unit` 和 `finish`，使用 `tool_choice="required"` 并关闭并行工具调用。这样，工具可见性由状态机决定，提示词只负责说明业务语义和粒度规则。
 
-四个函数工具均启用 `strict: true`，对象拒绝额外字段，所有声明字段都必须出现；确实允许未知的字段以显式 `null` 表达。服务端约束结构正确性后，程序仍使用 Pydantic 校验页码、非空文本、坐标范围、边界顺序等语义规则，并把接受或拒绝结果写回短期上下文。`finish` 只是终止请求，程序仍检查至少一个有效单元和全部物理页面跨度覆盖，再决定是否真正退出。
+四个函数工具均启用 `strict: true`，对象拒绝额外字段，所有声明字段都必须出现；确实允许未知的字段以显式 `null` 表达。服务端约束结构正确性后，程序仍使用 Pydantic 校验页码、非空文本和页面边界顺序等语义规则，并把接受或拒绝结果写回短期上下文。`finish` 只是终止请求，程序仍检查至少一个有效单元和全部物理页面跨度覆盖，再决定是否真正退出。
 
 工具反馈只有 `ok` 和 `message`。成功反馈说明已完成的状态变化和下一步；错误反馈在同一个 `message` 中依次说明错误字段路径、具体问题和可执行改进方向，最多保留三个关键校验错误。错误码、重试标志和结构数据保留在程序内部，不重复占用模型上下文。
 
@@ -55,7 +56,9 @@ flowchart TD
 
 ## 提示词与请求
 
-节点提示词归属于 `preprocessing/document_structure/prompt/`，当前版本为 `document-structure-unit-discovery-v5`。消息通过预处理子图的唯一构造器复用“公共阅读规范 + PDF 页面”，结构发现任务只追加在页面之后。
+节点提示词归属于 `preprocessing/document_structure/prompt/`，当前版本为 `document-structure-unit-discovery-v8`。消息通过预处理子图的唯一构造器复用“公共阅读规范 + PDF 页面”，结构发现任务只追加在页面之后。
+
+`discover_document_units` 显式传递 `tool_placement=after_task`，使首轮 `summary` 工具集和后续单元发现工具集都位于“PDF 页面 + 结构发现任务”之后、assistant/tool 短期历史之前。工具集随状态机轮次变化时只截断任务之后的缓存，不会在 PDF 公共前缀之前造成分叉。具体模板契约见 [vLLM 自定义聊天模板](../../capability/vllm-chat-template.md)。
 
 证据只保留足以证明主题或边界的短片段，单条通常不超过 120 个汉字，禁止复制整页、整段条款或完整主体联系方式。请求固定关闭 thinking channel，业务上的证据、简洁推理摘要和决定仍按工具参数顺序表达。
 
@@ -94,11 +97,9 @@ evidence:
   - page_number: 1
     kind: text
     content: "买卖合同"
-    bbox: null
   - page_number: 1
     kind: text
     content: "加热台 ET-3030"
-    bbox: null
 reasoning_summary: "标题和标的表格共同表明合同交易性质与主要标的。"
 decision:
   title: "买卖合同"
@@ -118,11 +119,9 @@ evidence:
   - page_number: 1
     kind: text
     content: "（2）制造厂商"
-    bbox: null
   - page_number: 1
     kind: text
     content: "（11）仲裁"
-    bbox: null
 reasoning_summary: "连续内容共同讨论履行和责任，从首个履约编号开始，在签署区域之前结束。"
 decision:
   label: "合同履行与责任约定"
@@ -132,13 +131,12 @@ decision:
       page_number: 1
       anchor_kind: text
       anchor: "（2）制造厂商"
-      anchor_bbox: null
       inclusion: inclusive
+    navigation_anchors: []
     end:
       page_number: 1
       anchor_kind: text
       anchor: "签署区域"
-      anchor_bbox: null
       inclusion: exclusive
 ```
 
@@ -146,26 +144,85 @@ decision:
 
 ---
 
-## 边界定位
+## 语义边界
 
-`top`、`middle`、`lower` 只能作为展示信息，不能成为权威边界。开始和结束位置使用“物理页码 + 锚点 + 归一化坐标框”：
+`top`、`middle`、`lower` 不能成为权威边界。单元发现阶段使用“开始边界 + 有序导航锚点 + 结束边界”表达连续语义范围：
 
 ```yaml
-start:
-  page_number: 3
-  anchor_kind: text
-  anchor: "第五条 付款方式"
-  anchor_bbox:
-    x_min: 65
-    y_min: 143
-    x_max: 421
-    y_max: 176
-  inclusion: inclusive
+span:
+  start:
+    page_number: 2
+    anchor_kind: text
+    anchor: "第三条 交付与验收"
+    inclusion: inclusive
+  navigation_anchors:
+    - page_number: 3
+      anchor_kind: text
+      anchor: "交付与验收条款续页"
+    - page_number: 3
+      anchor_kind: text
+      anchor: "右栏：付款条件"
+  end:
+    page_number: 4
+    anchor_kind: text
+    anchor: "第五条 保密义务"
+    inclusion: exclusive
 ```
 
-`anchor_bbox` 使用具名的 `x_min`、`y_min`、`x_max`、`y_max`，每个坐标都位于 `0～1000`；无法可靠定位时传递 `null`，并在证据与推理摘要中说明可核对事实和未确定之处。映射回 PDF 或渲染图像时，必须使用对应页面自己的宽高。文本锚点不可用时，可以使用视觉锚点及其描述。
+单元发现工具不再接收 `bbox` 或 `anchor_bbox`。这能让结构模型专注语义切分，并避免把复合工具调用中的粗略坐标误当成可靠定位结果。文本锚点不可用时，可以使用视觉锚点及其简短描述。
 
-单元可以跨页，开始和结束分别引用自己的页面。程序至少校验页码范围、坐标范围、开始不晚于结束以及单元顺序；不能只依赖模型坐标判断边界正确性。
+`start` 与 `end` 始终是权威边界。`navigation_anchors` 是必填但可为空的列表，只服务于后续视觉模型沿阅读顺序定位，不改变连续范围：
+
+- 普通单页单元通常使用空列表，视觉定位可以用一个框同时覆盖 start 和 end。
+- 跨页延续、双栏换栏或复杂版式可以提供少量中间锚点，不能把每条条款或自然段都转成锚点。
+- 模型只提交页码、锚点类型和可核对内容；`anchor_id` 与 `order` 由程序根据 start、中间锚点、end 的顺序生成。
+- 中间页面没有可靠文本或视觉锚点时保持为空，后续定位准备逻辑可以补充 `page_body` 虚拟锚点。
+
+程序校验中间锚点位于起止页范围内、页码非递减，并且不重复 start、end 或其他中间锚点。同页锚点的视觉先后关系留给后置定位阶段验证。
+
+---
+
+## 视觉定位节点
+
+`locate_document_units` 位于单元发现之后，代码内聚在 `document_structure/visual_grounding/`。节点为每个单元创建一个独立短期记忆工具循环，再通过同一个 MLLM 并发信号量调度所有单元；单元失败彼此隔离，只有成功执行 `finish` 的完整定位框才能提升为下游权威结果。
+
+提示词版本为 `unit-visual-grounding-v1`，工具版本为 `unit-visual-grounding-tool-v1`：
+
+| 工具 | 参数 | 职责 |
+| --- | --- | --- |
+| `think` | `reasoning` | 思考最早未覆盖锚点、阅读顺序和单栏或双栏布局，不写入定位结果。 |
+| `draw_bbox` | `anchor_ids`、`page_number`、`bbox_2d` | 一次绘制一个单页框，并消费同页一个或多个连续锚点。 |
+| `finish` | `reason` | 请求结束当前单元定位；程序仅在全部锚点已覆盖时接受。 |
+
+定位准备逻辑按 `start → navigation_anchors → end` 生成稳定的 `anchor_id` 和连续 `order`；跨度内没有显式锚点的中间页面自动补充一个 `page_body` 锚点。`draw_bbox` 使用 `[x_min, y_min, x_max, y_max]` 的 `0～1000` 单页归一化坐标。长度、坐标范围、矩形方向和物理页码进入 strict Schema；本地状态校验继续执行以下规则：
+
+- 每次必须从最早未覆盖锚点开始，只能消费同页连续锚点。
+- 一个框可以覆盖多个连续锚点，一个锚点不能被重复消费。
+- 每次成功调用至少消费一个锚点，因此成功次数不超过锚点总数；失败调用不消耗额度。
+- 同页同栏按从上到下绘制；只有新框位于前框右侧且横向不相交时，才允许从左栏底部回到右栏顶部。
+- 完全重复坐标、跨页锚点合框、页码与锚点不一致、提前 `finish` 都返回包含错误位置与改进方向的最小反馈。
+
+每个单元请求只选择 `start.page_number` 到 `end.page_number` 的连续页面，绝不发送跨度外页面。选中的每张图片仍通过公共页面构造器在图片前插入“第 N 页”标签；页面标签、图片和 `page_number` 工具参数使用同一物理页码。工具对全部会话相同并使用 `tool_placement=before_task`，动态单元描述位于工具之后，使页面集合相同的会话尽量共享长前缀。
+
+单元会话达到最大轮次、模型请求失败或工具协议无法恢复时记为 `failed`，私有审计保留已经接受的部分框；`DocumentStructureMetadata.unit_locations` 对失败单元只暴露错误状态，不暴露可能误导下游的半成品坐标。汇总状态按全部成功、部分失败、全部失败分别为 `completed`、`partial`、`failed`。
+
+权威输出按 `unit_id` 与语义单元关联：
+
+```yaml
+unit_locations:
+  - unit_id: unit-003
+    status: located
+    regions:
+      - anchor_ids: [unit-003-anchor-001]
+        page_number: 2
+        bbox_2d: [50, 460, 950, 880]
+      - anchor_ids: [unit-003-anchor-002, unit-003-anchor-003]
+        page_number: 3
+        bbox_2d: [50, 60, 950, 940]
+    error: null
+```
+
+失败结果使用 `status: failed`、空 `regions` 和非空 `error`；调用轮次、工具反馈、用量与部分框只保存在私有 `UnitVisualGroundingResult`，不进入下游权威结构。
 
 ---
 
@@ -176,7 +233,7 @@ start:
 - 程序页面事实和单元原始顺序属于硬约束。
 - 标题、原文证据和可核对锚点属于主要导航依据。
 - 单元名称与摘要用于召回和定位，不能作为排除原始页面的唯一依据。
-- 冲突、缺失坐标或未知边界必须允许下游回退查看原始 PDF。
+- `unit_locations.status=located` 的区域可以增强导航；失败单元必须回退到页码、锚点和原始 PDF。
 - 下游不得静默修改结构结果；发现冲突时应记录并进入审核信息。
 
-工具调用历史和候选单元保留在预处理子图私有 `unit_discovery` 状态中；主图只接收最终 `document_structure` 结果。现有真实模型验证入口见[文档结构发现实验](../../../experiment/document-structure/README.md)。
+两类工具调用历史分别保留在预处理子图私有状态中；主图只接收包含完整 `unit_locations` 的最终 `document_structure` 结果。现有真实模型验证入口见[文档结构与视觉定位实验](../../../experiment/document-structure/README.md)。

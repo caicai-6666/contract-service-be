@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from app.agent.contract_extraction.state import PDFPromptPage, PreparedPDFPage
-from app.agent.contract_extraction.subgraph.preprocessing.prompt import build_pdf_messages
+from app.agent.contract_extraction.subgraph.preprocessing.prompt import (
+    build_pdf_messages,
+)
 
-UNIT_DISCOVERY_PROMPT_VERSION = "document-structure-unit-discovery-v5"
+UNIT_DISCOVERY_PROMPT_VERSION = "document-structure-unit-discovery-v8"
 
 UNIT_DISCOVERY_TASK = """你需要为下游字段、条款和摘要节点建立一份中等粒度的合同导航结构。
 
@@ -65,11 +67,12 @@ UNIT_DISCOVERY_TASK = """你需要为下游字段、条款和摘要节点建立�
 4. generate_unit 每次只提交一个宏观、连续的内容单元，并按照 evidence、reasoning_summary、decision 的顺序提供参数。
 5. 每个单元的 evidence 应优先提供主题证据和起止边界证据；只保留足以核对判断的短片段，单条通常不超过 120 个汉字，不得复制整页、整段条款或完整主体联系方式。
 6. 每个单元的 reasoning_summary 必须说明它回答哪个独立下游问题、内部内容为何应合并、为何不应与前后单元合并、起止位置为何是真实边界，以及是否偏离标准结构。最终决定不得引入证据和推理摘要未支持的事实。
-7. 单元边界使用物理页码、可核对锚点及可选的 0～1000 归一化坐标框。无法可靠定位坐标时传 null，不得猜测。
-8. 按合同原始顺序生成单元。存在遮挡、缺页、边界不清或多种合理切法时，不要猜测坐标；应传递 null，并在 evidence 与 reasoning_summary 中明确说明可核对事实和未确定之处。
-9. 所有候选内容生成后，调用 finish 之前必须先调用一次 think，检查是否把单页合同错误合成一个单元、是否按编号条款过度切分、标准结构中实际存在的功能是否被其他单元吞并、是否存在孤立标题、备注、续表、签章或附件，以及模板外内容是否被强行归类。发现问题时不得直接 finish。
-10. 只有确认所有页面中的宏观内容都已经被合理单元覆盖后才能调用 finish。
-11. 工具返回 ok=false 时，严格按照 message 指出的错误位置、问题和改进方向修正下一次调用。
+7. 本节点只发现语义单元，不生成坐标。start 与 end 使用物理页码、可核对的文本或视觉锚点及 inclusion 定义权威连续边界；后续独立视觉定位节点负责坐标定位。
+8. 每个 span 都必须提交 navigation_anchors；普通单页单元通常传空列表。仅当跨页延续、双栏换栏或复杂版式确实需要帮助后续模型沿阅读顺序定位时，才添加少量中间锚点。锚点按物理页码和页内阅读顺序排列，不得重复 start、end，不得把每条条款或自然段都变成锚点。
+9. 按合同原始顺序生成单元。存在遮挡、缺页、边界不清或多种合理切法时，在 evidence 与 reasoning_summary 中明确说明不确定性；不得虚构页面或锚点。中间页面没有可靠锚点时保留为空，后续程序可以补充 page_body 锚点。
+10. 所有候选内容生成后，调用 finish 之前必须先调用一次 think，检查是否把单页合同错误合成一个单元、是否按编号条款过度切分、标准结构中实际存在的功能是否被其他单元吞并、是否存在孤立标题、备注、续表、签章或附件，以及模板外内容是否被强行归类。发现问题时不得直接 finish。
+11. 只有确认所有页面中的宏观内容都已经被合理单元覆盖后才能调用 finish。
+12. 工具返回 ok=false 时，严格按照 message 指出的错误位置、问题和改进方向修正下一次调用。
 """
 
 

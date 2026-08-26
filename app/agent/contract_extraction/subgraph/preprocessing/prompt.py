@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from base64 import b64encode
-from hashlib import sha256
 import json
-from typing import Any, Iterable
+from base64 import b64encode
+from collections.abc import Iterable
+from hashlib import sha256
+from typing import Any
 
 from app.agent.contract_extraction.state import PDFPromptPage, PreparedPDFPage
 
-PDF_READING_PROMPT_VERSION = "pdf-reading-v2"
+PDF_READING_PROMPT_VERSION = "pdf-reading-v3"
 
 PDF_READING_SYSTEM_PROMPT = """你是合同 PDF 阅读基础层。输入页面图像是当前任务唯一的事实来源。
 
@@ -23,12 +24,10 @@ PDF_READING_SYSTEM_PROMPT = """你是合同 PDF 阅读基础层。输入页面�
 
 PDF_INPUT_HEADER = """以下是同一份合同的连续 PDF 页面。每个页码标签后的图像只对应该页；请先完整阅读，再执行所有页面之后追加的任务。"""
 
+
 def build_pdf_page_descriptor(page: PreparedPDFPage) -> str:
-    """使用模型实际收到的图像尺寸构造稳定的逐页描述。"""
-    return (
-        f"第 {page.page_number} 页，图像尺寸 "
-        f"{page.width_pixels} × {page.height_pixels} 像素"
-    )
+    """只向模型标记物理页码，不暴露内部渲染尺寸。"""
+    return f"第 {page.page_number} 页"
 
 
 def _image_content(page: PreparedPDFPage) -> dict[str, Any]:

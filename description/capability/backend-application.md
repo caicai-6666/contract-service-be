@@ -1,6 +1,6 @@
 # FastAPI 后端应用骨架
 
-> **用途：** 本能力文档说明 HTTP 服务的分层边界、Elasticsearch 客户端生命周期和当前可用的系统接口。
+> **用途：** 本能力文档说明 HTTP 服务的分层边界、启动期只读业务目录、Elasticsearch 客户端生命周期和当前可用的系统接口。
 
 ---
 
@@ -8,7 +8,7 @@
 
 | 包 | 职责 |
 | --- | --- |
-| `app.main` | 创建 FastAPI 应用，并管理共享客户端的启动与关闭。 |
+| `app.main` | 创建 FastAPI 应用，加载只读业务目录，并管理共享客户端的启动与关闭。 |
 | `app.api` | 定义 HTTP 路由并组合版本化接口。 |
 | `app.schema` | 定义请求和响应的 Pydantic 契约。 |
 | `app.core` | 加载和校验应用配置。 |
@@ -31,9 +31,19 @@ Elasticsearch 是当前唯一规划的持久化和检索后端。应用启动时
 
 ---
 
+## 启动期业务定义目录
+
+应用启动时从 `CONTRACT_CATEGORY_DEFINITION_DIR` 全量读取合同类别定义及 positive、negative 专家卡片，构造不可变 `ContractCategoryCatalog` 并保存到 `application.state.contract_category_catalog`。默认目录为 `data/definition/contract-category`，相对路径按项目根目录解析。
+
+加载发生在服务开始接收请求之前；任一文件布局、Schema 或跨类别引用错误都会使启动失败。目录只在每个应用进程启动时读取一次，运行期间分类用例复用同一个内存快照。类别对象、严格校验和内容指纹的完整契约见[合同交易类别定义结构](../architecture/contract-category-definition.md)。
+
+同一生命周期还会从 `FIELD_DEFINITION_DIR` 全量读取 Core 与 Attribute YAML，构造不可变 `FieldDefinitionCatalog` 并保存到 `application.state.field_definition_catalog`。Core 必须非空，Attribute 允许为空；两类名称必须全局唯一。字段对象结构、目录边界和指纹规则见[模型提取对象定义结构](../architecture/field-definition.md)。
+
+---
+
 ## 配置与接口
 
-配置从项目根目录的 `.env` 加载；可复制 `.env.example` 作为本地模板。Elasticsearch 使用逗号分隔的 `ELASTICSEARCH_HOSTS`、`ELASTICSEARCH_USERNAME`、`ELASTICSEARCH_PASSWORD`、`ELASTICSEARCH_CA_CERTS` 和 `ELASTICSEARCH_VERIFY_CERTS`。用户名和密码必须同时配置。
+配置从项目根目录的 `.env` 加载；可复制 `.env.example` 作为本地模板。合同类别目录使用 `CONTRACT_CATEGORY_DEFINITION_DIR`，字段定义总目录使用 `FIELD_DEFINITION_DIR`。Elasticsearch 使用逗号分隔的 `ELASTICSEARCH_HOSTS`、`ELASTICSEARCH_USERNAME`、`ELASTICSEARCH_PASSWORD`、`ELASTICSEARCH_CA_CERTS` 和 `ELASTICSEARCH_VERIFY_CERTS`。用户名和密码必须同时配置。
 
 正式写入使用 `ELASTICSEARCH_INDEX_NAME=contracts-v1`；入库验收只能使用 `ELASTICSEARCH_INGESTION_EXPERIMENT_INDEX_NAME=contracts-ingestion-experiment-v1`，可删除并按正式 mapping 重建，但绝不能触碰正式索引。向量维度、分片数和副本数分别由 `ELASTICSEARCH_VECTOR_DIMENSIONS`、`ELASTICSEARCH_NUMBER_OF_SHARDS` 和 `ELASTICSEARCH_NUMBER_OF_REPLICAS` 配置。`data/certs/` 是本地运行时证书目录，已被 Git 忽略。
 
@@ -66,11 +76,15 @@ vllm serve ~/autodl-tmp/model/Qwen3.6-35B-A3B-FP8 \
     --enable-prefix-caching \
     --enable-auto-tool-choice \
     --tool-call-parser qwen3_xml \
+    --chat-template data/template/qwen3.6-tools-placement.jinja \
+    --chat-template-content-format openai \
     --structured-outputs-config '{"backend":"xgrammar"}' \
     --host 0.0.0.0 \
     --port 8000 \
     --served-model-name qwen3.6-35b-a3b-fp8
 ```
+
+该模板及 `tool_placement` 接入契约见 [vLLM 自定义聊天模板](vllm-chat-template.md)。命令应从项目根目录执行；若从其他目录启动，应将 `--chat-template` 改为模板的绝对路径。
 
 若 vLLM 因 KV cache 容量不足而拒绝 `65536`，应优先降低 `--max-num-seqs`，再根据实际显存调整 `--gpu-memory-utilization`，不能让应用配置的上下文大于服务端上限。配置模型同时校验 MLLM 的非视觉预留和显式视觉上限不超过上下文窗口、重排 `top_n` 不超过候选上限，以及 Embedding 输出维度与 Elasticsearch 向量维度一致。
 

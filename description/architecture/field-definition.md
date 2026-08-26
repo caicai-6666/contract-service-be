@@ -8,6 +8,20 @@ Core 与 Attribute 目录分别位于 [Core 定义目录](../../data/definition/
 
 ---
 
+## 启动期内存目录
+
+应用启动时从 `FIELD_DEFINITION_DIR` 一次性读取 Core 与 Attribute 全部 YAML，构造不可变 `FieldDefinitionCatalog` 并保存到 `application.state.field_definition_catalog`。默认根目录为 `data/definition/field`，其下只允许 `core` 与 `attribute` 两个职责目录。
+
+目录对象包含：
+
+- `core`：按文件名稳定排列的 Core 定义集合，必须至少包含一个定义。
+- `attribute`：按文件名稳定排列的 Attribute 定义集合，允许为空。
+- `content_sha256`：由相对路径和原始文件字节计算的全目录确定性指纹；两个子集合也分别保留自己的指纹。
+
+加载器会在服务接收请求前完成目录布局、YAML、Pydantic Schema 和名称唯一性校验。Core 或 Attribute 内部名称重复、两类之间名称冲突以及未知目录条目都会阻止应用启动。运行期间不再扫描目录；字段工作流直接接收并复用这一内存快照。
+
+---
+
 ## 标准结构
 
 ~~~yaml

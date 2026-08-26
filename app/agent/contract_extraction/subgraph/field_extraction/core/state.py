@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Literal, TypeAlias
+from datetime import datetime
+from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict
 from typing_extensions import TypedDict
@@ -11,6 +12,8 @@ from app.agent.contract_extraction.state import ContractPrefillContext, Prepared
 from app.agent.contract_extraction.subgraph.field_extraction.definition import (
     FieldCardinality,
     FieldDefinition,
+    FieldDefinitionCatalog,
+    FieldDefinitionCollection,
 )
 from app.agent.contract_extraction.subgraph.field_extraction.tool import (
     FieldEvidence,
@@ -18,28 +21,45 @@ from app.agent.contract_extraction.subgraph.field_extraction.tool import (
 )
 
 
-class CoreFieldModel(BaseModel):
+class CoreModel(BaseModel):
     """核心字段目录、结果和审计记录的不可变基类。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class CoreFieldCatalog(CoreFieldModel):
-    """节点一按稳定文件顺序加载的核心字段目录。"""
+class CoreContext(CoreModel):
+    """供全部单字段提取复用的不可变 Core 公共任务前缀。"""
 
-    directory: str
-    sha256: str
-    definitions: tuple[FieldDefinition, ...]
+    document_id: str
+    prompt_version: str
+    messages: tuple[dict[str, Any], ...]
+    prefix_sha256: str
 
 
-class FieldToolFeedback(CoreFieldModel):
+class CorePreheatResult(CoreModel):
+    """Core 公共任务前缀的预热观测结果。"""
+
+    status: Literal["warmed", "degraded"]
+    document_id: str
+    prompt_version: str
+    model: str
+    completed_at: datetime
+    prefix_sha256: str
+    elapsed_ms: float
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    cached_tokens: int | None = None
+    error: str | None = None
+
+
+class FieldToolFeedback(CoreModel):
     """工具执行后写回单字段短期上下文的最小反馈。"""
 
     ok: bool
     message: str
 
 
-class FieldToolCallAudit(CoreFieldModel):
+class FieldToolCallAudit(CoreModel):
     """单字段一次工具调用的审计记录。"""
 
     round_number: int
@@ -54,7 +74,7 @@ class FieldToolCallAudit(CoreFieldModel):
     cached_tokens: int | None
 
 
-class FieldOutcomeBase(CoreFieldModel):
+class FieldOutcomeBase(CoreModel):
     """三种对象定义终态共享的运行信息。"""
 
     name: str
@@ -68,7 +88,7 @@ class FieldOutcomeBase(CoreFieldModel):
     tool_calls: tuple[FieldToolCallAudit, ...]
 
 
-class ExtractedFieldObject(CoreFieldModel):
+class ExtractedFieldObject(CoreModel):
     """一次通过证据、理由和扁平 Schema 校验的对象。"""
 
     evidence: tuple[FieldEvidence, ...]
@@ -76,7 +96,7 @@ class ExtractedFieldObject(CoreFieldModel):
     value: FieldObjectValue
 
 
-class ExtractedCoreField(FieldOutcomeBase):
+class ExtractedCore(FieldOutcomeBase):
     """已成功提交一个或多个扁平对象的定义。"""
 
     status: Literal["extracted"] = "extracted"
@@ -84,14 +104,14 @@ class ExtractedCoreField(FieldOutcomeBase):
     finish_reasoning: str | None
 
 
-class AbandonedCoreField(FieldOutcomeBase):
+class AbandonedCore(FieldOutcomeBase):
     """模型确认当前合同不能可靠提取任何对象。"""
 
     status: Literal["abandoned"] = "abandoned"
     reasoning: str
 
 
-class FailedCoreField(FieldOutcomeBase):
+class FailedCore(FieldOutcomeBase):
     """协议、请求或最大轮次导致的运行失败。"""
 
     status: Literal["failed"] = "failed"
@@ -99,42 +119,45 @@ class FailedCoreField(FieldOutcomeBase):
     error: str
 
 
-CoreFieldOutcome: TypeAlias = (
-    ExtractedCoreField | AbandonedCoreField | FailedCoreField
-)
+CoreOutcome: TypeAlias = ExtractedCore | AbandonedCore | FailedCore
 
 
-class CoreFieldExtractionResult(CoreFieldModel):
-    """节点二并行处理全部核心字段后的稳定结果。"""
+class CoreExtractionResult(CoreModel):
+    """并行处理全部核心字段后的稳定结果及公共预热审计。"""
 
     status: Literal["completed", "partial", "failed"]
     document_id: str
     model: str
     prompt_version: str
     catalog_sha256: str
-    fields: tuple[CoreFieldOutcome, ...]
+    preheat: CorePreheatResult
+    fields: tuple[CoreOutcome, ...]
     elapsed_ms: float
 
 
-class CoreFieldSubgraphState(TypedDict, total=False):
+class CoreSubgraphState(TypedDict, total=False):
     """核心字段子图只读公共前缀，并拥有目录与提取结果。"""
 
     prepared_pdf: PreparedPDF
     document_structure: BaseModel
     prefill_context: ContractPrefillContext
-    core_field_catalog: CoreFieldCatalog
-    core_field: CoreFieldExtractionResult
+    field_definition_catalog: FieldDefinitionCatalog
+    core_definitions: FieldDefinitionCollection
+    core_context: CoreContext
+    core_preheat: CorePreheatResult
+    core: CoreExtractionResult
 
 
 __all__ = [
-    "AbandonedCoreField",
-    "CoreFieldCatalog",
-    "CoreFieldExtractionResult",
-    "CoreFieldOutcome",
-    "CoreFieldSubgraphState",
-    "ExtractedCoreField",
+    "AbandonedCore",
+    "CoreContext",
+    "CoreExtractionResult",
+    "CoreOutcome",
+    "CorePreheatResult",
+    "CoreSubgraphState",
+    "ExtractedCore",
     "ExtractedFieldObject",
-    "FailedCoreField",
+    "FailedCore",
     "FieldToolCallAudit",
     "FieldToolFeedback",
 ]
