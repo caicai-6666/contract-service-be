@@ -89,7 +89,7 @@ app/agent/
 
 `workflow.py` 只负责主图编排；`node.py` 保持节点粒度的业务操作；`state.py` 定义可序列化的流程状态。每个 `subgraph/` 模块自行定义私有状态、节点和边，并导出已装配的子图构建函数；主图只引用这些子图。
 
-每个子图都是独立包；子图实际调用模型时，在包内保存自身拥有的指令、版本和消息入口，尚未调用模型的占位子图不预建空提示词文件。字段提取父子图只负责按 Core → Attribute 顺序调用两个内部子图并汇总结果；共享字段定义契约和 strict 工具位于父包，Core 的专属提示词、节点和状态留在自己的包内。PDF 预处理子图使用 `prompt.py` 保存阅读规范、页面编码与唯一 PDF 消息构造器，并在内部 `document_structure/prompt/` 和 `document_structure/visual_grounding/prompt/` 分别保存结构发现与视觉定位节点的专属提示词。
+每个子图都是独立包；子图实际调用模型时，在包内保存自身拥有的指令、版本和消息入口，尚未调用模型的占位子图不预建空提示词文件。字段提取父子图只负责按 Core → Attribute 顺序调用两个内部子图并汇总结果；共享字段定义契约和工具位于父包，Core 的专属提示词、节点和状态留在自己的包内。模型工具请求统一使用 non-strict Schema 绕过服务端 grammar，参数仍由本地严格契约校验。PDF 预处理子图使用 `prompt.py` 保存阅读规范、页面编码与唯一 PDF 消息构造器，并在内部 `document_structure/prompt/` 和 `document_structure/visual_grounding/prompt/` 分别保存结构发现与视觉定位节点的专属提示词。
 
 基础前缀组装是主图单节点，确定性上下文函数集中在 `context.py`。它输出“PDF + 文档结构”的 `ContractBaseContext` 供分类子图读取；分类完成后，最终预热子图才追加分类结果，输出 `ContractPrefillContext` 并请求 vLLM 预热。三个并行下游子图必须直接复用该最终上下文，再追加自己的任务后缀。
 

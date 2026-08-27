@@ -52,9 +52,10 @@ class ClassificationToolCallAudit(ClassificationModel):
     """单类别会话的一次工具调用与模型用量审计。"""
 
     round_number: int
-    call_id: str
+    call_id: str | None
     name: str
     raw_arguments: str
+    assistant_content: str | None = None
     feedback: ClassificationToolFeedback
     elapsed_ms: float
     response_id: str | None
@@ -123,6 +124,7 @@ class ContractClassificationRun(ClassificationModel):
     categories: tuple[CategoryJudgmentOutcome, ...]
     unmapped_type_description: UnmappedTypeDescription | None = None
     unmapped_type_description_error: str | None = None
+    unmapped_type_tool_calls: tuple[ClassificationToolCallAudit, ...] = ()
     elapsed_ms: float
 
 

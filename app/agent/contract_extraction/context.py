@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     )
 
 CONTRACT_BASE_CONTEXT_VERSION = "contract-base-context-v3"
-CONTRACT_PREFILL_CONTEXT_VERSION = "contract-prefill-context-v4"
+CONTRACT_PREFILL_CONTEXT_VERSION = "contract-prefill-context-v5"
 
 DOCUMENT_STRUCTURE_COMMENTS = """# 权威文档导航结构；用于理解和定位，原始 PDF 仍是最终事实来源。
 # 字段说明：
@@ -35,7 +35,7 @@ DOCUMENT_STRUCTURE_COMMENTS = """# 权威文档导航结构；用于理解和定
 # reasoning_summary：证据如何支持当前结构决定的简洁说明。
 # decision：整体主题或单元边界的最终决定。"""
 
-CLASSIFICATION_COMMENTS = """# 合同分类结果；用于选择下游规则和理解交易场景，原始 PDF 仍是最终事实来源。
+CLASSIFICATION_COMMENTS = """# 已确认的合同分类结果；用于理解交易场景和适用规则，原始 PDF 仍是最终事实来源。
 # 字段说明：
 # status：classified 表示至少命中一类；unmapped 表示完整判别后未命中；partial/failed 表示判别不完整。
 # matches：全部命中类别；同一合同可以命中多个类别。

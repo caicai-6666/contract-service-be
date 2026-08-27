@@ -135,7 +135,7 @@ class ContractExtractionResult(BaseModel):
     preheat: ContractPreheatResult
     document_structure: SerializeAsAny[BaseModel]
     field_extraction: FieldExtractionResult
-    clause_extraction: WorkflowPlaceholder
+    clause_extraction: SerializeAsAny[BaseModel]
     summary_generation: WorkflowPlaceholder
 
 
@@ -153,6 +153,6 @@ class ContractExtractionState(TypedDict, total=False):
     preheat: ContractPreheatResult
     document_structure: BaseModel
     field_extraction: FieldExtractionResult
-    clause_extraction: WorkflowPlaceholder
+    clause_extraction: BaseModel
     summary_generation: WorkflowPlaceholder
     result: ContractExtractionResult

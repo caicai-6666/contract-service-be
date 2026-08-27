@@ -28,9 +28,12 @@ class GroundingToolCallAudit(VisualGroundingModel):
     """一个单元定位会话中的单轮工具调用审计。"""
 
     round_number: int
-    call_id: str
+    # 协议恢复轮没有服务端 tool_call_id；正常工具调用始终具有该标识。
+    call_id: str | None
     name: str
     raw_arguments: str
+    # auto 未调用工具时保留受控长度的普通文本，供实验与故障分析定位原因。
+    assistant_content: str | None
     feedback: VisualGroundingToolFeedback
     elapsed_ms: float
     response_id: str | None

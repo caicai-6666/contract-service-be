@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from copy import deepcopy
 from typing import Any
 
-CLASSIFICATION_PREFILL_TASK = """这是分类公共前缀预热请求，不对应任何具体目标类别。请仅确认已读取合同、文档结构与分类公共规则，不得形成类别判断。"""
+CLASSIFICATION_PREFILL_TASK = """你已获得当前合同、文档导航结构和单类别判别通用规则，但尚未获得任何目标类别定义或专家示例。请先读取已有材料，并准备在收到唯一目标类别资料后进行判断；现在不得形成类别结论。"""
 
 
 def append_classification_prefill_task(

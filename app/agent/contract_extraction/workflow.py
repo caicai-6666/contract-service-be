@@ -83,9 +83,11 @@ def build_contract_extraction_graph():
         )
         return {"field_extraction": result["field_extraction"]}
 
-    def run_clause_subgraph(state: ContractExtractionState) -> ContractExtractionState:
-        """调用条款子图，并只把它拥有的结果写回主图。"""
-        result = clause_subgraph.invoke(
+    async def run_clause_subgraph(
+        state: ContractExtractionState,
+    ) -> ContractExtractionState:
+        """异步调用条款子图，并只把最终条款结果写回主图。"""
+        result = await clause_subgraph.ainvoke(
             {
                 "prepared_pdf": state["prepared_pdf"],
                 "document_structure": state["document_structure"],

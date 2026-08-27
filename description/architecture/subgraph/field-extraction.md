@@ -70,18 +70,20 @@ Core 子图产生 `core`。父子图随后将该结果额外传给 Attribute 子
 
 `select_core_definitions` 只从 `FieldDefinitionCatalog.core` 选择已经按文件名稳定排序的定义及目录指纹，不执行文件 I/O。运行期间修改 YAML 不影响当前进程；需要显式重启服务才能形成新快照。
 
-`assemble_core_context` 深复制 `ContractPrefillContext.messages`，只追加全部 Core 字段共同使用的任务规则和字段定义属性说明，生成版本为 `core-common-v2` 的不可变 `CoreContext`。`prefill_core_context` 在其后追加一次性预热任务，使用异步单 token 请求写入 vLLM 前缀缓存；该任务不属于共享前缀。预热失败记录为 `degraded`，但不阻止后续字段提取尝试。
+`assemble_core_context` 深复制 `ContractPrefillContext.messages`，只追加全部 Core 字段共同使用的任务规则、字段定义属性说明和合法 XML 工具调用格式，生成版本为 `core-common-v4` 的不可变 `CoreContext`。`prefill_core_context` 在其后追加一次性预热任务，使用异步单 token 请求写入 vLLM 前缀缓存；该任务不属于共享前缀。预热失败记录为 `degraded`，但不阻止后续字段提取尝试。模型可见文本只说明已获得合同和通用规则、当前尚缺唯一对象定义，以及收到定义后应执行的动作。
 
 `extract_core` 为每个字段复制同一个 `CoreContext.messages`，再追加当前唯一字段 YAML。动态工具使用显式 `tool_placement=after_task`，因此实际 token 顺序为“最终合同前缀 → Core 公共规则 → 当前字段定义 → 当前字段工具 → 短期历史”。字段间差异只出现在当前字段定义处。
 
-每个定义拥有隔离的短期消息历史，一个定义的思考、成功对象和错误反馈不会进入其他定义。每轮强制且只允许一个工具调用：
+每个定义拥有隔离的短期消息历史，一个定义的思考、成功对象和错误反馈不会进入其他定义。请求使用 `strict:false + tool_choice:auto`，程序每轮仍只接受恰好一个工具调用：
 
 - 尚无成功对象时提供 `think`、`extract_object` 和 `abandon_extraction`。
 - `single` 在第一个对象成功后自动结束，不需要额外终止调用。
 - `multiple` 每次成功对象都会连同序号和紧凑 JSON 值写入工具反馈；后续轮改为提供 `think`、`extract_object` 和 `finish_extraction`，不再提供放弃工具。
 - `finish_extraction` 只能在 `multiple` 至少有一个成功对象后使用，它是“已穷尽全部对象”的显式终止出口。
 
-`extract_object` 的参数顺序固定为 `evidence → reasoning → value`：证据负责可追溯事实，reasoning 只解释证据、规则和排除过程，strict `value` 是唯一正式提取决定。reasoning 不再重复 value JSON，也不因连接词或标点差异拒绝正确对象。`value` 根据 `properties` 动态生成 `additionalProperties: false` 的 strict 扁平对象 Schema。所有工具参数使用 Pydantic `strict=True`，程序在本地二次校验必填属性、基本类型、有限数值和证据页码；`abandon_extraction` 与 `finish_extraction` 仍校验各自终止理由，防止状态语义含混。对象或数组属性、未定义属性和完全重复对象均会被拒绝。字段证据只保留物理页码和可核对短内容，不在对象提取会话中同时生成视觉坐标。
+`extract_object` 的参数顺序固定为 `evidence → reasoning → value`：证据负责可追溯事实，reasoning 只解释证据、规则和排除过程，`value` 是唯一正式提取决定。reasoning 不再重复 value JSON，也不因连接词或标点差异拒绝正确对象。`value` 根据 `properties` 动态生成 `additionalProperties: false` 的扁平对象 Schema。所有工具参数继续使用本地 Pydantic `strict=True`，程序二次校验必填属性、基本类型、有限数值和证据页码；`abandon_extraction` 与 `finish_extraction` 仍校验各自终止理由，防止状态语义含混。对象或数组属性、未定义属性和完全重复对象均会被拒绝。字段证据只保留物理页码和可核对短内容，不在对象提取会话中同时生成视觉坐标。
+
+若模型输出普通文本、零个或多个工具调用，该轮只作为可恢复协议失败：有限原始文本写入私有审计，短期记忆追加统一 XML 纠正反馈；模型在两次机会内纠正后，程序移除错误响应与反馈，再继续正常对象状态机。连续第三次仍失败时才生成 `FailedCore`，并保留此前已成功提取的部分对象。
 
 新定义契约在顶层提供 `name`、`aliases`、`meaning`、`excludes`、`cardinality` 和 `properties`，每个属性再定义名称、别名、基本类型、必填性和正负语义边界。提示词在 YAML 前先解释这些属性，并明确 `multiple` 是多次提交扁平对象，不是在一个属性中返回数组。
 

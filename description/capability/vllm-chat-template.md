@@ -37,7 +37,7 @@ user：当前类别定义与专家样例
 system：跨任务稳定规则
 user：PDF + 文档结构 + 节点公共规则
 user：当前字段定义
-tools：根据该字段生成的 strict Schema
+tools：根据该字段生成的 non-strict Schema（本地继续严格校验）
 assistant/tool：短期记忆
 ```
 

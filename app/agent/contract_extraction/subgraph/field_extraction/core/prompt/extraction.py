@@ -14,9 +14,10 @@ from app.agent.contract_extraction.subgraph.field_extraction.core.state import (
 from app.agent.contract_extraction.subgraph.field_extraction.definition import (
     FieldDefinition,
 )
+from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
 
-CORE_COMMON_PROMPT_VERSION = "core-common-v2"
-CORE_EXTRACTION_PROMPT_VERSION = "core-extraction-v5"
+CORE_COMMON_PROMPT_VERSION = "core-common-v4"
+CORE_EXTRACTION_PROMPT_VERSION = "core-extraction-v6"
 
 FIELD_DEFINITION_GUIDE = """提取对象定义属性说明：
 - name：当前唯一处理的对象类别；不能改名或创造新类别。
@@ -27,16 +28,16 @@ FIELD_DEFINITION_GUIDE = """提取对象定义属性说明：
 - 属性 type 只允许 string、integer、number、boolean；属性值不能是对象或数组。
 - required 为 false 的属性没有可靠证据时直接省略，不使用 null 或伪造默认值。"""
 
-CORE_COMMON_TASK = """以下规则供全部 Core 对象提取任务共同使用。后续会另行提供当前唯一对象定义及与其匹配的动态工具；在看到对象定义后再执行提取。
+CORE_COMMON_TASK = """你已获得当前合同的原始 PDF、文档导航结构、分类结果和 Core 对象提取通用规则。当前唯一对象定义及与其匹配的工具将在独立材料中给出；只有读到对象定义和可用工具后才能执行提取。
 
-原始 PDF 是唯一事实来源，预处理文档结构和合同分类只用于导航与规则选择，不能替代页面证据。
+原始 PDF 是唯一事实来源，已提供的文档导航结构和合同分类只用于导航与规则选择，不能替代页面证据。
 
 执行要求：
-1. 每轮必须且只能调用本轮提供的一个工具，禁止输出普通文本。状态机会根据已提取对象动态增减终止工具。
+1. 每轮必须且只能调用本轮实际提供的一个工具，禁止输出普通文本。可用终止工具会根据已经成功提取的对象变化；只能调用当前确实可见的工具。
 2. think 用于比较候选证据、已提取对象和剩余对象；自然语言推理只保留在当前定义的短期记忆中。
 3. 有充分证据支持一个完整对象时调用 extract_object。每次只提交一个对象，value 必须严格匹配 properties 生成的扁平 Schema。
-4. evidence 至少包含一条物理页码和可核对的短内容。一个对象的多个属性可以共享证据，也可分别提供短证据；本节点不输出视觉坐标。
-5. reasoning 只说明证据如何支持该对象及其属性、如何排除混淆，保持简洁且不得重复 value 的 JSON；紧随其后的 strict value 是本次提取的唯一正式决定。
+4. evidence 至少包含一条物理页码和可核对的短内容。一个对象的多个属性可以共享证据，也可分别提供短证据；当前任务不输出视觉坐标。
+5. reasoning 只说明证据如何支持该对象及其属性、如何排除混淆，保持简洁且不得重复 value 的 JSON；紧随其后的 value 是本次提取的唯一正式决定。
 6. cardinality=single 时，第一次成功调用 extract_object 后自动结束。
 7. cardinality=multiple 时，每次成功对象都会写入当前短期记忆。继续查找未提取对象；确认已经穷尽后调用 finish_extraction，理由必须以“因此，当前对象定义已提取完毕。”结束。
 8. 尚未成功提取任何对象，且合同没有该对象或证据不足时调用 abandon_extraction；理由必须以“因此，当前对象无法从该合同中可靠提取。”结束。
@@ -44,6 +45,9 @@ CORE_COMMON_TASK = """以下规则供全部 Core 对象提取任务共同使用�
 10. 不使用文件名、常识、默认值或主观“我方/相对方”视角补全事实。工具返回错误时，根据反馈修正下一轮调用。
 
 {field_definition_guide}
+
+工具调用格式：
+{tool_call_xml_instruction}
 """
 
 CORE_FIELD_TASK = """当前唯一提取对象定义如下。定义是对象语义、基数和属性约束的权威来源，不得改名、扩展或创造定义外属性。
@@ -53,7 +57,7 @@ CORE_FIELD_TASK = """当前唯一提取对象定义如下。定义是对象语�
 ```
 """
 
-CORE_PREFILL_TASK = """这是 Core 并行提取前的公共任务预热请求。请仅确认已读取 Core 公共规则；不要提取任何对象，也不要调用工具。"""
+CORE_PREFILL_TASK = """你已获得当前合同及 Core 对象提取通用规则，但尚未获得唯一对象定义和对应工具。请先读取已有材料，并准备在收到具体对象定义后进行提取；现在不要提取任何对象。"""
 
 
 def serialize_field_definition(definition: FieldDefinition) -> str:
@@ -74,6 +78,7 @@ def build_core_common_messages(
         prefill_context.messages,
         task_suffix=CORE_COMMON_TASK.format(
             field_definition_guide=FIELD_DEFINITION_GUIDE,
+            tool_call_xml_instruction=TOOL_CALL_XML_INSTRUCTION,
         ),
     )
 

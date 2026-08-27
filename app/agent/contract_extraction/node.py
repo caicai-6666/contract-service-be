@@ -1,15 +1,15 @@
 """合同信息抽取工作流的节点占位实现。"""
 
+from app.agent.contract_extraction.context import (
+    CONTRACT_BASE_CONTEXT_VERSION,
+    build_contract_base_messages,
+    context_sha256,
+)
 from app.agent.contract_extraction.state import (
     ContractBaseContext,
     ContractExtractionResult,
     ContractExtractionState,
     WorkflowPlaceholder,
-)
-from app.agent.contract_extraction.context import (
-    CONTRACT_BASE_CONTEXT_VERSION,
-    build_contract_base_messages,
-    context_sha256,
 )
 
 
@@ -33,18 +33,6 @@ def assemble_base_context(
             prompt_version=CONTRACT_BASE_CONTEXT_VERSION,
             messages=tuple(messages),
             prefix_sha256=context_sha256(messages),
-        )
-    }
-
-
-def extract_clause_placeholder(
-    state: ContractExtractionState,
-) -> ContractExtractionState:
-    """预留合同条款抽取子图的首个节点。"""
-    return {
-        "clause_extraction": WorkflowPlaceholder(
-            node="extract_clause",
-            message="待接入条款边界识别、排序和证据提取。",
         )
     }
 

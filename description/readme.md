@@ -52,6 +52,7 @@ description/
 - [合同分类子图](architecture/subgraph/classification.md)：定义分类单节点的基础前缀输入、私有状态和当前占位边界。
 - [最终公共前缀预热子图](architecture/subgraph/preheat.md)：定义分类结果的稳定追加、vLLM 预热和下游复用契约。
 - [字段提取子图](architecture/subgraph/field-extraction.md)：定义 Core 两节点并行提取、共享工具及 Core → Attribute 状态边界。
+- [条款提取子图](architecture/subgraph/clause-extraction.md)：定义候选顺序发现、详情公共上下文组装与预热，以及逐候选并发内容提取的完整三节点实现。
 
 ---
 

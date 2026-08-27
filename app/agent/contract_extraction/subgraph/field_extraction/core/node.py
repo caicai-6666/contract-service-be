@@ -10,6 +10,11 @@ from time import perf_counter
 from pydantic import ValidationError
 
 from app.agent.contract_extraction.context import context_sha256
+from app.agent.contract_extraction.tool_protocol import (
+    ToolProtocolRecovery,
+    audited_assistant_content,
+    build_protocol_recovery_message,
+)
 from app.agent.contract_extraction.subgraph.field_extraction.core.prompt import (
     CORE_COMMON_PROMPT_VERSION,
     CORE_EXTRACTION_PROMPT_VERSION,
@@ -253,6 +258,7 @@ async def _extract_one_core(
     extracted_objects: list[ExtractedFieldObject] = []
     extracted_fingerprints: set[str] = set()
     consecutive_thinks = 0
+    protocol_recovery = ToolProtocolRecovery()
     maximum_rounds = (
         _MAXIMUM_SINGLE_ROUNDS
         if definition.cardinality is FieldCardinality.SINGLE
@@ -300,18 +306,49 @@ async def _extract_one_core(
             3,
         )
         if len(response.tool_calls) != 1:
-            return _failed_field(
-                definition,
-                started_at=started_at,
-                audits=audits,
-                extracted_objects=extracted_objects,
-                error=(
-                    "模型每轮必须返回且只能返回一个函数工具调用；"
-                    f"第 {round_number} 轮实际返回 {len(response.tool_calls)} 个。"
-                ),
+            feedback = FieldToolFeedback(
+                ok=False,
+                message=build_protocol_recovery_message(
+                    tool_call_count=len(response.tool_calls),
+                    result_label="字段提取结果",
+                )["content"],
             )
+            completion = response.completion
+            audits.append(
+                FieldToolCallAudit(
+                    round_number=round_number,
+                    call_id=None,
+                    name="protocol_recovery",
+                    raw_arguments="",
+                    assistant_content=audited_assistant_content(
+                        response.assistant_message.get("content")
+                    ),
+                    feedback=feedback,
+                    elapsed_ms=request_elapsed_ms,
+                    response_id=completion.response_id,
+                    prompt_tokens=completion.prompt_tokens,
+                    completion_tokens=completion.completion_tokens,
+                    cached_tokens=completion.cached_tokens,
+                )
+            )
+            exceeded = protocol_recovery.record_failure(
+                messages,
+                assistant_message=response.assistant_message,
+                tool_call_count=len(response.tool_calls),
+                result_label="字段提取结果",
+            )
+            if exceeded:
+                return _failed_field(
+                    definition,
+                    started_at=started_at,
+                    audits=audits,
+                    extracted_objects=extracted_objects,
+                    error="连续三轮未生成且仅生成一个合法工具调用。",
+                )
+            continue
 
         call = response.tool_calls[0]
+        protocol_recovery.accept_correction(messages)
         messages.append(response.assistant_message)
         accepted_object: ExtractedFieldObject | None = None
         accepted_abandon: AbandonExtractionArguments | None = None
@@ -439,6 +476,9 @@ async def _extract_one_core(
                 call_id=call.call_id,
                 name=call.name,
                 raw_arguments=call.arguments,
+                assistant_content=audited_assistant_content(
+                    response.assistant_message.get("content")
+                ),
                 feedback=feedback,
                 elapsed_ms=request_elapsed_ms,
                 response_id=completion.response_id,

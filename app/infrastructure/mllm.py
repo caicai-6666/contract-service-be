@@ -35,6 +35,7 @@ class MLLMCompletion:
     prompt_tokens: int | None
     completion_tokens: int | None
     cached_tokens: int | None
+    finish_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +130,12 @@ class MLLMClient:
                 if prompt_details
                 else None
             ),
+            finish_reason=(
+                str(getattr(response.choices[0], "finish_reason"))
+                if response.choices
+                and getattr(response.choices[0], "finish_reason", None) is not None
+                else None
+            ),
         )
 
     async def create_tool_chat_completion(
@@ -197,7 +204,8 @@ class MLLMClient:
         if not response.choices:
             raise MLLMRequestError("MLLM 工具调用响应不包含 choices")
 
-        message = response.choices[0].message
+        choice = response.choices[0]
+        message = choice.message
         tool_calls: list[MLLMToolCall] = []
         assistant_tool_calls: list[dict[str, Any]] = []
         for call in message.tool_calls or ():
@@ -240,6 +248,11 @@ class MLLMClient:
                 cached_tokens=(
                     getattr(prompt_details, "cached_tokens", None)
                     if prompt_details
+                    else None
+                ),
+                finish_reason=(
+                    str(getattr(choice, "finish_reason"))
+                    if getattr(choice, "finish_reason", None) is not None
                     else None
                 ),
             ),

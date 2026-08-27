@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from app.agent.contract_extraction.context import append_contract_task
 
-CONTRACT_PREFILL_TASK = """这是最终下游公共前缀预热请求。请仅确认已读取 PDF、文档结构与分类结果；不要提取字段、条款或生成摘要。"""
+CONTRACT_PREFILL_TASK = """你已获得当前合同的完整 PDF、权威文档导航结构和已确认分类结果。当前没有指定字段、条款或摘要任务；请先读取这些材料，并准备在收到具体任务后严格依据原始 PDF 作答。现在不要提取字段、条款或生成摘要。"""
 
 
 def append_prefill_task(

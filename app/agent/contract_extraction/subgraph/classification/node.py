@@ -10,6 +10,11 @@ from time import perf_counter
 from pydantic import ValidationError
 
 from app.agent.contract_extraction.context import context_sha256
+from app.agent.contract_extraction.tool_protocol import (
+    ToolProtocolRecovery,
+    audited_assistant_content,
+    build_protocol_recovery_message,
+)
 from app.agent.contract_extraction.subgraph.classification.definition import (
     ContractCategory,
 )
@@ -60,6 +65,7 @@ _MAXIMUM_CATEGORY_ROUNDS = 8
 _MAXIMUM_CONSECUTIVE_THINKS = 2
 _MAXIMUM_COMPLETION_TOKENS = 4096
 _UNMAPPED_DESCRIPTION_MAXIMUM_TOKENS = 1024
+_MAXIMUM_UNMAPPED_DESCRIPTION_ROUNDS = 6
 
 
 def _sum_optional(values: Iterable[int | None]) -> int | None:
@@ -147,6 +153,7 @@ async def _judge_one_category(
     generation = settings.generation
     audits: list[ClassificationToolCallAudit] = []
     consecutive_thinks = 0
+    protocol_recovery = ToolProtocolRecovery()
 
     for round_number in range(1, _MAXIMUM_CATEGORY_ROUNDS + 1):
         request_started_at = perf_counter()
@@ -179,17 +186,49 @@ async def _judge_one_category(
 
         elapsed_ms = round((perf_counter() - request_started_at) * 1000, 3)
         if len(response.tool_calls) != 1:
-            return _failed_category(
-                category,
-                started_at=started_at,
-                audits=audits,
-                error=(
-                    "模型每轮必须返回且只能返回一个函数工具调用；"
-                    f"第 {round_number} 轮实际返回 {len(response.tool_calls)} 个。"
-                ),
+            feedback_message = build_protocol_recovery_message(
+                tool_call_count=len(response.tool_calls),
+                result_label="合同类别判定结果",
+            )["content"]
+            feedback = ClassificationToolFeedback(
+                ok=False,
+                message=feedback_message,
             )
+            completion = response.completion
+            audits.append(
+                ClassificationToolCallAudit(
+                    round_number=round_number,
+                    call_id=None,
+                    name="protocol_recovery",
+                    raw_arguments="",
+                    assistant_content=audited_assistant_content(
+                        response.assistant_message.get("content")
+                    ),
+                    feedback=feedback,
+                    elapsed_ms=elapsed_ms,
+                    response_id=completion.response_id,
+                    prompt_tokens=completion.prompt_tokens,
+                    completion_tokens=completion.completion_tokens,
+                    cached_tokens=completion.cached_tokens,
+                )
+            )
+            exceeded = protocol_recovery.record_failure(
+                messages,
+                assistant_message=response.assistant_message,
+                tool_call_count=len(response.tool_calls),
+                result_label="合同类别判定结果",
+            )
+            if exceeded:
+                return _failed_category(
+                    category,
+                    started_at=started_at,
+                    audits=audits,
+                    error="连续三轮未生成且仅生成一个合法工具调用。",
+                )
+            continue
 
         call = response.tool_calls[0]
+        protocol_recovery.accept_correction(messages)
         messages.append(response.assistant_message)
         accepted_match = None
         accepted_not_match: NotBelongToCategoryArguments | None = None
@@ -259,6 +298,9 @@ async def _judge_one_category(
                 call_id=call.call_id,
                 name=call.name,
                 raw_arguments=call.arguments,
+                assistant_content=audited_assistant_content(
+                    response.assistant_message.get("content")
+                ),
                 feedback=feedback,
                 elapsed_ms=elapsed_ms,
                 response_id=completion.response_id,
@@ -306,56 +348,143 @@ async def _describe_unmapped_type(
     context: ClassificationContext,
     page_count: int,
     client: MLLMClient,
-) -> tuple[UnmappedTypeDescription | None, str | None]:
-    """在全部正式类别均未命中时额外生成一次简短类型描述。"""
+) -> tuple[
+    UnmappedTypeDescription | None,
+    str | None,
+    tuple[ClassificationToolCallAudit, ...],
+]:
+    """以有限恢复会话生成未映射类型描述，并保留私有审计。"""
     settings = get_settings().mllm
     generation = settings.generation
-    try:
-        response = await client.create_tool_chat_completion(
-            messages=append_unmapped_type_description_task(context.messages),
-            tools=[DESCRIBE_UNMAPPED_TYPE_TOOL],
-            tool_choice=CLASSIFICATION_TOOL_CHOICE,
-            max_completion_tokens=min(
-                generation.max_completion_tokens,
-                _UNMAPPED_DESCRIPTION_MAXIMUM_TOKENS,
-            ),
-            temperature=generation.temperature,
-            top_p=generation.top_p,
-            top_k=generation.top_k,
-            presence_penalty=generation.presence_penalty,
-            repetition_penalty=generation.repetition_penalty,
-            seed=generation.seed,
-            enable_thinking=False,
-            tool_placement="before_task",
-        )
-    except (MLLMRequestError, MLLMUnavailableError) as exc:
-        return None, str(exc)
+    messages = append_unmapped_type_description_task(context.messages)
+    audits: list[ClassificationToolCallAudit] = []
+    protocol_recovery = ToolProtocolRecovery()
 
-    if len(response.tool_calls) != 1:
-        return None, (
-            "未映射类型描述必须返回且只能返回一个 describe_unmapped_type "
-            f"调用；实际返回 {len(response.tool_calls)} 个。"
+    for round_number in range(1, _MAXIMUM_UNMAPPED_DESCRIPTION_ROUNDS + 1):
+        request_started_at = perf_counter()
+        try:
+            response = await client.create_tool_chat_completion(
+                messages=messages,
+                tools=[DESCRIBE_UNMAPPED_TYPE_TOOL],
+                tool_choice=CLASSIFICATION_TOOL_CHOICE,
+                max_completion_tokens=min(
+                    generation.max_completion_tokens,
+                    _UNMAPPED_DESCRIPTION_MAXIMUM_TOKENS,
+                ),
+                temperature=generation.temperature,
+                top_p=generation.top_p,
+                top_k=generation.top_k,
+                presence_penalty=generation.presence_penalty,
+                repetition_penalty=generation.repetition_penalty,
+                seed=generation.seed,
+                enable_thinking=False,
+                tool_placement="before_task",
+            )
+        except (MLLMRequestError, MLLMUnavailableError) as exc:
+            return None, str(exc), tuple(audits)
+
+        elapsed_ms = round((perf_counter() - request_started_at) * 1000, 3)
+        completion = response.completion
+        if len(response.tool_calls) != 1:
+            feedback = ClassificationToolFeedback(
+                ok=False,
+                message=build_protocol_recovery_message(
+                    tool_call_count=len(response.tool_calls),
+                    result_label="未映射合同类型描述",
+                )["content"],
+            )
+            audits.append(
+                ClassificationToolCallAudit(
+                    round_number=round_number,
+                    call_id=None,
+                    name="protocol_recovery",
+                    raw_arguments="",
+                    assistant_content=audited_assistant_content(
+                        response.assistant_message.get("content")
+                    ),
+                    feedback=feedback,
+                    elapsed_ms=elapsed_ms,
+                    response_id=completion.response_id,
+                    prompt_tokens=completion.prompt_tokens,
+                    completion_tokens=completion.completion_tokens,
+                    cached_tokens=completion.cached_tokens,
+                )
+            )
+            exceeded = protocol_recovery.record_failure(
+                messages,
+                assistant_message=response.assistant_message,
+                tool_call_count=len(response.tool_calls),
+                result_label="未映射合同类型描述",
+            )
+            if exceeded:
+                return (
+                    None,
+                    "连续三轮未生成且仅生成一个合法工具调用。",
+                    tuple(audits),
+                )
+            continue
+
+        call = response.tool_calls[0]
+        protocol_recovery.accept_correction(messages)
+        messages.append(response.assistant_message)
+        if call.name != "describe_unmapped_type":
+            feedback = ClassificationToolFeedback(
+                ok=False,
+                message=(
+                    f"tool：当前不能调用 {call.name}；"
+                    "请调用 describe_unmapped_type。"
+                ),
+            )
+        else:
+            try:
+                arguments = parse_unmapped_type_description_arguments(
+                    call.arguments
+                )
+            except (ValueError, ValidationError) as exc:
+                feedback = validation_error_feedback(exc)
+            else:
+                page_error = _validate_evidence_pages(
+                    (evidence.page_number for evidence in arguments.evidence),
+                    page_count=page_count,
+                )
+                feedback = page_error or ClassificationToolFeedback(
+                    ok=True,
+                    message="未映射合同类型描述已接受。",
+                )
+
+        messages.append(_tool_message(call, feedback))
+        audits.append(
+            ClassificationToolCallAudit(
+                round_number=round_number,
+                call_id=call.call_id,
+                name=call.name,
+                raw_arguments=call.arguments,
+                assistant_content=audited_assistant_content(
+                    response.assistant_message.get("content")
+                ),
+                feedback=feedback,
+                elapsed_ms=elapsed_ms,
+                response_id=completion.response_id,
+                prompt_tokens=completion.prompt_tokens,
+                completion_tokens=completion.completion_tokens,
+                cached_tokens=completion.cached_tokens,
+            )
         )
-    call = response.tool_calls[0]
-    if call.name != "describe_unmapped_type":
-        return None, f"未映射类型描述调用了不允许的工具：{call.name}"
-    try:
-        arguments = parse_unmapped_type_description_arguments(call.arguments)
-    except (ValueError, ValidationError) as exc:
-        return None, validation_error_feedback(exc).message
-    page_error = _validate_evidence_pages(
-        (evidence.page_number for evidence in arguments.evidence),
-        page_count=page_count,
-    )
-    if page_error is not None:
-        return None, page_error.message
+        if feedback.ok:
+            return (
+                UnmappedTypeDescription(
+                    evidence=tuple(arguments.evidence),
+                    reasoning_summary=arguments.reasoning_summary,
+                    description=arguments.description,
+                ),
+                None,
+                tuple(audits),
+            )
+
     return (
-        UnmappedTypeDescription(
-            evidence=tuple(arguments.evidence),
-            reasoning_summary=arguments.reasoning_summary,
-            description=arguments.description,
-        ),
         None,
+        f"达到最大轮次 {_MAXIMUM_UNMAPPED_DESCRIPTION_ROUNDS}，仍未生成有效类型描述。",
+        tuple(audits),
     )
 
 
@@ -447,6 +576,7 @@ async def classify_contract(
     semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
     unmapped_description: UnmappedTypeDescription | None = None
     unmapped_description_error: str | None = None
+    unmapped_description_audits: tuple[ClassificationToolCallAudit, ...] = ()
     async with MLLMClient(settings) as client:
         outcomes = tuple(
             await asyncio.gather(
@@ -465,7 +595,11 @@ async def classify_contract(
         has_failed = any(isinstance(outcome, FailedCategory) for outcome in outcomes)
         has_matched = any(isinstance(outcome, MatchedCategory) for outcome in outcomes)
         if not has_failed and not has_matched:
-            unmapped_description, unmapped_description_error = (
+            (
+                unmapped_description,
+                unmapped_description_error,
+                unmapped_description_audits,
+            ) = (
                 await _describe_unmapped_type(
                     context=context,
                     page_count=page_count,
@@ -506,6 +640,7 @@ async def classify_contract(
         categories=outcomes,
         unmapped_type_description=unmapped_description,
         unmapped_type_description_error=unmapped_description_error,
+        unmapped_type_tool_calls=unmapped_description_audits,
         elapsed_ms=elapsed_ms,
     )
     return {

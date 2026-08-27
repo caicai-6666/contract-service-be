@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterable
 from time import perf_counter
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -40,6 +41,11 @@ from app.agent.contract_extraction.subgraph.preprocessing.document_structure.vis
     validate_draw_bounding_box,
     validate_finish,
     validation_error_feedback,
+)
+from app.agent.contract_extraction.tool_protocol import (
+    ToolProtocolRecovery,
+    audited_assistant_content,
+    build_protocol_recovery_message,
 )
 from app.core.config import MLLMSettings, get_settings
 from app.infrastructure.mllm import (
@@ -145,6 +151,31 @@ def _tool_message(
     }
 
 
+def _protocol_recovery_message(
+    *,
+    tool_call_count: int,
+) -> dict[str, str]:
+    """说明协议失败并给出当前聊天模板要求的合法工具调用骨架。"""
+    return build_protocol_recovery_message(
+        tool_call_count=tool_call_count,
+        result_label="定位结果",
+    )
+
+
+def _audited_assistant_content(value: object) -> str | None:
+    """保留有限普通文本用于审计，避免把长自由输出无限写入运行状态。"""
+    return audited_assistant_content(value)
+
+
+def _discard_protocol_recovery_memory(
+    messages: list[dict[str, Any]],
+    recovery_start: int | None,
+) -> None:
+    """纠正成功后删除恢复期间的临时对话，审计状态不受影响。"""
+    recovery = ToolProtocolRecovery(memory_start=recovery_start)
+    recovery.accept_correction(messages)
+
+
 def _failed_session(
     unit: DocumentUnit,
     *,
@@ -201,6 +232,7 @@ async def _locate_one_unit(
     audits: list[GroundingToolCallAudit] = []
     located_boxes: list[LocatedBoundingBox] = []
     consecutive_thinks = 0
+    protocol_recovery = ToolProtocolRecovery()
     maximum_rounds = min(64, max(8, len(anchors) * 3 + 3))
 
     for round_number in range(1, maximum_rounds + 1):
@@ -239,20 +271,51 @@ async def _locate_one_unit(
 
         elapsed_ms = round((perf_counter() - request_started_at) * 1000, 3)
         if len(response.tool_calls) != 1:
-            return _failed_session(
-                unit,
-                page_numbers=page_numbers,
-                anchors=anchors,
-                located_boxes=located_boxes,
-                audits=audits,
-                started_at=started_at,
-                error=(
-                    "模型每轮必须返回且只能返回一个函数工具调用；"
-                    f"第 {round_number} 轮实际返回 {len(response.tool_calls)} 个。"
+            completion = response.completion
+            exceeded = protocol_recovery.record_failure(
+                messages,
+                assistant_message=response.assistant_message,
+                tool_call_count=len(response.tool_calls),
+                result_label="定位结果",
+            )
+            feedback = VisualGroundingToolFeedback(
+                ok=False,
+                message=(
+                    f"tool_calls：本轮收到 {len(response.tool_calls)} 个工具调用，"
+                    "必须恰好一个；请只提交一个定位动作。"
                 ),
             )
+            audits.append(
+                GroundingToolCallAudit(
+                    round_number=round_number,
+                    call_id=None,
+                    name="protocol_recovery",
+                    raw_arguments="",
+                    assistant_content=audited_assistant_content(
+                        response.assistant_message.get("content")
+                    ),
+                    feedback=feedback,
+                    elapsed_ms=elapsed_ms,
+                    response_id=completion.response_id,
+                    prompt_tokens=completion.prompt_tokens,
+                    completion_tokens=completion.completion_tokens,
+                    cached_tokens=completion.cached_tokens,
+                )
+            )
+            if exceeded:
+                return _failed_session(
+                    unit,
+                    page_numbers=page_numbers,
+                    anchors=anchors,
+                    located_boxes=located_boxes,
+                    audits=audits,
+                    started_at=started_at,
+                    error="模型连续未形成恰好一个工具调用，已超过可恢复重试上限。",
+                )
+            continue
 
         call = response.tool_calls[0]
+        protocol_recovery.accept_correction(messages)
         messages.append(response.assistant_message)
         accepted_box: LocatedBoundingBox | None = None
         accepted_finish: FinishArguments | None = None
@@ -317,6 +380,9 @@ async def _locate_one_unit(
                 call_id=call.call_id,
                 name=call.name,
                 raw_arguments=call.arguments,
+                assistant_content=audited_assistant_content(
+                    response.assistant_message.get("content")
+                ),
                 feedback=feedback,
                 elapsed_ms=elapsed_ms,
                 response_id=completion.response_id,
@@ -384,7 +450,11 @@ def _public_unit_location(result: UnitGroundingSessionResult) -> UnitLocation:
 async def locate_document_units(
     state: VisualGroundingState,
 ) -> VisualGroundingState:
-    """并发定位全部语义单元，每个单元只发送其连续跨度涉及的页面。"""
+    """并发定位全部语义单元，每个单元只发送其连续跨度涉及的页面。
+
+    固定使用 non-strict + auto 工具契约；无单工具响应会短期记忆反馈并
+    有限重试，坐标状态机与本地校验保持不变。
+    """
     started_at = perf_counter()
     prepared_pdf = state["prepared_pdf"]
     prompt_context = state["prompt_context"]

@@ -82,7 +82,7 @@ content_sha256: "..."
 
 节点位于结构发现之后，为所有语义单元并发建立独立的 `think / draw_bbox / finish` 工具循环。每个会话只选择该单元 start～end 涉及的页面，跨度外页面不编码进请求；每张选中图像仍由公共构造器在图像前标记明确物理页码。
 
-节点程序化生成有序锚点、补充无显式锚点中间页的 `page_body`，执行 strict 工具和坐标顺序校验，并把成功结果写入 `DocumentStructureMetadata.unit_locations`。详细状态机与失败隔离规则见[文档结构与视觉定位节点](document-structure.md)。
+节点程序化生成有序锚点、补充无显式锚点中间页的 `page_body`，使用 non-strict 工具并执行本地严格坐标顺序校验，把成功结果写入 `DocumentStructureMetadata.unit_locations`。详细状态机与失败隔离规则见[文档结构与视觉定位节点](document-structure.md)。
 
 ---
 

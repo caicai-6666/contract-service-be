@@ -1,6 +1,6 @@
 # 合同信息抽取 Agent 工作流
 
-> **用途：** 本文定义合同信息抽取 Agent 的节点拓扑、子图边界和共享状态。当前已实现 PDF 预处理、基础前缀组装、合同并行分类、最终公共前缀预热和 Core 字段提取；Attribute、条款与摘要仍为占位结构。
+> **用途：** 本文定义合同信息抽取 Agent 的节点拓扑、子图边界和共享状态。当前已实现 PDF 预处理、基础前缀组装、合同并行分类、最终公共前缀预热、Core 字段提取和完整条款提取；Attribute 与摘要仍为占位结构。
 
 ---
 
@@ -47,7 +47,10 @@ flowchart TD
     end
 
     subgraph clause_subgraph["条款提取子图"]
-        clause_node["条款提取节点"]
+        discover_clause["顺序发现条款候选"]
+        preheat_clause["组装并预热条款详情上下文"]
+        extract_clause["逐候选并发提取内容"]
+        discover_clause --> preheat_clause --> extract_clause
     end
 
     subgraph summary_subgraph["摘要生成子图"]
@@ -58,11 +61,11 @@ flowchart TD
     discover_units --> assemble_base --> assemble_classification
     classify --> assemble_prefill
     request_prefill --> select_core
-    request_prefill --> clause_node
+    request_prefill --> discover_clause
     request_prefill --> summary_node
 
     field_merge --> merge["合并节点"]
-    clause_node --> merge
+    extract_clause --> merge
     summary_node --> merge
     merge --> result["合同 OCR 结果包络"]
 ```
@@ -79,7 +82,7 @@ flowchart TD
 
 `build_pdf_prompt_context` 将每页页码和模型实际接收的图像宽高转换为确定性提示词计划，每条描述紧邻对应图片且不暴露压缩实现。公共阅读规范、页面消息和构造器统一位于 `subgraph/preprocessing/prompt.py`。
 
-`discover_document_units` 复用同一 PDF 前缀，通过 `summary`、`think`、`generate_unit` 和 `finish` strict function tools 形成语义结构。随后 `locate_document_units` 为所有单元并发建立独立的 `think`、`draw_bbox`、`finish` 循环；每个会话只发送对应单元跨度内的带页码页面，并把完整结果写入权威结构元数据。相关工具、状态和专属提示词内聚在 `subgraph/preprocessing/document_structure/`。完整职责见[PDF 预处理子图](subgraph/pdf-preprocessing.md)和[文档结构与视觉定位节点](subgraph/document-structure.md)。
+`discover_document_units` 复用同一 PDF 前缀，通过 `summary`、`think`、`generate_unit` 和 `finish` function tools 形成语义结构。随后 `locate_document_units` 为所有单元并发建立独立的 `think`、`draw_bbox`、`finish` 循环；每个会话只发送对应单元跨度内的带页码页面，并把完整结果写入权威结构元数据。两者均使用 `strict:false + tool_choice:auto`，并由客户端执行统一的有界协议恢复与本地严格校验。相关工具、状态和专属提示词内聚在 `subgraph/preprocessing/document_structure/`。完整职责见[PDF 预处理子图](subgraph/pdf-preprocessing.md)和[文档结构与视觉定位节点](subgraph/document-structure.md)。
 
 ---
 
@@ -91,7 +94,7 @@ flowchart TD
 
 ## 合同分类子图
 
-`classification` 包含 `assemble_classification_context`、`prefill_classification_context` 和 `classify_contract`。节点一复制 `ContractBaseContext` 并追加所有单类别请求共享的多标签分类规则，形成版本为 `classification-common-v4` 且带独立指纹的 `ClassificationContext`；节点二携带相同的三个分类工具和 `before_task` 布局向 vLLM 发起异步单 token 预热；节点三读取启动期内存目录，为每个类别并发执行独立工具循环。具体类别资料和工具历史只属于分类子图，不写回基础前缀。
+`classification` 包含 `assemble_classification_context`、`prefill_classification_context` 和 `classify_contract`。节点一复制 `ContractBaseContext` 并追加所有单类别请求共享的多标签分类规则，形成版本为 `classification-common-v7` 且带独立指纹的 `ClassificationContext`；节点二携带相同的三个分类工具和 `before_task` 布局向 vLLM 发起异步单 token 预热；节点三读取启动期内存目录，为每个类别并发执行独立工具循环。具体类别资料和工具历史只属于分类子图，不写回基础前缀。
 
 分类只使用文档结构中的单元页码、文字锚点和摘要辅助导航，忽略 `unit_locations` 坐标，不按定位框裁剪页面，也不在分类证据中输出视觉位置；导航不足时必须回退完整相关页面核查。
 
@@ -112,7 +115,7 @@ flowchart TD
 | 子图 | 当前占位节点 | 后续职责 |
 | --- | --- | --- |
 | 字段提取 | `core_extraction` → `attribute_extraction` → `merge_field_results` | 先提取稳定的 Core，再携带 Core 结果提取经过治理的 Attribute。 |
-| 条款提取 | `extract_clause` | 识别具有独立视觉边界和法律效果的条款，保留原始顺序与页码证据。 |
+| 条款提取 | `discover_clause_candidates` → `preheat_clause_extraction_context` → `extract_clause_contents` | 顺序发现包括子层级在内的全部候选，组装并预热详情提取共享上下文，再逐候选并发提取直接内容；三个节点均已实现。 |
 | 摘要生成 | `generate_summary` | 根据可引用的合同事实生成短格式化摘要，供后续向量检索使用。 |
 
 三个业务模块在最终预热完成后并行执行，可只读使用 `ContractPrefillContext`、`PreparedPDF` 和 `DocumentStructureMetadata`，但字段、条款与摘要不得共享可变状态；子图只能回写自己拥有的结果键，避免并行分支同时覆盖父图状态。
@@ -125,7 +128,7 @@ flowchart TD
 
 `merge_extraction_results` 汇集分类、预热、文档结构、字段、条款与摘要结果，形成单一合同结果包络。后续实现应在此处保留节点级错误、模型与提示词版本、字段目录版本和原始证据索引，而非直接丢弃失败分支。
 
-当前 PDF 预处理、结构单元发现、基础前缀组装、合同并行分类、两节点最终预热和 Core 字段提取已经可用；Attribute、条款和摘要仍为占位实现，因此合并结果还不是可用于存储、检索或专家审核的正式 OCR 结果。
+当前 PDF 预处理、结构单元发现、基础前缀组装、合同并行分类、两节点最终预热、Core 字段提取和条款三节点子图已经可用；Attribute 与摘要仍为占位。因此合并结果还不是可用于存储、检索或专家审核的正式 OCR 结果。
 
 ---
 

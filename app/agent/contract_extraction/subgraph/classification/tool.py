@@ -8,9 +8,12 @@ from typing import Any, Final, TypeAlias
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     ValidationError,
     field_validator,
 )
+
+from app.agent.contract_extraction.tool_protocol import TOOL_CHOICE_AUTO
 
 
 class StrictClassificationToolModel(BaseModel):
@@ -22,8 +25,15 @@ class StrictClassificationToolModel(BaseModel):
 class ClassificationEvidence(StrictClassificationToolModel):
     """支持单类别判断的最小页码与文本证据。"""
 
-    page_number: int
-    content: str
+    page_number: int = Field(
+        description="该证据所在的 PDF 物理页码，从 1 开始；不是合同印刷页码。"
+    )
+    content: str = Field(
+        description=(
+            "从该页直接观察到、足以支持当前类别判断的简短原文；"
+            "不得填写推断、改写内容或无关的整页文本。"
+        )
+    )
 
     @field_validator("page_number")
     @classmethod
@@ -44,7 +54,12 @@ class ClassificationEvidence(StrictClassificationToolModel):
 class ThinkArguments(StrictClassificationToolModel):
     """think 只记录当前类别判别的一段自然语言推理。"""
 
-    reasoning: str
+    reasoning: str = Field(
+        description=(
+            "针对当前目标类别的简洁自然语言思考，比较合同证据、权威定义与正反例，"
+            "并说明下一步需要核对的疑点；不在此提交类别决定。"
+        )
+    )
 
     @field_validator("reasoning")
     @classmethod
@@ -58,8 +73,18 @@ class ThinkArguments(StrictClassificationToolModel):
 class CategoryDecisionArguments(StrictClassificationToolModel):
     """两个终止工具共享的证据优先参数。"""
 
-    evidence: list[ClassificationEvidence]
-    reasoning_summary: str
+    evidence: list[ClassificationEvidence] = Field(
+        description=(
+            "支持当前属于或不属于判断的页面证据，按合同阅读顺序排列；"
+            "至少提供一条可核对原文。"
+        )
+    )
+    reasoning_summary: str = Field(
+        description=(
+            "简洁说明证据如何满足或不满足当前目标类别的核心权利义务定义，"
+            "并指出冲突或不确定性；不得引入证据之外的新事实。"
+        )
+    )
 
     @field_validator("evidence")
     @classmethod
@@ -85,9 +110,14 @@ class NotBelongToCategoryArguments(CategoryDecisionArguments):
 
 
 class CategoryMatchDecision(StrictClassificationToolModel):
-    """属于目标类别时供下游理解该交易的最小决定。"""
+    """属于目标类别时记录当前合同实际交易场景的最小决定。"""
 
-    scenario: str
+    scenario: str = Field(
+        description=(
+            "本合同实际发生的核心交易或权利义务场景概括，作为正式分类结果的语义说明；"
+            "不填写类别代码、类别名称或泛化法律结论。"
+        )
+    )
 
     @field_validator("scenario")
     @classmethod
@@ -101,13 +131,22 @@ class CategoryMatchDecision(StrictClassificationToolModel):
 class BelongToCategoryArguments(CategoryDecisionArguments):
     """当前合同属于目标类别时提交的终止决定。"""
 
-    decision: CategoryMatchDecision
+    decision: CategoryMatchDecision = Field(
+        description=(
+            "确认命中当前目标类别后的最终决定，仅概括已由证据和推理支持的实际交易场景。"
+        )
+    )
 
 
 class UnmappedTypeDescriptionArguments(CategoryDecisionArguments):
     """全部正式类别均未命中时生成的简短交易类型描述。"""
 
-    description: str
+    description: str = Field(
+        description=(
+            "全部正式类别均未命中时，对合同实际核心交易和主要权利义务作出的简短中文描述；"
+            "不得临时创造类别代码或类别名称。"
+        )
+    )
 
     @field_validator("description")
     @classmethod
@@ -135,7 +174,7 @@ class CategoryIdentity(StrictClassificationToolModel):
 
 
 class CategoryMatchCard(StrictClassificationToolModel):
-    """写入分类结果并传递给下游节点的证据优先命中卡片。"""
+    """写入正式分类结果的证据优先命中卡片。"""
 
     evidence: tuple[ClassificationEvidence, ...]
     reasoning_summary: str
@@ -150,9 +189,7 @@ class ClassificationToolFeedback(StrictClassificationToolModel):
 
 
 ClassificationToolArguments: TypeAlias = (
-    ThinkArguments
-    | NotBelongToCategoryArguments
-    | BelongToCategoryArguments
+    ThinkArguments | NotBelongToCategoryArguments | BelongToCategoryArguments
 )
 
 
@@ -162,14 +199,14 @@ def _function_tool(
     description: str,
     arguments_model: type[StrictClassificationToolModel],
 ) -> dict[str, Any]:
-    """把 Pydantic 参数模型转换为 OpenAI 兼容 strict function tool。"""
+    """生成 non-strict 工具 Schema；参数仍由本地 Pydantic 严格校验。"""
     return {
         "type": "function",
         "function": {
             "name": name,
             "description": description,
             "parameters": arguments_model.model_json_schema(),
-            "strict": True,
+            "strict": False,
         },
     }
 
@@ -197,7 +234,7 @@ BELONG_TO_CATEGORY_TOOL: Final[dict[str, Any]] = _function_tool(
     description=(
         "合同中存在满足当前目标类别定义的核心权利义务结构时调用；"
         "同一复合交易也可能同时满足其他类别。"
-        "先提交页面证据和简洁推理摘要，最后概括供下游使用的交易场景，"
+        "先提交页面证据和简洁推理摘要，最后概括当前合同的实际交易场景，"
         "并终止当前类别判别。"
     ),
     arguments_model=BelongToCategoryArguments,
@@ -217,7 +254,7 @@ CLASSIFICATION_TOOLS: Final[tuple[dict[str, Any], ...]] = (
     NOT_BELONG_TO_CATEGORY_TOOL,
     BELONG_TO_CATEGORY_TOOL,
 )
-CLASSIFICATION_TOOL_CHOICE: Final = "required"
+CLASSIFICATION_TOOL_CHOICE: Final = TOOL_CHOICE_AUTO
 
 _ARGUMENT_MODELS: Final[dict[str, type[StrictClassificationToolModel]]] = {
     "think": ThinkArguments,
@@ -276,7 +313,7 @@ def build_category_match_card(
     category_code: str,
     category_name: str,
 ) -> CategoryMatchCard:
-    """用程序持有的类别身份和已校验工具参数生成下游命中卡片。"""
+    """用程序持有的类别身份和已校验工具参数生成正式命中卡片。"""
     return CategoryMatchCard(
         evidence=tuple(arguments.evidence),
         reasoning_summary=arguments.reasoning_summary,

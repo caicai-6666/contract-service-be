@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from app.agent.contract_extraction.state import PDFPromptPage, PreparedPDFPage
+from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
 from app.agent.contract_extraction.subgraph.preprocessing.document_structure.state import (
     DocumentUnit,
 )
@@ -15,9 +16,9 @@ from app.agent.contract_extraction.subgraph.preprocessing.prompt import (
     build_pdf_common_messages,
 )
 
-UNIT_VISUAL_GROUNDING_PROMPT_VERSION = "unit-visual-grounding-v1"
+UNIT_VISUAL_GROUNDING_PROMPT_VERSION = "unit-visual-grounding-v3"
 
-UNIT_VISUAL_GROUNDING_COMMON_TASK = """你负责把一个已经确认的合同语义单元定位到页面图像区域。
+UNIT_VISUAL_GROUNDING_COMMON_TASK = f"""你负责把一个已经确认的合同语义单元定位到页面图像区域。
 
 任务边界：
 1. 输入只包含当前单元涉及的物理页面；每张图像前的“第 N 页”是权威页码标签。
@@ -36,6 +37,7 @@ UNIT_VISUAL_GROUNDING_COMMON_TASK = """你负责把一个已经确认的合同�
 1. 可调用 think 简洁分析下一框；不得连续思考而不推进定位。
 2. draw_bbox 成功后根据工具反馈继续处理剩余锚点；错误时按反馈修正。
 3. 只有所有锚点都被成功定位后才能调用 finish。每轮必须且只能调用一个工具。
+4. {TOOL_CALL_XML_INSTRUCTION}
 """
 
 
@@ -78,6 +80,7 @@ def build_unit_visual_grounding_messages(
 
 
 __all__ = [
+    "UNIT_VISUAL_GROUNDING_COMMON_TASK",
     "UNIT_VISUAL_GROUNDING_PROMPT_VERSION",
     "build_unit_visual_grounding_messages",
 ]

@@ -71,9 +71,11 @@ class ToolCallAudit(DocumentStructureModel):
     """不包含 PDF 图像的单轮工具调用审计信息。"""
 
     round_number: int
-    call_id: str
+    # 协议恢复轮没有可关联的服务端 tool_call_id；其余正常调用始终非空。
+    call_id: str | None
     name: str
     raw_arguments: str
+    assistant_content: str | None
     feedback: ToolFeedback
     elapsed_ms: float
     response_id: str | None

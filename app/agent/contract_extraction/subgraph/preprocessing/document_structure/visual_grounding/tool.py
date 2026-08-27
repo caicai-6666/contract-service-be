@@ -1,4 +1,4 @@
-"""单元视觉定位节点的严格函数工具与状态校验契约。"""
+"""单元视觉定位节点的本地函数工具与状态校验契约。"""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ from pydantic import (
     field_validator,
 )
 
+from app.agent.contract_extraction.tool_protocol import TOOL_CHOICE_AUTO
+
 
 class StrictVisualGroundingModel(BaseModel):
     """禁止额外参数和宽松类型转换的视觉定位模型。"""
@@ -22,13 +24,18 @@ class StrictVisualGroundingModel(BaseModel):
 
 
 NormalizedCoordinate = Annotated[int, Field(ge=0, le=1000)]
-VISUAL_GROUNDING_TOOL_VERSION: Final = "unit-visual-grounding-tool-v1"
+VISUAL_GROUNDING_TOOL_VERSION: Final = "unit-visual-grounding-tool-v2"
 
 
 class ThinkArguments(StrictVisualGroundingModel):
     """think 只记录当前单元视觉定位的一段自然语言推理。"""
 
-    reasoning: str
+    reasoning: str = Field(
+        description=(
+            "针对当前单元视觉定位的简洁自然语言思考，重点检查最早未覆盖锚点、"
+            "页面阅读顺序、单栏或双栏布局和下一个框；不在此提交坐标。"
+        )
+    )
 
     @field_validator("reasoning")
     @classmethod
@@ -42,9 +49,27 @@ class ThinkArguments(StrictVisualGroundingModel):
 class DrawBoundingBoxArguments(StrictVisualGroundingModel):
     """一次绘制一个单页框，并消费一个或多个连续锚点。"""
 
-    anchor_ids: list[str] = Field(min_length=1)
-    page_number: int = Field(ge=1)
-    bbox_2d: list[NormalizedCoordinate] = Field(min_length=4, max_length=4)
+    anchor_ids: list[str] = Field(
+        min_length=1,
+        description=(
+            "本次定位框覆盖的程序锚点 ID，必须从最早未覆盖锚点开始，"
+            "只包含同一页且在给定顺序中连续的一个或多个 ID。"
+        ),
+    )
+    page_number: int = Field(
+        ge=1,
+        description=(
+            "本次定位框所在的 PDF 物理页码，必须与全部 anchor_ids 对应页面一致。"
+        ),
+    )
+    bbox_2d: list[NormalizedCoordinate] = Field(
+        min_length=4,
+        max_length=4,
+        description=(
+            "单页 0～1000 归一化坐标框，严格按 [x_min, y_min, x_max, y_max] 提交；"
+            "左上坐标必须严格小于右下坐标，不得跨页。"
+        ),
+    )
 
     @field_validator("anchor_ids")
     @classmethod
@@ -74,7 +99,11 @@ class DrawBoundingBoxArguments(StrictVisualGroundingModel):
 class FinishArguments(StrictVisualGroundingModel):
     """模型认为当前单元的全部定位锚点已经覆盖时提交。"""
 
-    reason: str
+    reason: str = Field(
+        description=(
+            "说明当前单元全部程序锚点为何均已按顺序覆盖；仍有未覆盖锚点时不得调用完成工具。"
+        )
+    )
 
     @field_validator("reason")
     @classmethod
@@ -140,14 +169,14 @@ def _function_tool(
     description: str,
     arguments_model: type[StrictVisualGroundingModel],
 ) -> dict[str, Any]:
-    """把 Pydantic 参数模型转换为 OpenAI 兼容 strict function tool。"""
+    """构造 non-strict 工具；参数与坐标语义由本地校验负责。"""
     return {
         "type": "function",
         "function": {
             "name": name,
             "description": description,
             "parameters": arguments_model.model_json_schema(),
-            "strict": True,
+            "strict": False,
         },
     }
 
@@ -174,7 +203,7 @@ DRAW_BOUNDING_BOX_TOOL: Final[dict[str, Any]] = _function_tool(
 FINISH_TOOL: Final[dict[str, Any]] = _function_tool(
     name="finish",
     description=(
-        "确认当前单元全部定位锚点都已由成功的 draw_bbox 调用覆盖后请求结束；"
+        "确认当前单元全部定位锚点都已由成功的 draw_bbox 调用覆盖后调用此工具完成定位；"
         "程序仍会检查遗漏锚点和成功调用上限。"
     ),
     arguments_model=FinishArguments,
@@ -185,7 +214,9 @@ VISUAL_GROUNDING_TOOLS: Final[tuple[dict[str, Any], ...]] = (
     DRAW_BOUNDING_BOX_TOOL,
     FINISH_TOOL,
 )
-VISUAL_GROUNDING_TOOL_CHOICE: Final = "required"
+# 只有 auto + 全部 non-strict 才能绕过 vLLM XGrammar；每轮必须有一个
+# 合法动作的约束由提示词、短期记忆反馈和本地状态机执行。
+VISUAL_GROUNDING_TOOL_CHOICE: Final = TOOL_CHOICE_AUTO
 
 _ARGUMENT_MODELS: Final[dict[str, type[StrictVisualGroundingModel]]] = {
     "think": ThinkArguments,

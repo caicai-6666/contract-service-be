@@ -39,7 +39,7 @@ PDF 阅读系统规范
 
 分类的模型可读投影只保留 `status`、`matches`，以及实际存在时的 `unmapped_type_description`。`failed_category_codes`、模型名、提示词版本和类别目录指纹不注入前缀，继续保留在工作流状态中供审计。命中卡片内部保持“证据 → 推理摘要 → 类别决定”的顺序。
 
-节点不会覆盖 `ContractBaseContext`，而是生成版本为 `contract-prefill-context-v4`、拥有独立 `prefix_sha256` 的 `ContractPrefillContext`。输出后不得再原地修改其消息；所有后续任务必须复制公共消息，再在末尾追加自己的任务后缀。
+节点不会覆盖 `ContractBaseContext`，而是生成版本为 `contract-prefill-context-v5`、拥有独立 `prefix_sha256` 的 `ContractPrefillContext`。输出后不得再原地修改其消息；所有后续任务必须复制公共消息，再在末尾追加自己的任务后缀。预热动作对模型只描述已经获得的 PDF、文档导航结构和分类结果，以及收到具体任务前不得提前提取；不暴露预热或缓存实现。
 
 ---
 

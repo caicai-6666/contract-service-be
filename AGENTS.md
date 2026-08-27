@@ -24,6 +24,8 @@
 
 4. **提示词遵循统一规范**：新增或修改模型提示词时，必须遵循[提示词工程规范](description/standard/prompt-engineering.md)，明确任务目标、输入输出、业务规则、失败边界和示例；提示词中的约束必须与代码校验和项目文档保持一致。
 
+5. **工具参数必须精确描述**：每个模型可见的函数工具参数，包括嵌套对象属性和动态生成属性，都必须在实际 JSON Schema 对应字段上具有非空且准确的 `description`；工具总体描述、Python 字段名或 docstring 不能替代字段级说明。具体要求和验证方式遵循[提示词工程规范](description/standard/prompt-engineering.md#25-工具参数描述)。
+
 ---
 
 ## 功能文档要求

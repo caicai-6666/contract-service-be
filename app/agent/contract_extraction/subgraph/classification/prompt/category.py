@@ -14,7 +14,7 @@ from app.agent.contract_extraction.subgraph.classification.definition import (
     ExpertExampleCard,
 )
 
-CLASSIFICATION_CATEGORY_PROMPT_VERSION = "classification-category-v2"
+CLASSIFICATION_CATEGORY_PROMPT_VERSION = "classification-category-v3"
 
 CATEGORY_DEFINITION_BEGIN = "===== 当前目标类别权威定义：开始 ====="
 CATEGORY_DEFINITION_END = "===== 当前目标类别权威定义：结束 ====="
@@ -126,7 +126,7 @@ def render_category_judgment_task(category: ContractCategory) -> str:
     """生成“完整定义 → 全部正例 → 全部反例”的单类别任务尾部。"""
     return "\n\n".join(
         (
-            "以下资料只对应本次请求的唯一目标类别。权威定义优先于专家示例；正反例只校准边界，不得替代当前合同取证。",
+            "以下资料只定义当前唯一目标类别。权威定义优先于专家示例；正反例只校准边界，不得替代当前合同取证。读取全部资料后，请判断当前合同是否属于该类别。",
             _render_definition(category.definition),
             _render_examples(
                 category.positive_examples,

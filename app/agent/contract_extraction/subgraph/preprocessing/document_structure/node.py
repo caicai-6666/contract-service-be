@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from itertools import chain
 from time import perf_counter
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -31,6 +32,10 @@ from app.agent.contract_extraction.subgraph.preprocessing.document_structure.too
     ThinkArguments,
     ToolFeedback,
     parse_tool_arguments,
+)
+from app.agent.contract_extraction.tool_protocol import (
+    ToolProtocolRecovery,
+    audited_assistant_content,
 )
 from app.core.config import get_settings
 from app.infrastructure.mllm import MLLMClient, MLLMToolCall
@@ -296,7 +301,11 @@ def _tool_message(call: MLLMToolCall, feedback: ToolFeedback) -> dict[str, str]:
 async def discover_document_units(
     state: DocumentStructureState,
 ) -> DocumentStructureState:
-    """通过异步 strict function calling 循环发现合同宏观内容单元。"""
+    """通过异步函数工具循环发现合同宏观内容单元。
+
+    固定使用 non-strict + auto 工具契约；响应没有恰好一个工具调用时，
+    以短期记忆反馈引导有限重试。
+    """
     started_at = perf_counter()
     prepared_pdf = state["prepared_pdf"]
     pages = prepared_pdf.pages
@@ -311,6 +320,7 @@ async def discover_document_units(
     units: list[DocumentUnit] = []
     audits: list[ToolCallAudit] = []
     consecutive_thinks = 0
+    protocol_recovery = ToolProtocolRecovery()
     maximum_units = _maximum_unit_count(prepared_pdf.page_count)
     # 每个单元通常需要一次 think 和一次 generate_unit；额外轮次供首轮
     # summary、最终 finish 以及少量参数纠错使用。单页合同也可能包含多个宏观区域，
@@ -325,7 +335,9 @@ async def discover_document_units(
                 messages=messages,
                 tools=list(FIRST_ROUND_TOOLS if first_round else DISCOVERY_TOOLS),
                 tool_choice=(
-                    FIRST_ROUND_TOOL_CHOICE if first_round else DISCOVERY_TOOL_CHOICE
+                    FIRST_ROUND_TOOL_CHOICE
+                    if first_round
+                    else DISCOVERY_TOOL_CHOICE
                 ),
                 max_completion_tokens=generation.max_completion_tokens,
                 temperature=generation.temperature,
@@ -341,12 +353,48 @@ async def discover_document_units(
             )
             elapsed_ms = round((perf_counter() - request_started_at) * 1000, 3)
             if len(response.tool_calls) != 1:
-                raise UnitDiscoveryProtocolError(
-                    "模型每轮必须返回且只能返回一个函数工具调用；"
-                    f"第 {round_number} 轮实际返回 {len(response.tool_calls)} 个。"
+                completion = response.completion
+                exceeded = protocol_recovery.record_failure(
+                    messages,
+                    assistant_message=response.assistant_message,
+                    tool_call_count=len(response.tool_calls),
+                    result_label="文档结构结果",
                 )
+                feedback = ToolFeedback(
+                    ok=False,
+                    message=(
+                        f"tool_calls：本轮收到 {len(response.tool_calls)} 个工具调用，"
+                        "必须恰好一个；请根据当前可用工具只提交一个动作。"
+                    ),
+                )
+                audits.append(
+                    ToolCallAudit(
+                        round_number=round_number,
+                        call_id=None,
+                        name="protocol_recovery",
+                        raw_arguments="",
+                        assistant_content=audited_assistant_content(
+                            response.assistant_message.get("content")
+                        ),
+                        feedback=feedback,
+                        elapsed_ms=elapsed_ms,
+                        response_id=completion.response_id,
+                        prompt_tokens=completion.prompt_tokens,
+                        completion_tokens=completion.completion_tokens,
+                        cached_tokens=completion.cached_tokens,
+                    )
+                )
+                if exceeded:
+                    raise UnitDiscoveryProtocolError(
+                        "模型连续未形成恰好一个工具调用，已超过可恢复重试上限。",
+                        audits=tuple(audits),
+                        scope=scope,
+                        units=tuple(units),
+                    )
+                continue
 
             call = response.tool_calls[0]
+            protocol_recovery.accept_correction(messages)
             messages.append(response.assistant_message)
             accepted_finish: FinishArguments | None = None
             try:
@@ -402,7 +450,7 @@ async def discover_document_units(
                     feedback = ToolFeedback(
                         ok=False,
                         message=(
-                            f"tool：当前阶段不能调用 {call.name}；"
+                            f"tool：当前可用工具中没有 {call.name}；"
                             f"请改为调用 {expected}。"
                         ),
                     )
@@ -415,6 +463,9 @@ async def discover_document_units(
                     call_id=call.call_id,
                     name=call.name,
                     raw_arguments=call.arguments,
+                    assistant_content=audited_assistant_content(
+                        response.assistant_message.get("content")
+                    ),
                     feedback=feedback,
                     elapsed_ms=elapsed_ms,
                     response_id=completion.response_id,

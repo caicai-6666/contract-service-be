@@ -9,6 +9,7 @@ from typing import Any, Final, TypeAlias
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     StrictBool,
     StrictFloat,
     StrictInt,
@@ -22,10 +23,11 @@ from app.agent.contract_extraction.subgraph.field_extraction.definition import (
     FieldPropertyDefinition,
     FieldValueType,
 )
+from app.agent.contract_extraction.tool_protocol import TOOL_CHOICE_AUTO
 
 ABANDON_REASON_SUFFIX: Final[str] = "因此，当前对象无法从该合同中可靠提取。"
 FINISH_REASON_SUFFIX: Final[str] = "因此，当前对象定义已提取完毕。"
-FIELD_TOOL_CHOICE: Final = "required"
+FIELD_TOOL_CHOICE: Final = TOOL_CHOICE_AUTO
 
 FieldValue: TypeAlias = StrictStr | StrictInt | StrictFloat | StrictBool
 FieldObjectValue: TypeAlias = dict[str, FieldValue]
@@ -40,8 +42,15 @@ class StrictFieldToolModel(BaseModel):
 class FieldEvidence(StrictFieldToolModel):
     """支持单个扁平对象的最小页面证据。"""
 
-    page_number: int
-    content: str
+    page_number: int = Field(
+        description="该证据所在的 PDF 物理页码，从 1 开始；不是合同印刷页码。"
+    )
+    content: str = Field(
+        description=(
+            "从该页直接观察到、足以支持当前对象属性值的简短原文；"
+            "不得填写推断、规范化后的改写值或无关的整页文本。"
+        )
+    )
 
     @field_validator("page_number")
     @classmethod
@@ -62,7 +71,12 @@ class FieldEvidence(StrictFieldToolModel):
 class ThinkArguments(StrictFieldToolModel):
     """think 只记录当前对象定义的一段自然语言推理。"""
 
-    reasoning: str
+    reasoning: str = Field(
+        description=(
+            "针对当前对象定义的简洁自然语言思考，用于比较页面证据、已提取对象和剩余候选；"
+            "不在此提交正式对象。"
+        )
+    )
 
     @field_validator("reasoning")
     @classmethod
@@ -76,7 +90,12 @@ class ThinkArguments(StrictFieldToolModel):
 class AbandonExtractionArguments(StrictFieldToolModel):
     """没有任何可靠对象时提交的终止决定。"""
 
-    reasoning: str
+    reasoning: str = Field(
+        description=(
+            f"说明当前合同为何没有可可靠提取的完整对象，并必须以“{ABANDON_REASON_SUFFIX}”结束；"
+            "不得用该工具代替仍可提取的不完整检查。"
+        )
+    )
 
     @field_validator("reasoning")
     @classmethod
@@ -85,16 +104,19 @@ class AbandonExtractionArguments(StrictFieldToolModel):
         if not normalized:
             raise ValueError("放弃理由不能为空")
         if not normalized.endswith(ABANDON_REASON_SUFFIX):
-            raise ValueError(
-                f"放弃理由必须以“{ABANDON_REASON_SUFFIX}”结束"
-            )
+            raise ValueError(f"放弃理由必须以“{ABANDON_REASON_SUFFIX}”结束")
         return normalized
 
 
 class FinishExtractionArguments(StrictFieldToolModel):
     """multiple 已穷尽全部对象时提交的显式终止决定。"""
 
-    reasoning: str
+    reasoning: str = Field(
+        description=(
+            f"说明 multiple 对象已经全部提取完毕，并必须以“{FINISH_REASON_SUFFIX}”结束；"
+            "single 定义不得调用此工具。"
+        )
+    )
 
     @field_validator("reasoning")
     @classmethod
@@ -103,18 +125,31 @@ class FinishExtractionArguments(StrictFieldToolModel):
         if not normalized:
             raise ValueError("结束理由不能为空")
         if not normalized.endswith(FINISH_REASON_SUFFIX):
-            raise ValueError(
-                f"结束理由必须以“{FINISH_REASON_SUFFIX}”结束"
-            )
+            raise ValueError(f"结束理由必须以“{FINISH_REASON_SUFFIX}”结束")
         return normalized
 
 
 class ExtractObjectArguments(StrictFieldToolModel):
     """一次对象提交的固定外层参数；value 的内部 Schema 动态生成。"""
 
-    evidence: list[FieldEvidence]
-    reasoning: str
-    value: dict[str, Any]
+    evidence: list[FieldEvidence] = Field(
+        description=(
+            "支持当前单个扁平对象全部必填属性的页面原文证据，按合同阅读顺序排列；"
+            "至少提供一条。"
+        )
+    )
+    reasoning: str = Field(
+        description=(
+            "简洁说明证据如何满足当前对象定义、属性含义及排除边界；"
+            "不得重复输出 value 的 JSON，也不得引入证据之外的新事实。"
+        )
+    )
+    value: dict[str, Any] = Field(
+        description=(
+            "当前定义的唯一正式扁平对象决定；只允许提交动态 Schema 声明的基本类型属性，"
+            "不得嵌套对象或添加未定义属性。"
+        )
+    )
 
     @field_validator("evidence")
     @classmethod
@@ -177,7 +212,7 @@ def _function_tool(
             "name": name,
             "description": description,
             "parameters": arguments_model.model_json_schema(),
-            "strict": True,
+            "strict": False,
         },
     }
 
@@ -211,7 +246,7 @@ FINISH_EXTRACTION_TOOL: Final[dict[str, Any]] = _function_tool(
 
 
 def build_extract_object_tool(definition: FieldDefinition) -> dict[str, Any]:
-    """根据 properties 构造禁止额外属性的 strict 扁平对象 Schema。"""
+    """根据 properties 构造禁止额外属性的扁平对象 Schema。"""
     tool = _function_tool(
         name="extract_object",
         description=(
@@ -223,12 +258,15 @@ def build_extract_object_tool(definition: FieldDefinition) -> dict[str, Any]:
     )
     value_schema = {
         "type": "object",
+        "description": (
+            f"当前定义“{definition.name}”的唯一正式扁平对象决定。"
+            f"对象含义：{definition.meaning} 排除边界：{definition.excludes} "
+            "只提交下列已定义属性，不得嵌套或增加额外属性。"
+        ),
         "properties": {
             item.name: _property_schema(item) for item in definition.properties
         },
-        "required": [
-            item.name for item in definition.properties if item.required
-        ],
+        "required": [item.name for item in definition.properties if item.required],
         "additionalProperties": False,
     }
     tool["function"]["parameters"]["properties"]["value"] = value_schema

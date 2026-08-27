@@ -63,9 +63,10 @@ class FieldToolCallAudit(CoreModel):
     """单字段一次工具调用的审计记录。"""
 
     round_number: int
-    call_id: str
+    call_id: str | None
     name: str
     raw_arguments: str
+    assistant_content: str | None = None
     feedback: FieldToolFeedback
     elapsed_ms: float
     response_id: str | None
