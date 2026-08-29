@@ -59,8 +59,18 @@ class MLLMToolCompletion:
 class MLLMClient:
     """管理单次工作流中的异步 vLLM HTTP 连接。"""
 
-    def __init__(self, settings: MLLMSettings) -> None:
+    def __init__(
+        self,
+        settings: MLLMSettings,
+        *,
+        cache_salt: str | None = None,
+    ) -> None:
+        if cache_salt is not None and not cache_salt.strip():
+            raise ValueError("cache_salt 传入时不能为空字符串")
         self._settings = settings
+        # 默认不设置盐，保持生产请求的既有缓存行为；隔离性能实验可以为
+        # 不同对照组指定独立命名空间，避免先运行的组污染后运行的组。
+        self._cache_salt = cache_salt
         self._client = AsyncOpenAI(
             # OpenAI SDK 要求提供 key；本地未启用鉴权时使用非敏感占位值。
             api_key=settings.api_key or "vllm-local",
@@ -90,6 +100,15 @@ class MLLMClient:
                 f"不支持的 MLLM endpoint：{self._settings.endpoint}"
             )
 
+        extra_body: dict[str, Any] = {
+            "min_tokens": min_tokens,
+            "chat_template_kwargs": {
+                "enable_thinking": enable_thinking,
+            },
+        }
+        if self._cache_salt is not None:
+            extra_body["cache_salt"] = self._cache_salt
+
         try:
             response = await self._client.chat.completions.create(
                 model=self._settings.model,
@@ -97,12 +116,7 @@ class MLLMClient:
                 max_completion_tokens=max_completion_tokens,
                 temperature=temperature,
                 stream=False,
-                extra_body={
-                    "min_tokens": min_tokens,
-                    "chat_template_kwargs": {
-                        "enable_thinking": enable_thinking,
-                    },
-                },
+                extra_body=extra_body,
             )
         except (APITimeoutError, APIConnectionError) as exc:
             raise MLLMUnavailableError(f"MLLM 连接失败：{exc}") from exc
@@ -131,7 +145,7 @@ class MLLMClient:
                 else None
             ),
             finish_reason=(
-                str(getattr(response.choices[0], "finish_reason"))
+                str(response.choices[0].finish_reason)
                 if response.choices
                 and getattr(response.choices[0], "finish_reason", None) is not None
                 else None
@@ -170,6 +184,14 @@ class MLLMClient:
         if tool_placement is not None:
             chat_template_kwargs["tool_placement"] = tool_placement
 
+        extra_body: dict[str, Any] = {
+            "top_k": top_k,
+            "repetition_penalty": repetition_penalty,
+            "chat_template_kwargs": chat_template_kwargs,
+        }
+        if self._cache_salt is not None:
+            extra_body["cache_salt"] = self._cache_salt
+
         try:
             response = await self._client.chat.completions.create(
                 model=self._settings.model,
@@ -183,11 +205,7 @@ class MLLMClient:
                 presence_penalty=presence_penalty,
                 seed=seed,
                 stream=False,
-                extra_body={
-                    "top_k": top_k,
-                    "repetition_penalty": repetition_penalty,
-                    "chat_template_kwargs": chat_template_kwargs,
-                },
+                extra_body=extra_body,
             )
         except (APITimeoutError, APIConnectionError) as exc:
             raise MLLMUnavailableError(f"MLLM 连接失败：{exc}") from exc
@@ -251,7 +269,7 @@ class MLLMClient:
                     else None
                 ),
                 finish_reason=(
-                    str(getattr(choice, "finish_reason"))
+                    str(choice.finish_reason)
                     if getattr(choice, "finish_reason", None) is not None
                     else None
                 ),

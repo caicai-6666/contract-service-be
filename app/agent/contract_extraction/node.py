@@ -2,14 +2,19 @@
 
 from app.agent.contract_extraction.context import (
     CONTRACT_BASE_CONTEXT_VERSION,
+    CONTRACT_PREFILL_CONTEXT_VERSION,
     build_contract_base_messages,
+    build_contract_prefill_messages,
     context_sha256,
 )
 from app.agent.contract_extraction.state import (
     ContractBaseContext,
     ContractExtractionResult,
     ContractExtractionState,
-    WorkflowPlaceholder,
+    ContractPrefillContext,
+)
+from app.agent.contract_extraction.subgraph.classification.state import (
+    ContractClassificationResult,
 )
 
 
@@ -37,14 +42,30 @@ def assemble_base_context(
     }
 
 
-def generate_summary_placeholder(
+def assemble_prefill_context(
     state: ContractExtractionState,
 ) -> ContractExtractionState:
-    """预留合同摘要生成子图的首个节点。"""
+    """在基础前缀末尾追加分类结果，形成三个下游共享的最终前缀。"""
+    base_context = state["base_context"]
+    classification = state["classification"]
+    if not isinstance(classification, ContractClassificationResult):
+        raise TypeError(
+            "classification 必须是 ContractClassificationResult，"
+            "不能将占位对象或分类运行审计写入最终公共前缀"
+        )
+    if classification.document_id != base_context.document_id:
+        raise ValueError("分类结果与基础前缀的 document_id 不一致")
+
+    messages = build_contract_prefill_messages(
+        base_context.messages,
+        classification,
+    )
     return {
-        "summary_generation": WorkflowPlaceholder(
-            node="generate_summary",
-            message="待接入格式化摘要生成与向量检索文本约束。",
+        "prefill_context": ContractPrefillContext(
+            document_id=base_context.document_id,
+            prompt_version=CONTRACT_PREFILL_CONTEXT_VERSION,
+            messages=tuple(messages),
+            prefix_sha256=context_sha256(messages),
         )
     }
 
@@ -56,12 +77,13 @@ def merge_extraction_results(
     request = state["request"]
     return {
         "result": ContractExtractionResult(
-            pdf_path=request.pdf_path,
+            pdf_path=request.source_path,
             classification=state["classification"],
-            preheat=state["preheat"],
             document_structure=state["document_structure"],
             field_extraction=state["field_extraction"],
             clause_extraction=state["clause_extraction"],
-            summary_generation=state["summary_generation"],
+            retrieval_questions=state["retrieval_questions"],
+            retrieval_question_embeddings=state["retrieval_question_embeddings"],
+            contract_retrieval_vector=state["contract_retrieval_vector"],
         )
     }

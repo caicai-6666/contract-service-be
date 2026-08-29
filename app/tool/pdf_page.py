@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from math import ceil, sqrt
 from pathlib import Path
-from typing import Iterable
 
 import pymupdf
 
@@ -39,6 +39,22 @@ class CompressedPDFPage:
     visual_tokens: int
 
 
+PDFSource = Path | str | bytes
+_DEFAULT_RENDER_CONFIG = PDFPageRenderConfig()
+
+
+def _open_pdf(source: PDFSource) -> pymupdf.Document:
+    """打开路径或内存 PDF；内存来源不会落入临时文件。"""
+    if isinstance(source, bytes):
+        if not source:
+            raise ValueError("PDF 字节不能为空")
+        return pymupdf.open(stream=source, filetype="pdf")
+    path = Path(source)
+    if not path.is_file():
+        raise FileNotFoundError(f"PDF 文件不存在：{path}")
+    return pymupdf.open(path)
+
+
 def estimate_visual_tokens(
     width_pixels: int,
     height_pixels: int,
@@ -55,7 +71,7 @@ def estimate_visual_tokens(
 
 def calculate_render_scale(
     page: pymupdf.Page,
-    config: PDFPageRenderConfig = PDFPageRenderConfig(),
+    config: PDFPageRenderConfig = _DEFAULT_RENDER_CONFIG,
 ) -> float:
     """计算不超过单页 token 预算的最大等比渲染比例。"""
     rect = page.rect
@@ -77,18 +93,15 @@ def calculate_render_scale(
 
 
 def compress_pdf_page(
-    pdf_path: Path | str,
+    pdf_source: PDFSource,
     page_number: int,
-    config: PDFPageRenderConfig = PDFPageRenderConfig(),
+    config: PDFPageRenderConfig = _DEFAULT_RENDER_CONFIG,
 ) -> CompressedPDFPage:
     """将指定 PDF 页渲染为预算内的 PNG 图像。"""
-    path = Path(pdf_path)
-    if not path.is_file():
-        raise FileNotFoundError(f"PDF 文件不存在：{path}")
     if page_number < 1:
         raise ValueError("page_number 从 1 开始")
 
-    with pymupdf.open(path) as document:
+    with _open_pdf(pdf_source) as document:
         if page_number > document.page_count:
             raise IndexError(f"页面 {page_number} 超出 PDF 页数 {document.page_count}")
         page = document[page_number - 1]
@@ -125,17 +138,13 @@ def _compress_open_pdf_page(
 
 
 def compress_pdf_pages(
-    pdf_path: Path | str,
+    pdf_source: PDFSource,
     *,
-    config: PDFPageRenderConfig = PDFPageRenderConfig(),
+    config: PDFPageRenderConfig = _DEFAULT_RENDER_CONFIG,
     page_numbers: Iterable[int] | None = None,
 ) -> tuple[CompressedPDFPage, ...]:
     """按原始页序渲染指定页面；未指定时渲染整份 PDF。"""
-    path = Path(pdf_path)
-    if not path.is_file():
-        raise FileNotFoundError(f"PDF 文件不存在：{path}")
-
-    with pymupdf.open(path) as document:
+    with _open_pdf(pdf_source) as document:
         ordered_page_numbers = (
             tuple(range(1, document.page_count + 1))
             if page_numbers is None

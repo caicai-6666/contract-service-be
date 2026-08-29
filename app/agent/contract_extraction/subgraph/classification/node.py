@@ -4,24 +4,17 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
-from datetime import UTC, datetime
 from time import perf_counter
 
 from pydantic import ValidationError
 
 from app.agent.contract_extraction.context import context_sha256
-from app.agent.contract_extraction.tool_protocol import (
-    ToolProtocolRecovery,
-    audited_assistant_content,
-    build_protocol_recovery_message,
-)
 from app.agent.contract_extraction.subgraph.classification.definition import (
     ContractCategory,
 )
 from app.agent.contract_extraction.subgraph.classification.prompt import (
     CLASSIFICATION_CATEGORY_PROMPT_VERSION,
     CLASSIFICATION_COMMON_PROMPT_VERSION,
-    append_classification_prefill_task,
     append_unmapped_type_description_task,
     build_category_judgment_messages,
     build_classification_common_messages,
@@ -29,7 +22,6 @@ from app.agent.contract_extraction.subgraph.classification.prompt import (
 from app.agent.contract_extraction.subgraph.classification.state import (
     CategoryJudgmentOutcome,
     ClassificationContext,
-    ClassificationPreheatResult,
     ClassificationSubgraphState,
     ClassificationToolCallAudit,
     ContractClassificationResult,
@@ -52,6 +44,11 @@ from app.agent.contract_extraction.subgraph.classification.tool import (
     parse_unmapped_type_description_arguments,
     successful_tool_feedback,
     validation_error_feedback,
+)
+from app.agent.contract_extraction.tool_protocol import (
+    ToolProtocolRecovery,
+    audited_assistant_content,
+    build_protocol_recovery_message,
 )
 from app.core.config import get_settings
 from app.infrastructure.mllm import (
@@ -212,7 +209,7 @@ async def _judge_one_category(
                     cached_tokens=completion.cached_tokens,
                 )
             )
-            exceeded = protocol_recovery.record_failure(
+            exceeded = protocol_recovery.record_protocol_failure(
                 messages,
                 assistant_message=response.assistant_message,
                 tool_call_count=len(response.tool_calls),
@@ -228,8 +225,7 @@ async def _judge_one_category(
             continue
 
         call = response.tool_calls[0]
-        protocol_recovery.accept_correction(messages)
-        messages.append(response.assistant_message)
+        protocol_recovery.accept_protocol()
         accepted_match = None
         accepted_not_match: NotBelongToCategoryArguments | None = None
         try:
@@ -290,7 +286,17 @@ async def _judge_one_category(
                     ),
                 )
 
-        messages.append(_tool_message(call, feedback))
+        tool_message = _tool_message(call, feedback)
+        if feedback.ok:
+            protocol_recovery.accept_correction(messages)
+            messages.append(response.assistant_message)
+            messages.append(tool_message)
+        else:
+            protocol_recovery.record_tool_failure(
+                messages,
+                assistant_message=response.assistant_message,
+                tool_message=tool_message,
+            )
         completion = response.completion
         audits.append(
             ClassificationToolCallAudit(
@@ -410,7 +416,7 @@ async def _describe_unmapped_type(
                     cached_tokens=completion.cached_tokens,
                 )
             )
-            exceeded = protocol_recovery.record_failure(
+            exceeded = protocol_recovery.record_protocol_failure(
                 messages,
                 assistant_message=response.assistant_message,
                 tool_call_count=len(response.tool_calls),
@@ -425,8 +431,7 @@ async def _describe_unmapped_type(
             continue
 
         call = response.tool_calls[0]
-        protocol_recovery.accept_correction(messages)
-        messages.append(response.assistant_message)
+        protocol_recovery.accept_protocol()
         if call.name != "describe_unmapped_type":
             feedback = ClassificationToolFeedback(
                 ok=False,
@@ -452,7 +457,17 @@ async def _describe_unmapped_type(
                     message="未映射合同类型描述已接受。",
                 )
 
-        messages.append(_tool_message(call, feedback))
+        tool_message = _tool_message(call, feedback)
+        if feedback.ok:
+            protocol_recovery.accept_correction(messages)
+            messages.append(response.assistant_message)
+            messages.append(tool_message)
+        else:
+            protocol_recovery.record_tool_failure(
+                messages,
+                assistant_message=response.assistant_message,
+                tool_message=tool_message,
+            )
         audits.append(
             ClassificationToolCallAudit(
                 round_number=round_number,
@@ -500,61 +515,6 @@ def assemble_classification_context(
             prompt_version=CLASSIFICATION_COMMON_PROMPT_VERSION,
             messages=tuple(messages),
             prefix_sha256=context_sha256(messages),
-        )
-    }
-
-
-async def prefill_classification_context(
-    state: ClassificationSubgraphState,
-) -> ClassificationSubgraphState:
-    """携带分类工具向本地 vLLM 发送单 token 公共前缀预热请求。"""
-    context = state["classification_context"]
-    settings = get_settings().mllm
-    started_at = perf_counter()
-
-    async with MLLMClient(settings) as client:
-        try:
-            response = await client.create_tool_chat_completion(
-                messages=append_classification_prefill_task(context.messages),
-                tools=list(CLASSIFICATION_TOOLS),
-                tool_choice=CLASSIFICATION_TOOL_CHOICE,
-                max_completion_tokens=1,
-                temperature=0,
-                top_p=settings.generation.top_p,
-                top_k=settings.generation.top_k,
-                presence_penalty=settings.generation.presence_penalty,
-                repetition_penalty=settings.generation.repetition_penalty,
-                seed=settings.generation.seed,
-                enable_thinking=False,
-                tool_placement="before_task",
-            )
-        except MLLMUnavailableError as exc:
-            return {
-                "classification_preheat": ClassificationPreheatResult(
-                    status="degraded",
-                    document_id=context.document_id,
-                    prompt_version=context.prompt_version,
-                    model=settings.model,
-                    completed_at=datetime.now(UTC),
-                    prefix_sha256=context.prefix_sha256,
-                    elapsed_ms=round((perf_counter() - started_at) * 1000, 3),
-                    error=str(exc),
-                )
-            }
-
-    completion = response.completion
-    return {
-        "classification_preheat": ClassificationPreheatResult(
-            status="warmed",
-            document_id=context.document_id,
-            prompt_version=context.prompt_version,
-            model=completion.model or settings.model,
-            completed_at=datetime.now(UTC),
-            prefix_sha256=context.prefix_sha256,
-            elapsed_ms=round((perf_counter() - started_at) * 1000, 3),
-            prompt_tokens=completion.prompt_tokens,
-            completion_tokens=completion.completion_tokens,
-            cached_tokens=completion.cached_tokens,
         )
     }
 

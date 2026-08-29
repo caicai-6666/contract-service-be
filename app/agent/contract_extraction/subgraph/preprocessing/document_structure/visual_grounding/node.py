@@ -272,7 +272,7 @@ async def _locate_one_unit(
         elapsed_ms = round((perf_counter() - request_started_at) * 1000, 3)
         if len(response.tool_calls) != 1:
             completion = response.completion
-            exceeded = protocol_recovery.record_failure(
+            exceeded = protocol_recovery.record_protocol_failure(
                 messages,
                 assistant_message=response.assistant_message,
                 tool_call_count=len(response.tool_calls),
@@ -315,8 +315,7 @@ async def _locate_one_unit(
             continue
 
         call = response.tool_calls[0]
-        protocol_recovery.accept_correction(messages)
-        messages.append(response.assistant_message)
+        protocol_recovery.accept_protocol()
         accepted_box: LocatedBoundingBox | None = None
         accepted_finish: FinishArguments | None = None
         try:
@@ -372,7 +371,17 @@ async def _locate_one_unit(
                     message=f"tool：当前不能调用 {call.name}；请使用视觉定位工具。",
                 )
 
-        messages.append(_tool_message(call, feedback))
+        tool_message = _tool_message(call, feedback)
+        if feedback.ok:
+            protocol_recovery.accept_correction(messages)
+            messages.append(response.assistant_message)
+            messages.append(tool_message)
+        else:
+            protocol_recovery.record_tool_failure(
+                messages,
+                assistant_message=response.assistant_message,
+                tool_message=tool_message,
+            )
         completion = response.completion
         audits.append(
             GroundingToolCallAudit(

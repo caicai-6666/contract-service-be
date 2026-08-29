@@ -1,24 +1,17 @@
-"""核心字段快照选择、公共任务预热与并行单字段提取节点。"""
+"""核心字段快照选择、公共任务组装与并行单字段提取节点。"""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
-from datetime import UTC, datetime
 from time import perf_counter
 
 from pydantic import ValidationError
 
 from app.agent.contract_extraction.context import context_sha256
-from app.agent.contract_extraction.tool_protocol import (
-    ToolProtocolRecovery,
-    audited_assistant_content,
-    build_protocol_recovery_message,
-)
 from app.agent.contract_extraction.subgraph.field_extraction.core.prompt import (
     CORE_COMMON_PROMPT_VERSION,
     CORE_EXTRACTION_PROMPT_VERSION,
-    append_core_prefill_task,
     build_core_common_messages,
     build_core_messages,
 )
@@ -27,7 +20,6 @@ from app.agent.contract_extraction.subgraph.field_extraction.core.state import (
     CoreContext,
     CoreExtractionResult,
     CoreOutcome,
-    CorePreheatResult,
     CoreSubgraphState,
     ExtractedCore,
     ExtractedFieldObject,
@@ -49,6 +41,11 @@ from app.agent.contract_extraction.subgraph.field_extraction.tool import (
     build_field_tools,
     canonical_field_value,
     parse_field_tool_arguments,
+)
+from app.agent.contract_extraction.tool_protocol import (
+    ToolProtocolRecovery,
+    audited_assistant_content,
+    build_protocol_recovery_message,
 )
 from app.core.config import get_settings
 from app.infrastructure.mllm import (
@@ -92,53 +89,6 @@ def assemble_core_context(
             prompt_version=CORE_COMMON_PROMPT_VERSION,
             messages=tuple(messages),
             prefix_sha256=context_sha256(messages),
-        )
-    }
-
-
-async def prefill_core_context(
-    state: CoreSubgraphState,
-) -> CoreSubgraphState:
-    """节点二：用单 token 异步请求预热 Core 公共任务前缀。"""
-    context = state["core_context"]
-    settings = get_settings().mllm
-    started_at = perf_counter()
-
-    async with MLLMClient(settings) as client:
-        try:
-            completion = await client.create_chat_completion(
-                messages=append_core_prefill_task(context.messages),
-                max_completion_tokens=1,
-                min_tokens=1,
-                temperature=0,
-                enable_thinking=False,
-            )
-        except MLLMUnavailableError as exc:
-            return {
-                "core_preheat": CorePreheatResult(
-                    status="degraded",
-                    document_id=context.document_id,
-                    prompt_version=context.prompt_version,
-                    model=settings.model,
-                    completed_at=datetime.now(UTC),
-                    prefix_sha256=context.prefix_sha256,
-                    elapsed_ms=round((perf_counter() - started_at) * 1000, 3),
-                    error=str(exc),
-                )
-            }
-
-    return {
-        "core_preheat": CorePreheatResult(
-            status="warmed",
-            document_id=context.document_id,
-            prompt_version=context.prompt_version,
-            model=completion.model or settings.model,
-            completed_at=datetime.now(UTC),
-            prefix_sha256=context.prefix_sha256,
-            elapsed_ms=round((perf_counter() - started_at) * 1000, 3),
-            prompt_tokens=completion.prompt_tokens,
-            completion_tokens=completion.completion_tokens,
-            cached_tokens=completion.cached_tokens,
         )
     }
 
@@ -331,7 +281,7 @@ async def _extract_one_core(
                     cached_tokens=completion.cached_tokens,
                 )
             )
-            exceeded = protocol_recovery.record_failure(
+            exceeded = protocol_recovery.record_protocol_failure(
                 messages,
                 assistant_message=response.assistant_message,
                 tool_call_count=len(response.tool_calls),
@@ -348,8 +298,7 @@ async def _extract_one_core(
             continue
 
         call = response.tool_calls[0]
-        protocol_recovery.accept_correction(messages)
-        messages.append(response.assistant_message)
+        protocol_recovery.accept_protocol()
         accepted_object: ExtractedFieldObject | None = None
         accepted_abandon: AbandonExtractionArguments | None = None
         accepted_finish: FinishExtractionArguments | None = None
@@ -468,7 +417,18 @@ async def _extract_one_core(
                     ),
                 )
 
-        messages.append(_tool_message(call, feedback))
+        tool_message = _tool_message(call, feedback)
+        if feedback.ok:
+            # 正确动作只继承此前有效记忆；连续错误调用与反馈从模型上下文删除。
+            protocol_recovery.accept_correction(messages)
+            messages.append(response.assistant_message)
+            messages.append(tool_message)
+        else:
+            protocol_recovery.record_tool_failure(
+                messages,
+                assistant_message=response.assistant_message,
+                tool_message=tool_message,
+            )
         completion = response.completion
         audits.append(
             FieldToolCallAudit(
@@ -548,11 +508,8 @@ async def extract_core(
     started_at = perf_counter()
     prepared_pdf = state["prepared_pdf"]
     core_context = state["core_context"]
-    core_preheat = state["core_preheat"]
     if prepared_pdf.document_id != core_context.document_id:
         raise ValueError("核心字段输入 PDF 与 Core 公共前缀的 document_id 不一致")
-    if core_preheat.prefix_sha256 != core_context.prefix_sha256:
-        raise ValueError("Core 预热结果与公共前缀指纹不一致")
 
     definitions = state["core_definitions"]
     settings = get_settings().mllm
@@ -586,7 +543,6 @@ async def extract_core(
             model=settings.model,
             prompt_version=CORE_EXTRACTION_PROMPT_VERSION,
             catalog_sha256=definitions.content_sha256,
-            preheat=state["core_preheat"],
             fields=fields,
             elapsed_ms=round((perf_counter() - started_at) * 1000, 3),
         )
@@ -596,6 +552,5 @@ async def extract_core(
 __all__ = [
     "assemble_core_context",
     "extract_core",
-    "prefill_core_context",
     "select_core_definitions",
 ]

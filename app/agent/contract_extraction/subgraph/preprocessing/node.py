@@ -21,40 +21,57 @@ from app.agent.contract_extraction.subgraph.preprocessing.state import (
 from app.core.config import get_settings
 from app.tool.pdf_page import PDFPageRenderConfig, compress_pdf_pages
 
+PDFSource = Path | bytes
 
-def _file_sha256(path: Path) -> str:
-    """流式计算原始 PDF 的稳定文档标识，避免一次性读入大文件。"""
+
+def _source_sha256(source: PDFSource) -> str:
+    """对路径或内存字节计算原始 PDF 的稳定文档标识。"""
+    if isinstance(source, bytes):
+        return sha256(source).hexdigest()
     digest = sha256()
-    with path.open("rb") as pdf_file:
+    with source.open("rb") as pdf_file:
         for chunk in iter(lambda: pdf_file.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
 
-def _validate_pdf(path: Path) -> int:
+def _source_size(source: PDFSource) -> int:
+    """返回 PDF 来源字节数，并明确拒绝缺失路径。"""
+    if isinstance(source, bytes):
+        return len(source)
+    if not source.is_file():
+        raise FileNotFoundError(f"PDF 文件不存在：{source}")
+    return source.stat().st_size
+
+
+def _validate_pdf(source: PDFSource, source_name: str) -> int:
     """校验 PDF 可读取、未加密且至少包含一页，并返回页数。"""
-    if not path.is_file():
-        raise FileNotFoundError(f"PDF 文件不存在：{path}")
-    if path.stat().st_size <= 0:
-        raise ValueError(f"PDF 文件为空：{path}")
+    if _source_size(source) <= 0:
+        raise ValueError(f"PDF 文件为空：{source_name}")
 
     try:
-        with pymupdf.open(path) as document:
+        document = (
+            pymupdf.open(stream=source, filetype="pdf")
+            if isinstance(source, bytes)
+            else pymupdf.open(source)
+        )
+        with document:
             if not document.is_pdf:
-                raise ValueError(f"输入文件不是 PDF：{path}")
+                raise ValueError(f"输入文件不是 PDF：{source_name}")
             if document.needs_pass:
-                raise ValueError(f"PDF 已加密且未提供密码：{path}")
+                raise ValueError(f"PDF 已加密且未提供密码：{source_name}")
             if document.page_count <= 0:
-                raise ValueError(f"PDF 不包含可处理页面：{path}")
+                raise ValueError(f"PDF 不包含可处理页面：{source_name}")
             return document.page_count
     except pymupdf.FileDataError as exc:
-        raise ValueError(f"PDF 文件损坏或格式无效：{path}") from exc
+        raise ValueError(f"PDF 文件损坏或格式无效：{source_name}") from exc
 
 
 def prepare_pdf(state: PreprocessingSubgraphState) -> PreprocessingSubgraphState:
     """检查 PDF，并按动态视觉预算完成整份文档的逐页等比渲染。"""
-    path = state["request"].pdf_path
-    page_count = _validate_pdf(path)
+    request = state["request"]
+    source = request.pdf_source
+    page_count = _validate_pdf(source, request.source_name)
     mllm = get_settings().mllm
     vision = mllm.vision
     visual_tokens_per_page = mllm.visual_token_budget_per_page(page_count)
@@ -65,7 +82,7 @@ def prepare_pdf(state: PreprocessingSubgraphState) -> PreprocessingSubgraphState
         max_visual_tokens_per_page=visual_tokens_per_page,
     )
 
-    compressed_pages = compress_pdf_pages(path, config=render_config)
+    compressed_pages = compress_pdf_pages(source, config=render_config)
     if len(compressed_pages) != page_count:
         raise RuntimeError("PDF 渲染页数与检查结果不一致")
 
@@ -87,9 +104,9 @@ def prepare_pdf(state: PreprocessingSubgraphState) -> PreprocessingSubgraphState
     )
     return {
         "prepared_pdf": PreparedPDF(
-            document_id=_file_sha256(path),
-            source_path=path,
-            file_size_bytes=path.stat().st_size,
+            document_id=_source_sha256(source),
+            source_path=request.source_path,
+            file_size_bytes=_source_size(source),
             page_count=page_count,
             total_visual_tokens=total_visual_tokens,
             visual_tokens_per_page_budget=visual_tokens_per_page,

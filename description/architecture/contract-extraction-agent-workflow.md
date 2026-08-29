@@ -1,6 +1,6 @@
 # 合同信息抽取 Agent 工作流
 
-> **用途：** 本文定义合同信息抽取 Agent 的节点拓扑、子图边界和共享状态。当前已实现 PDF 预处理、基础前缀组装、合同并行分类、最终公共前缀预热、Core 字段提取和完整条款提取；Attribute 与摘要仍为占位结构。
+> **用途：** 本文定义合同信息抽取 Agent 的节点拓扑、子图边界和共享状态。当前已实现 PDF 预处理、基础前缀组装、合同并行分类、最终公共前缀组装、Core 字段提取、完整条款提取、检索问题生成、逐问题向量化和合同向量融合。
 
 ---
 
@@ -21,56 +21,51 @@ flowchart TD
 
     subgraph classification_subgraph["合同分类子图"]
         assemble_classification["分类公共前缀组装节点"]
-        prefill_classification["携带分类工具预热节点"]
         classify["逐类别并发判定节点"]
-        assemble_classification --> prefill_classification --> classify
+        assemble_classification --> classify
     end
 
-    subgraph preheat_subgraph["最终预热子图"]
-        assemble_prefill["最终前缀组装节点<br/>基础前缀 + 分类结果"]
-        request_prefill["vLLM 预热请求节点"]
-        assemble_prefill --> request_prefill
-    end
+    assemble_prefill["最终前缀组装节点<br/>基础前缀 + 分类结果"]
 
     subgraph field_subgraph["字段提取子图"]
         subgraph core_subgraph["Core 提取子图"]
             select_core["选择内存 Core 定义"]
             assemble_core["组装 Core 公共任务"]
-            prefill_core["预热 Core 公共任务"]
             core_node["并行逐定义提取"]
-            select_core --> assemble_core --> prefill_core --> core_node
+            select_core --> assemble_core --> core_node
         end
-        subgraph attribute_subgraph["Attribute 提取子图"]
-            attribute_node["Attribute 提取占位节点"]
-        end
-        core_node --> attribute_node --> field_merge["字段结果汇总节点"]
     end
 
     subgraph clause_subgraph["条款提取子图"]
         discover_clause["顺序发现条款候选"]
-        preheat_clause["组装并预热条款详情上下文"]
+        preheat_clause["组装条款详情上下文"]
         extract_clause["逐候选并发提取内容"]
         discover_clause --> preheat_clause --> extract_clause
     end
 
-    subgraph summary_subgraph["摘要生成子图"]
-        summary_node["摘要生成节点"]
+    subgraph retrieval_question_subgraph["检索问题生成子图"]
+        render_question_guides["组装提问指南上下文"]
+        discover_question_focuses["顺序发现可组合问题规划"]
+        generate_questions["按规划精确选指南并发提问"]
+        embed_questions["批量并发向量化问题"]
+        fuse_question_embeddings["融合合同级检索向量"]
+        render_question_guides --> discover_question_focuses --> generate_questions --> embed_questions --> fuse_question_embeddings
     end
 
     input --> prepare_pdf
     discover_units --> assemble_base --> assemble_classification
     classify --> assemble_prefill
-    request_prefill --> select_core
-    request_prefill --> discover_clause
-    request_prefill --> summary_node
+    assemble_prefill --> select_core
+    assemble_prefill --> discover_clause
+    assemble_prefill --> render_question_guides
 
-    field_merge --> merge["合并节点"]
+    core_node --> merge["合并节点"]
     extract_clause --> merge
-    summary_node --> merge
+    fuse_question_embeddings --> merge
     merge --> result["合同 OCR 结果包络"]
 ```
 
-预处理子图完成页面标准化、结构发现和逐单元视觉定位后，主图单节点组装“PDF + 文档结构”基础前缀；分类子图读取该前缀并返回分类结果；最终预热子图将分类结果追加到基础前缀末尾并向 vLLM 发起请求。字段、条款和摘要三个子图随后并行执行，合并节点只在三者均结束后运行。工作流实现位于 `app.agent.contract_extraction`。
+预处理子图完成页面标准化、结构发现和逐单元视觉定位后，主图单节点组装“PDF + 文档结构”基础前缀；分类子图读取该前缀并返回分类结果；最终前缀组装节点将分类结果追加到基础前缀末尾。字段、条款和检索问题生成三个子图随后并行执行，合并节点只在三者均结束后运行。工作流实现位于 `app.agent.contract_extraction`。
 
 ---
 
@@ -94,7 +89,7 @@ flowchart TD
 
 ## 合同分类子图
 
-`classification` 包含 `assemble_classification_context`、`prefill_classification_context` 和 `classify_contract`。节点一复制 `ContractBaseContext` 并追加所有单类别请求共享的多标签分类规则，形成版本为 `classification-common-v7` 且带独立指纹的 `ClassificationContext`；节点二携带相同的三个分类工具和 `before_task` 布局向 vLLM 发起异步单 token 预热；节点三读取启动期内存目录，为每个类别并发执行独立工具循环。具体类别资料和工具历史只属于分类子图，不写回基础前缀。
+`classification` 包含 `assemble_classification_context` 和 `classify_contract`。节点一复制 `ContractBaseContext` 并追加所有单类别请求共享的多标签分类规则，形成版本为 `classification-common-v7` 且带独立指纹的 `ClassificationContext`；节点二读取启动期内存目录，为每个类别并发执行独立工具循环。所有请求使用相同工具定义、`before_task` 布局和公共消息前缀，由 vLLM 在并发请求之间自然建立缓存，不再发送独立的分类预热请求。具体类别资料和工具历史只属于分类子图，不写回基础前缀。
 
 分类只使用文档结构中的单元页码、文字锚点和摘要辅助导航，忽略 `unit_locations` 坐标，不按定位框裁剪页面，也不在分类证据中输出视觉位置；导航不足时必须回退完整相关页面核查。
 
@@ -102,33 +97,37 @@ flowchart TD
 
 ---
 
-## 最终预热子图
+## 最终公共前缀组装节点
 
-`preheat` 位于分类与三个并行子图之间，内部包含 `assemble_prefill_context` 和 `prefill_contract_context` 两个节点。节点一复制 `ContractBaseContext`，在末尾稳定追加分类结果，生成新的 `ContractPrefillContext` 与独立指纹；节点二追加预热任务并向本地 vLLM 发起异步单 token 请求。
+`assemble_prefill_context` 位于分类与三个并行子图之间。它复制 `ContractBaseContext`，在末尾稳定追加分类结果，生成新的 `ContractPrefillContext` 与独立指纹。该节点是确定性组装，不调用模型。
 
-子图输出 `ContractPrefillContext` 和 `ContractPreheatResult`。三个并行子图必须直接复用前者的消息，只在末尾追加各自任务，以获得最大前缀匹配。完整职责见[最终公共前缀预热子图](subgraph/preheat.md)。
+三个并行子图必须直接复用 `ContractPrefillContext.messages`，只在末尾追加各自任务，以获得最大前缀匹配。原通用单 token 预热经隔离 A/B 验证没有净时间或 token 收益，现已删除。完整职责见[最终公共前缀组装节点](final-context-assembly.md)。
 
 ---
 
 ## 并行子图
 
-| 子图 | 当前占位节点 | 后续职责 |
+| 子图 | 内部节点 | 当前职责 |
 | --- | --- | --- |
-| 字段提取 | `core_extraction` → `attribute_extraction` → `merge_field_results` | 先提取稳定的 Core，再携带 Core 结果提取经过治理的 Attribute。 |
-| 条款提取 | `discover_clause_candidates` → `preheat_clause_extraction_context` → `extract_clause_contents` | 顺序发现包括子层级在内的全部候选，组装并预热详情提取共享上下文，再逐候选并发提取直接内容；三个节点均已实现。 |
-| 摘要生成 | `generate_summary` | 根据可引用的合同事实生成短格式化摘要，供后续向量检索使用。 |
+| 字段提取 | `core_extraction`，内部为 `select_core_definitions` → `assemble_core_context` → `extract_core` | 选择启动期 Core 快照、组装公共任务并逐定义并发提取。 |
+| 条款提取 | `discover_clause_candidates` → `assemble_clause_extraction_context` → `extract_clause_contents` | 顺序发现包括子层级在内的全部候选，确定性组装详情提取共享上下文，再逐候选并发提取直接内容；三个节点均已实现。 |
+| 检索问题生成 | `render_question_guides` → `discover_question_focuses` → `generate_questions` → `embed_questions` → `fuse_question_embeddings` | 先用全量指南顺序发现可组合问题规划，再按规划并发生成问题和逐问题向量，最后确定性融合合同级向量。 |
 
-三个业务模块在最终预热完成后并行执行，可只读使用 `ContractPrefillContext`、`PreparedPDF` 和 `DocumentStructureMetadata`，但字段、条款与摘要不得共享可变状态；子图只能回写自己拥有的结果键，避免并行分支同时覆盖父图状态。
+三个业务模块在最终前缀组装完成后并行执行，可只读使用 `ContractPrefillContext`、`PreparedPDF` 和 `DocumentStructureMetadata`，但字段、条款与检索问题不得共享可变状态；子图只能回写自己拥有的结果键，避免并行分支同时覆盖父图状态。
 
-字段提取模块已经拆为 Core 与 Attribute 两个内部子图，并在字段模块内部按顺序运行，不阻塞条款和摘要模块。Core 从启动期 `FieldDefinitionCatalog` 选择定义，按“选择定义 → 组装公共任务 → 预热公共任务 → 并行逐字段提取”运行；Attribute 仍为占位节点。完整边界见[字段提取子图](subgraph/field-extraction.md)。
+字段提取模块只保留 Core 子图，不阻塞条款和检索问题模块。它从启动期 `FieldDefinitionCatalog` 选择定义，按“选择定义 → 组装公共任务 → 并行逐字段提取”运行，并把结果包装为 `FieldExtractionResult.core`。完整边界见[字段提取子图](subgraph/field-extraction.md)。
+
+检索问题生成模块已经完成提问指南契约、启动加载、Bullet 渲染、问题规划、按规划并发生成、逐问题向量化和合同向量融合。问题规划会话首轮强制调用 `think`，随后逐个生成关注点规划；每份规划建立隔离会话生成带证据的问题。成功思考、正式动作和最小工具反馈保留在对话轨迹中，不另建模型可见工作区。模块正式输出键为 `retrieval_questions`、`retrieval_question_embeddings` 和 `contract_retrieval_vector`，不再生成问题答案。完整设计见[检索问题生成子图](subgraph/retrieval-view-generation.md)。
 
 ---
 
 ## 合并与输出
 
-`merge_extraction_results` 汇集分类、预热、文档结构、字段、条款与摘要结果，形成单一合同结果包络。后续实现应在此处保留节点级错误、模型与提示词版本、字段目录版本和原始证据索引，而非直接丢弃失败分支。
+`merge_extraction_results` 汇集分类、文档结构、字段、条款、检索问题、逐问题向量与合同融合向量，形成单一合同结果包络。后续实现应在此处保留节点级错误、模型与提示词版本、字段目录版本和原始证据索引，而非直接丢弃失败分支。
 
-当前 PDF 预处理、结构单元发现、基础前缀组装、合同并行分类、两节点最终预热、Core 字段提取和条款三节点子图已经可用；Attribute 与摘要仍为占位。因此合并结果还不是可用于存储、检索或专家审核的正式 OCR 结果。
+当前 PDF 预处理、结构单元发现、基础前缀组装、合同并行分类、最终公共前缀组装、Core 字段提取、条款三节点子图、检索问题生成、逐问题向量化和合同向量融合已经可用；正式索引和专家确认接口尚未接入主图。因此合并结果仍属于自动提取草稿。
+
+HTTP 应用不会用主图末尾的三路汇合等待用户查看结果。服务层复用相同节点和子图完成公共前置处理，随后独立调用 Core、Clause 与 Retrieval 分支：任一路成功即可原子提交增量草稿，失败分支可单独重试。这是应用交互与容错编排，不改变 Agent 子图内部职责；完整状态机见[合同提取应用运行时](contract-extraction-runtime.md)，外部协议见[合同提取 API](../api/contract-extraction.md)。
 
 ---
 
@@ -139,5 +138,5 @@ flowchart TD
 3. 使用缓存指标验证三个下游请求对最终前缀的实际命中率。
 4. 使用不同页数、缓存压力和并发请求继续校准动态页面预算与 prefill 策略。
 5. 使用测试合同验证 Core 字段准确率、放弃边界、并发稳定性和公共前缀缓存命中率。
-6. 分别实现条款与摘要子图，保持与字段子图并行。
-7. 最后实现合并后的结果契约、失败隔离、专家审核和 Elasticsearch 投影。
+6. 使用真实查询评估合同融合向量的召回质量，并实现 Elasticsearch 投影。
+7. 最后实现合并后的结果契约、失败隔离和专家审核。

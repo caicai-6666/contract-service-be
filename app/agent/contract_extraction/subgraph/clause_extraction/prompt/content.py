@@ -15,7 +15,7 @@ from app.agent.contract_extraction.subgraph.clause_extraction.tool import (
 )
 from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
 
-CLAUSE_CONTENT_COMMON_PROMPT_VERSION: Final = "clause-content-common-v9"
+CLAUSE_CONTENT_COMMON_PROMPT_VERSION: Final = "clause-content-common-v10"
 CLAUSE_CONTENT_TARGET_PROMPT_VERSION: Final = "clause-content-target-v4"
 CLAUSE_CONTENT_TOOL_PLACEMENT: Final = "before_task"
 
@@ -45,7 +45,7 @@ _CLAUSE_CONTENT_COMMON_TASK_BASE: Final = """你已获得当前合同的原始 P
 1. 原始 PDF 页面是正文字符、标点、换行、项目符号和表格内容的唯一事实来源。
 2. 条款候选目录是候选身份、层级、父子关系和起止边界的权威来源；不得新增、删除、合并、拆分、重排或修正候选。
 3. 文档结构和合同分类只用于导航与理解语境，不能覆盖 PDF 原文或候选边界。
-4. 当前没有获得 Core、Attribute 或摘要结果，也不需要这些信息；不得使用文件名、模板、常识或法律知识补全文字。
+4. 当前没有获得字段或检索视图结果，也不需要这些信息；不得使用文件名、模板、常识或法律知识补全文字。
 
 完整直接内容定义：
 1. 叶子候选：从 evidence.start 的包含式 anchor 开始，提取至 evidence.end 的包含式 anchor；start 和 end 都属于当前候选并必须出现在 content 中。
@@ -76,9 +76,6 @@ CLAUSE_CONTENT_COMMON_TASK: Final = (
     f"{_CLAUSE_CONTENT_COMMON_TASK_BASE}\n\n工具调用格式：\n"
     f"{TOOL_CALL_XML_INSTRUCTION}"
 )
-
-CLAUSE_CONTENT_PREFILL_TASK: Final = """你已获得当前合同、条款原文提取规则、完整候选目录和 extract_clause_content 工具定义，但尚未指定需要处理的唯一候选。请先读取已有材料，并准备在收到具体候选后提取其完整直接原文；现在不要提取任何条款正文。"""
-
 
 class _IndentedSafeDumper(yaml.SafeDumper):
     """让 YAML 列表相对父键缩进，保持候选目录易读。"""
@@ -197,27 +194,6 @@ def append_clause_content_target(
     return messages
 
 
-def append_clause_content_prefill_task(
-    common_messages: Iterable[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """追加不属于共享前缀的预热动作消息，供节点二带工具请求。"""
-    messages = deepcopy(list(common_messages))
-    if not messages:
-        raise ValueError("单条款详情公共任务消息不能为空")
-    messages.append(
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": CLAUSE_CONTENT_PREFILL_TASK,
-                }
-            ],
-        }
-    )
-    return messages
-
-
 def build_clause_content_messages(
     prefill_context: ContractPrefillContext,
     candidate: ClauseCandidateWorkspaceItem,
@@ -239,7 +215,6 @@ __all__ = [
     "CLAUSE_CONTENT_TOOL_PLACEMENT",
     "TARGET_BEGIN",
     "TARGET_END",
-    "append_clause_content_prefill_task",
     "append_clause_content_target",
     "build_clause_content_common_messages",
     "build_clause_content_messages",

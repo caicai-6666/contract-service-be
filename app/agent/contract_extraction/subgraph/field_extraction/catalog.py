@@ -1,4 +1,4 @@
-"""Core 与 Attribute 字段定义的启动期全量加载器。"""
+"""Core 字段定义的启动期全量加载器。"""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from app.agent.contract_extraction.subgraph.field_extraction.definition import (
     FieldDefinitionCollection,
 )
 
-FieldDefinitionKind = Literal["core", "attribute"]
+FieldDefinitionKind = Literal["core"]
 
 
 class FieldDefinitionCatalogError(ValueError):
@@ -58,7 +58,7 @@ def _load_collection(
     *,
     kind: FieldDefinitionKind,
 ) -> tuple[FieldDefinitionCollection, tuple[Path, ...]]:
-    """按文件名稳定加载一个职责目录，Attribute 允许为空。"""
+    """按文件名稳定加载非空的 Core 定义目录。"""
     directory = root / kind
     if not directory.is_dir():
         raise FieldDefinitionCatalogError(f"字段定义目录不存在：{directory}")
@@ -74,7 +74,7 @@ def _load_collection(
             f"字段定义目录 {directory} 包含非 YAML 条目：{invalid}"
         )
     paths = tuple(entry for entry in entries if entry.suffix == ".yaml")
-    if kind == "core" and not paths:
+    if not paths:
         raise FieldDefinitionCatalogError("Core 字段定义目录不能为空")
 
     definitions = tuple(_load_definition(path) for path in paths)
@@ -92,14 +92,14 @@ def _load_collection(
 
 
 def load_field_definition_catalog(root: Path) -> FieldDefinitionCatalog:
-    """全量加载 Core 与 Attribute；任一错误都会阻止应用启动。"""
+    """全量加载 Core；任一错误都会阻止应用启动。"""
     resolved_root = root.resolve()
     if not resolved_root.is_dir():
         raise FieldDefinitionCatalogError(
             f"字段定义根目录不存在或不是目录：{resolved_root}"
         )
     actual_entries = {entry.name for entry in resolved_root.iterdir()}
-    expected_entries = {"core", "attribute"}
+    expected_entries = {"core"}
     if actual_entries != expected_entries:
         missing = sorted(expected_entries - actual_entries)
         unexpected = sorted(actual_entries - expected_entries)
@@ -113,29 +113,11 @@ def load_field_definition_catalog(root: Path) -> FieldDefinitionCatalog:
         )
 
     core, core_paths = _load_collection(resolved_root, kind="core")
-    attribute, attribute_paths = _load_collection(
-        resolved_root,
-        kind="attribute",
-    )
-    core_names = {definition.name for definition in core.definitions}
-    duplicate_names = sorted(
-        core_names.intersection(
-            definition.name for definition in attribute.definitions
-        )
-    )
-    if duplicate_names:
-        raise FieldDefinitionCatalogError(
-            f"Core 与 Attribute 字段定义名称重复：{duplicate_names}"
-        )
 
     return FieldDefinitionCatalog(
         root=resolved_root,
         core=core,
-        attribute=attribute,
-        content_sha256=_fingerprint(
-            resolved_root,
-            core_paths + attribute_paths,
-        ),
+        content_sha256=_fingerprint(resolved_root, core_paths),
     )
 
 

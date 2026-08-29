@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 
 from app.agent.contract_extraction.state import PDFPromptPage, PreparedPDFPage
-from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
 from app.agent.contract_extraction.subgraph.preprocessing.document_structure.state import (
     DocumentUnit,
 )
@@ -15,6 +14,7 @@ from app.agent.contract_extraction.subgraph.preprocessing.document_structure.vis
 from app.agent.contract_extraction.subgraph.preprocessing.prompt import (
     build_pdf_common_messages,
 )
+from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
 
 UNIT_VISUAL_GROUNDING_PROMPT_VERSION = "unit-visual-grounding-v3"
 

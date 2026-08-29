@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Iterable
 from itertools import chain
 from time import perf_counter
-from typing import Any
 
 from pydantic import ValidationError
 
@@ -354,7 +353,7 @@ async def discover_document_units(
             elapsed_ms = round((perf_counter() - request_started_at) * 1000, 3)
             if len(response.tool_calls) != 1:
                 completion = response.completion
-                exceeded = protocol_recovery.record_failure(
+                exceeded = protocol_recovery.record_protocol_failure(
                     messages,
                     assistant_message=response.assistant_message,
                     tool_call_count=len(response.tool_calls),
@@ -394,8 +393,7 @@ async def discover_document_units(
                 continue
 
             call = response.tool_calls[0]
-            protocol_recovery.accept_correction(messages)
-            messages.append(response.assistant_message)
+            protocol_recovery.accept_protocol()
             accepted_finish: FinishArguments | None = None
             try:
                 arguments = parse_tool_arguments(call.name, call.arguments)
@@ -455,7 +453,17 @@ async def discover_document_units(
                         ),
                     )
 
-            messages.append(_tool_message(call, feedback))
+            tool_message = _tool_message(call, feedback)
+            if feedback.ok:
+                protocol_recovery.accept_correction(messages)
+                messages.append(response.assistant_message)
+                messages.append(tool_message)
+            else:
+                protocol_recovery.record_tool_failure(
+                    messages,
+                    assistant_message=response.assistant_message,
+                    tool_message=tool_message,
+                )
             completion = response.completion
             audits.append(
                 ToolCallAudit(

@@ -7,7 +7,6 @@ from app.agent.contract_extraction.state import (
     ContractPrefillContext,
     FieldExtractionResult,
     PreparedPDF,
-    WorkflowPlaceholder,
 )
 from app.agent.contract_extraction.subgraph.field_extraction.definition import (
     FieldDefinitionCatalog,
@@ -15,12 +14,11 @@ from app.agent.contract_extraction.subgraph.field_extraction.definition import (
 
 
 class FieldExtractionSubgraphState(TypedDict, total=False):
-    """在 Core、Attribute 和结果汇总之间传递的状态。"""
+    """字段父子图向 Core 子图传递输入并汇总正式结果。"""
 
     prepared_pdf: PreparedPDF
     document_structure: BaseModel
     prefill_context: ContractPrefillContext
     field_definition_catalog: FieldDefinitionCatalog
     core: BaseModel
-    attribute: WorkflowPlaceholder
     field_extraction: FieldExtractionResult

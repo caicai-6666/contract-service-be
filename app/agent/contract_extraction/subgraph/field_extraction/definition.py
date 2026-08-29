@@ -118,9 +118,9 @@ class FieldDefinition(FieldDefinitionModel):
 
 
 class FieldDefinitionCollection(FieldDefinitionModel):
-    """同一职责目录中按文件名稳定排列的字段定义快照。"""
+    """Core 目录中按文件名稳定排列的字段定义快照。"""
 
-    kind: Literal["core", "attribute"]
+    kind: Literal["core"]
     definitions: tuple[FieldDefinition, ...]
     content_sha256: str
 
@@ -151,11 +151,10 @@ class FieldDefinitionCollection(FieldDefinitionModel):
 
 
 class FieldDefinitionCatalog(FieldDefinitionModel):
-    """应用启动时加载的完整 Core 与 Attribute 定义快照。"""
+    """应用启动时加载的完整 Core 定义快照。"""
 
     root: Path
     core: FieldDefinitionCollection
-    attribute: FieldDefinitionCollection
     content_sha256: str
 
     @field_validator("content_sha256")
@@ -170,26 +169,17 @@ class FieldDefinitionCatalog(FieldDefinitionModel):
 
     @model_validator(mode="after")
     def validate_catalog(self) -> "FieldDefinitionCatalog":
-        """Core 必须可用，且两类定义不得出现身份冲突。"""
-        if self.core.kind != "core" or self.attribute.kind != "attribute":
-            raise ValueError("字段定义集合的 kind 与目录职责不一致")
+        """Core 集合的目录职责必须正确且至少包含一个定义。"""
+        if self.core.kind != "core":
+            raise ValueError("字段定义集合的 kind 必须为 core")
         if not self.core.definitions:
             raise ValueError("Core 字段定义不能为空")
-        names = [
-            definition.name
-            for definition in (
-                *self.core.definitions,
-                *self.attribute.definitions,
-            )
-        ]
-        if len(names) != len(set(names)):
-            raise ValueError("Core 与 Attribute 字段定义名称不能重复")
         return self
 
     @property
     def definition_count(self) -> int:
         """返回当前内存快照中的字段定义总数。"""
-        return len(self.core.definitions) + len(self.attribute.definitions)
+        return len(self.core.definitions)
 
 
 __all__ = [

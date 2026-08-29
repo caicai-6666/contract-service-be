@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict
@@ -11,7 +10,6 @@ from typing_extensions import TypedDict
 from app.agent.contract_extraction.state import ContractPrefillContext, PreparedPDF
 from app.agent.contract_extraction.subgraph.field_extraction.definition import (
     FieldCardinality,
-    FieldDefinition,
     FieldDefinitionCatalog,
     FieldDefinitionCollection,
 )
@@ -34,22 +32,6 @@ class CoreContext(CoreModel):
     prompt_version: str
     messages: tuple[dict[str, Any], ...]
     prefix_sha256: str
-
-
-class CorePreheatResult(CoreModel):
-    """Core 公共任务前缀的预热观测结果。"""
-
-    status: Literal["warmed", "degraded"]
-    document_id: str
-    prompt_version: str
-    model: str
-    completed_at: datetime
-    prefix_sha256: str
-    elapsed_ms: float
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
-    cached_tokens: int | None = None
-    error: str | None = None
 
 
 class FieldToolFeedback(CoreModel):
@@ -124,14 +106,13 @@ CoreOutcome: TypeAlias = ExtractedCore | AbandonedCore | FailedCore
 
 
 class CoreExtractionResult(CoreModel):
-    """并行处理全部核心字段后的稳定结果及公共预热审计。"""
+    """并行处理全部核心字段后的稳定结果。"""
 
     status: Literal["completed", "partial", "failed"]
     document_id: str
     model: str
     prompt_version: str
     catalog_sha256: str
-    preheat: CorePreheatResult
     fields: tuple[CoreOutcome, ...]
     elapsed_ms: float
 
@@ -145,7 +126,6 @@ class CoreSubgraphState(TypedDict, total=False):
     field_definition_catalog: FieldDefinitionCatalog
     core_definitions: FieldDefinitionCollection
     core_context: CoreContext
-    core_preheat: CorePreheatResult
     core: CoreExtractionResult
 
 
@@ -154,7 +134,6 @@ __all__ = [
     "CoreContext",
     "CoreExtractionResult",
     "CoreOutcome",
-    "CorePreheatResult",
     "CoreSubgraphState",
     "ExtractedCore",
     "ExtractedFieldObject",

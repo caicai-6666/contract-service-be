@@ -86,7 +86,7 @@ await client.chat.completions.create(
 
 ## 当前接入状态与验证
 
-模板文件及离线顺序测试已经建立，`MLLMClient.create_tool_chat_completion` 已支持可选的受限 `tool_placement` 参数；文档结构发现节点显式使用 `after_task`。分类预热和正式判定都建立公共 user 与任务 user 的边界并显式使用 `before_task`，因此二者共享“公共前缀 + 同一工具块”，只在最后的预热任务或类别资料处发生分叉。
+模板文件及离线顺序测试已经建立，`MLLMClient.create_tool_chat_completion` 已支持可选的受限 `tool_placement` 参数；文档结构发现节点显式使用 `after_task`。分类正式判定建立公共 user 与任务 user 的边界并显式使用 `before_task`，因此全部类别请求共享“公共前缀 + 同一工具块”，只在最后的类别资料处发生分叉。分类不再发送独立预热请求，由并发请求自然建立前缀缓存。
 
 当前离线验证覆盖：
 

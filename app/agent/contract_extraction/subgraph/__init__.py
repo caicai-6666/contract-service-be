@@ -30,15 +30,6 @@ def build_field_extraction_subgraph() -> Any:
     return build()
 
 
-def build_preheat_subgraph() -> Any:
-    """延迟导入并装配最终预热子图。"""
-    from app.agent.contract_extraction.subgraph.preheat import (
-        build_preheat_subgraph as build,
-    )
-
-    return build()
-
-
 def build_preprocessing_subgraph() -> Any:
     """延迟导入并装配 PDF 预处理子图。"""
     from app.agent.contract_extraction.subgraph.preprocessing import (
@@ -48,19 +39,18 @@ def build_preprocessing_subgraph() -> Any:
     return build()
 
 
-def build_summary_generation_subgraph() -> Any:
-    """延迟导入并装配摘要生成子图。"""
-    from app.agent.contract_extraction.subgraph.summary_generation import (
-        build_summary_generation_subgraph as build,
+def build_retrieval_view_generation_subgraph() -> Any:
+    """延迟导入并装配检索视图生成子图。"""
+    from app.agent.contract_extraction.subgraph.retrieval_view_generation import (
+        build_retrieval_view_generation_subgraph as build,
     )
 
     return build()
 
 __all__ = [
-    "build_clause_extraction_subgraph",
     "build_classification_subgraph",
+    "build_clause_extraction_subgraph",
     "build_field_extraction_subgraph",
-    "build_preheat_subgraph",
     "build_preprocessing_subgraph",
-    "build_summary_generation_subgraph",
+    "build_retrieval_view_generation_subgraph",
 ]

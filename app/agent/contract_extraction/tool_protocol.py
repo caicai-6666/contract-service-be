@@ -1,10 +1,9 @@
-"""工具型模型节点共享的 non-strict auto 协议与短期记忆恢复。"""
+"""工具型模型节点共享的 non-strict auto 协议与纠错短期记忆。"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Final
-
 
 TOOL_CHOICE_AUTO: Final = "auto"
 MAXIMUM_PROTOCOL_RECOVERIES: Final = 2
@@ -57,13 +56,23 @@ def audited_assistant_content(value: object) -> str | None:
 
 @dataclass(slots=True)
 class ToolProtocolRecovery:
-    """维护连续协议失败次数及其临时短期记忆范围。"""
+    """维护协议与工具校验失败共用的临时短期记忆范围。
+
+    失败对话只为下一轮纠错服务。某个工具动作通过全部校验后，调用方
+    必须先清除这段临时轨迹，再决定是否把正确动作写入长期会话。
+    审计记录由各节点独立维护，不受消息清理影响。
+    """
 
     maximum_attempts: int = MAXIMUM_PROTOCOL_RECOVERIES
     attempts: int = 0
     memory_start: int | None = None
 
-    def record_failure(
+    def _start_memory(self, messages: list[dict[str, Any]]) -> None:
+        """只在连续失败链的第一轮记录清理边界。"""
+        if self.memory_start is None:
+            self.memory_start = len(messages)
+
+    def record_protocol_failure(
         self,
         messages: list[dict[str, Any]],
         *,
@@ -71,9 +80,8 @@ class ToolProtocolRecovery:
         tool_call_count: int,
         result_label: str,
     ) -> bool:
-        """追加临时失败轨迹；返回是否已超过恢复上限。"""
-        if self.memory_start is None:
-            self.memory_start = len(messages)
+        """追加无合法单工具响应；返回是否超过连续协议恢复上限。"""
+        self._start_memory(messages)
         messages.append(
             {
                 "role": "assistant",
@@ -89,8 +97,41 @@ class ToolProtocolRecovery:
         self.attempts += 1
         return self.attempts > self.maximum_attempts
 
+    def record_failure(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        assistant_message: dict[str, Any],
+        tool_call_count: int,
+        result_label: str,
+    ) -> bool:
+        """兼容原调用名；新代码应使用 record_protocol_failure。"""
+        return self.record_protocol_failure(
+            messages,
+            assistant_message=assistant_message,
+            tool_call_count=tool_call_count,
+            result_label=result_label,
+        )
+
+    def accept_protocol(self) -> None:
+        """已形成单工具调用，仅重置协议失败计数，不清理纠错轨迹。"""
+        self.attempts = 0
+
+    def record_tool_failure(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        assistant_message: dict[str, Any],
+        tool_message: dict[str, Any],
+    ) -> None:
+        """追加工具解析、Schema、状态或业务校验失败对话。"""
+        self._start_memory(messages)
+        self.accept_protocol()
+        messages.append(assistant_message)
+        messages.append(tool_message)
+
     def accept_correction(self, messages: list[dict[str, Any]]) -> None:
-        """成功纠正后删除临时轨迹，并重置连续失败预算。"""
+        """动作通过全部校验后删除失败轨迹，并重置恢复状态。"""
         if self.memory_start is not None:
             del messages[self.memory_start :]
         self.attempts = 0

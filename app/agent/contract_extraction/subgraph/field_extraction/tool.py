@@ -1,4 +1,4 @@
-"""Core 与 Attribute 共享的严格扁平对象提取工具。"""
+"""Core 使用的严格扁平对象提取工具。"""
 
 from __future__ import annotations
 

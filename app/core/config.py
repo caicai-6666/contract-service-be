@@ -164,12 +164,20 @@ class Settings(BaseModel):
 
     app_env: str = "development"
     app_host: str = "127.0.0.1"
-    app_port: int = Field(default=8000, ge=1, le=65535)
+    app_port: int = Field(default=8080, ge=1, le=65535)
+    app_reload: bool = True
     log_level: str = "INFO"
     contract_category_definition_dir: Path = Path(
         "data/definition/contract-category"
     )
     field_definition_dir: Path = Path("data/definition/field")
+    retrieval_view_guide_dir: Path = Path("data/definition/retrieval-view")
+    retrieval_view_max_questions: int = Field(default=8, gt=0)
+    contract_extraction_run_ttl_seconds: int = Field(default=3600, gt=0)
+    contract_extraction_cleanup_interval_seconds: int = Field(default=30, gt=0)
+    contract_extraction_event_buffer_size: int = Field(default=256, gt=0)
+    contract_extraction_sse_heartbeat_seconds: int = Field(default=15, gt=0)
+    contract_extraction_max_stage_attempts: int = Field(default=3, gt=0)
     elasticsearch_hosts: tuple[str, ...] = ("https://localhost:9200",)
     elasticsearch_username: str | None = None
     elasticsearch_password: str | None = None
@@ -218,6 +226,13 @@ class Settings(BaseModel):
             return self.field_definition_dir
         return _PROJECT_ROOT / self.field_definition_dir
 
+    @property
+    def retrieval_view_guide_path(self) -> Path:
+        """将相对检索视图指南目录固定解析到项目根目录。"""
+        if self.retrieval_view_guide_dir.is_absolute():
+            return self.retrieval_view_guide_dir
+        return _PROJECT_ROOT / self.retrieval_view_guide_dir
+
 
 def _optional_env(name: str) -> str | None:
     """将空环境变量统一解析为未配置。"""
@@ -249,7 +264,8 @@ def get_settings() -> Settings:
     return Settings(
         app_env=_env("APP_ENV", "development"),
         app_host=_env("APP_HOST", "127.0.0.1"),
-        app_port=_env("APP_PORT", "8000"),
+        app_port=_env("APP_PORT", "8080"),
+        app_reload=_env("APP_RELOAD", "true"),
         log_level=_env("LOG_LEVEL", "INFO"),
         contract_category_definition_dir=_env(
             "CONTRACT_CATEGORY_DEFINITION_DIR",
@@ -258,6 +274,34 @@ def get_settings() -> Settings:
         field_definition_dir=_env(
             "FIELD_DEFINITION_DIR",
             "data/definition/field",
+        ),
+        retrieval_view_guide_dir=_env(
+            "RETRIEVAL_VIEW_GUIDE_DIR",
+            "data/definition/retrieval-view",
+        ),
+        retrieval_view_max_questions=_env(
+            "RETRIEVAL_VIEW_MAX_QUESTIONS",
+            "8",
+        ),
+        contract_extraction_run_ttl_seconds=_env(
+            "CONTRACT_EXTRACTION_RUN_TTL_SECONDS",
+            "3600",
+        ),
+        contract_extraction_cleanup_interval_seconds=_env(
+            "CONTRACT_EXTRACTION_CLEANUP_INTERVAL_SECONDS",
+            "30",
+        ),
+        contract_extraction_event_buffer_size=_env(
+            "CONTRACT_EXTRACTION_EVENT_BUFFER_SIZE",
+            "256",
+        ),
+        contract_extraction_sse_heartbeat_seconds=_env(
+            "CONTRACT_EXTRACTION_SSE_HEARTBEAT_SECONDS",
+            "15",
+        ),
+        contract_extraction_max_stage_attempts=_env(
+            "CONTRACT_EXTRACTION_MAX_STAGE_ATTEMPTS",
+            "3",
         ),
         elasticsearch_hosts=_hosts_env(),
         elasticsearch_username=_optional_env("ELASTICSEARCH_USERNAME"),

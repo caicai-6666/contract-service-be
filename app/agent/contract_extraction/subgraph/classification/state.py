@@ -1,6 +1,5 @@
 """合同分类子图状态。"""
 
-from datetime import datetime
 from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict
@@ -30,22 +29,6 @@ class ClassificationContext(ClassificationModel):
     prompt_version: str
     messages: tuple[dict[str, Any], ...]
     prefix_sha256: str
-
-
-class ClassificationPreheatResult(ClassificationModel):
-    """携带分类工具预热公共前缀的可观测结果。"""
-
-    status: Literal["warmed", "degraded"]
-    document_id: str
-    prompt_version: str
-    model: str
-    completed_at: datetime
-    prefix_sha256: str
-    elapsed_ms: float
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
-    cached_tokens: int | None = None
-    error: str | None = None
 
 
 class ClassificationToolCallAudit(ClassificationModel):
@@ -149,7 +132,6 @@ class ClassificationSubgraphState(TypedDict, total=False):
     category_catalog: ContractCategoryCatalog
     page_count: int
     classification_context: ClassificationContext
-    classification_preheat: ClassificationPreheatResult
     classification_run: ContractClassificationRun
     classification: ContractClassificationResult
 
@@ -158,7 +140,6 @@ __all__ = [
     "CategoryJudgmentOutcome",
     "ClassificationContext",
     "ClassificationModel",
-    "ClassificationPreheatResult",
     "ClassificationSubgraphState",
     "ClassificationToolCallAudit",
     "ContractClassificationResult",

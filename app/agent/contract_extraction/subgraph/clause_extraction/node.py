@@ -4,24 +4,17 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
-from datetime import UTC, datetime
 from time import perf_counter
 
 from pydantic import ValidationError
 
 from app.agent.contract_extraction.context import context_sha256
-from app.agent.contract_extraction.tool_protocol import (
-    ToolProtocolRecovery,
-    audited_assistant_content,
-    build_protocol_recovery_message,
-)
 from app.agent.contract_extraction.subgraph.clause_extraction.prompt import (
     CLAUSE_CONTENT_COMMON_PROMPT_VERSION,
     CLAUSE_CONTENT_TARGET_PROMPT_VERSION,
     CLAUSE_CONTENT_TOOL_PLACEMENT,
     CLAUSE_DISCOVERY_PROMPT_VERSION,
     CLAUSE_DISCOVERY_TOOL_PLACEMENT,
-    append_clause_content_prefill_task,
     append_clause_content_target,
     build_clause_content_common_messages,
     build_clause_discovery_messages,
@@ -34,7 +27,6 @@ from app.agent.contract_extraction.subgraph.clause_extraction.state import (
     ClauseContentToolCallAudit,
     ClauseDiscoveryToolCallAudit,
     ClauseExtractionContext,
-    ClauseExtractionPreheatResult,
     ClauseExtractionResult,
     ClauseExtractionSubgraphState,
     ExtractedClause,
@@ -69,6 +61,11 @@ from app.agent.contract_extraction.subgraph.clause_extraction.tool import (
     validate_clause_hierarchy_analysis,
     validate_finish_clause_discovery,
     validation_error_feedback,
+)
+from app.agent.contract_extraction.tool_protocol import (
+    ToolProtocolRecovery,
+    audited_assistant_content,
+    build_protocol_recovery_message,
 )
 from app.core.config import MLLMGenerationSettings, get_settings
 from app.infrastructure.mllm import (
@@ -238,7 +235,7 @@ async def discover_clause_candidates(
                         cached_tokens=completion.cached_tokens,
                     )
                 )
-                exceeded = protocol_recovery.record_failure(
+                exceeded = protocol_recovery.record_protocol_failure(
                     messages,
                     assistant_message=response.assistant_message,
                     tool_call_count=len(response.tool_calls),
@@ -261,7 +258,7 @@ async def discover_clause_candidates(
                 continue
 
             call = response.tool_calls[0]
-            protocol_recovery.accept_correction(messages)
+            protocol_recovery.accept_protocol()
             accepted_hierarchy_analysis: AnalyzeClauseHierarchyArguments | None = None
             accepted_item: ClauseCandidateWorkspaceItem | None = None
             accepted_completion: FinishClauseDiscoveryArguments | None = None
@@ -329,6 +326,7 @@ async def discover_clause_candidates(
                     feedback = validation_error_feedback(exc)
 
             if accepted_hierarchy_analysis is not None:
+                protocol_recovery.accept_correction(messages)
                 hierarchy_analysis = accepted_hierarchy_analysis
                 # 首轮分析成为工作区长记忆后，清空工具调用短期历史并永久移除首轮工具。
                 messages = build_clause_discovery_messages(
@@ -338,6 +336,7 @@ async def discover_clause_candidates(
                 )
                 short_term_reset = True
             elif accepted_item is not None:
+                protocol_recovery.accept_correction(messages)
                 if isinstance(arguments, RecordClauseCandidateArguments):
                     workspace = (*workspace, accepted_item)
                 else:
@@ -351,8 +350,17 @@ async def discover_clause_candidates(
                 )
                 short_term_reset = True
             else:
-                messages.append(response.assistant_message)
-                messages.append(_tool_message(call, feedback))
+                tool_message = _tool_message(call, feedback)
+                if feedback.ok:
+                    protocol_recovery.accept_correction(messages)
+                    messages.append(response.assistant_message)
+                    messages.append(tool_message)
+                else:
+                    protocol_recovery.record_tool_failure(
+                        messages,
+                        assistant_message=response.assistant_message,
+                        tool_message=tool_message,
+                    )
 
             completion = response.completion
             audits.append(
@@ -404,10 +412,10 @@ async def discover_clause_candidates(
     }
 
 
-async def preheat_clause_extraction_context(
+def assemble_clause_extraction_context(
     state: ClauseExtractionSubgraphState,
 ) -> ClauseExtractionSubgraphState:
-    """节点二：组装条款详情公共上下文，并携带固定工具异步预热。"""
+    """节点二：确定性组装条款详情公共上下文。"""
     prepared_pdf = state["prepared_pdf"]
     prefill_context = state["prefill_context"]
     discovery = state["clause_candidates"]
@@ -417,76 +425,24 @@ async def preheat_clause_extraction_context(
         discovery.document_id,
     }
     if len(document_ids) != 1:
-        raise ValueError("条款详情预热输入的 document_id 不一致")
+        raise ValueError("条款详情上下文输入的 document_id 不一致")
     if discovery.status != "completed":
         raise ValueError("条款候选发现未成功，不能组装条款详情公共上下文")
     if not discovery.candidates:
-        raise ValueError("条款候选目录为空，不能预热条款详情提取")
+        raise ValueError("条款候选目录为空，不能组装条款详情公共上下文")
 
     # 当前候选不进入该上下文；节点三只在此稳定边界之后追加单候选目标。
     messages = build_clause_content_common_messages(
         prefill_context,
         discovery.candidates,
     )
-    context = ClauseExtractionContext(
-        document_id=prefill_context.document_id,
-        prompt_version=CLAUSE_CONTENT_COMMON_PROMPT_VERSION,
-        tool_version=CLAUSE_CONTENT_TOOL_VERSION,
-        messages=tuple(messages),
-        prefix_sha256=context_sha256(messages),
-    )
-
-    settings = get_settings().mllm
-    generation = settings.generation
-    generation_profile = build_clause_content_generation_profile(generation)
-    started_at = perf_counter()
-    async with MLLMClient(settings) as client:
-        try:
-            response = await client.create_tool_chat_completion(
-                messages=append_clause_content_prefill_task(context.messages),
-                tools=list(CLAUSE_CONTENT_TOOLS),
-                tool_choice=CLAUSE_CONTENT_TOOL_CHOICE,
-                max_completion_tokens=1,
-                temperature=generation_profile.temperature,
-                top_p=generation_profile.top_p,
-                top_k=generation_profile.top_k,
-                presence_penalty=generation_profile.presence_penalty,
-                repetition_penalty=generation_profile.repetition_penalty,
-                seed=generation.seed,
-                enable_thinking=False,
-                tool_placement=CLAUSE_CONTENT_TOOL_PLACEMENT,
-            )
-        except MLLMUnavailableError as exc:
-            return {
-                "clause_extraction_context": context,
-                "clause_extraction_preheat": ClauseExtractionPreheatResult(
-                    status="degraded",
-                    document_id=context.document_id,
-                    prompt_version=context.prompt_version,
-                    tool_version=context.tool_version,
-                    model=settings.model,
-                    completed_at=datetime.now(UTC),
-                    prefix_sha256=context.prefix_sha256,
-                    elapsed_ms=round((perf_counter() - started_at) * 1000, 3),
-                    error=str(exc),
-                ),
-            }
-
-    completion = response.completion
     return {
-        "clause_extraction_context": context,
-        "clause_extraction_preheat": ClauseExtractionPreheatResult(
-            status="warmed",
-            document_id=context.document_id,
-            prompt_version=context.prompt_version,
-            tool_version=context.tool_version,
-            model=completion.model or settings.model,
-            completed_at=datetime.now(UTC),
-            prefix_sha256=context.prefix_sha256,
-            elapsed_ms=round((perf_counter() - started_at) * 1000, 3),
-            prompt_tokens=completion.prompt_tokens,
-            completion_tokens=completion.completion_tokens,
-            cached_tokens=completion.cached_tokens,
+        "clause_extraction_context": ClauseExtractionContext(
+            document_id=prefill_context.document_id,
+            prompt_version=CLAUSE_CONTENT_COMMON_PROMPT_VERSION,
+            tool_version=CLAUSE_CONTENT_TOOL_VERSION,
+            messages=tuple(messages),
+            prefix_sha256=context_sha256(messages),
         )
     }
 
@@ -683,7 +639,7 @@ async def _extract_one_clause(
                     cached_tokens=completion.cached_tokens,
                 )
             )
-            exceeded = protocol_recovery.record_failure(
+            exceeded = protocol_recovery.record_protocol_failure(
                 messages,
                 assistant_message=response.assistant_message,
                 tool_call_count=len(response.tool_calls),
@@ -700,8 +656,7 @@ async def _extract_one_clause(
             continue
 
         call = response.tool_calls[0]
-        protocol_recovery.accept_correction(messages)
-        messages.append(response.assistant_message)
+        protocol_recovery.accept_protocol()
         accepted_content = None
         try:
             arguments = parse_clause_content_tool_arguments(
@@ -717,7 +672,17 @@ async def _extract_one_clause(
             feedback = clause_content_validation_error_feedback(exc)
         else:
             feedback = successful_clause_content_feedback(accepted_content)
-        messages.append(_content_tool_message(call, feedback))
+        tool_message = _content_tool_message(call, feedback)
+        if feedback.ok:
+            protocol_recovery.accept_correction(messages)
+            messages.append(response.assistant_message)
+            messages.append(tool_message)
+        else:
+            protocol_recovery.record_tool_failure(
+                messages,
+                assistant_message=response.assistant_message,
+                tool_message=tool_message,
+            )
 
         audits.append(
             ClauseContentToolCallAudit(
@@ -770,12 +735,10 @@ async def extract_clause_contents(
     prepared_pdf = state["prepared_pdf"]
     discovery = state["clause_candidates"]
     context = state["clause_extraction_context"]
-    preheat = state["clause_extraction_preheat"]
     document_ids = {
         prepared_pdf.document_id,
         discovery.document_id,
         context.document_id,
-        preheat.document_id,
     }
     if len(document_ids) != 1:
         raise ValueError("条款详情提取输入的 document_id 不一致")
@@ -785,13 +748,6 @@ async def extract_clause_contents(
         raise ValueError("条款详情公共提示词版本与当前实现不一致")
     if context.tool_version != CLAUSE_CONTENT_TOOL_VERSION:
         raise ValueError("条款详情公共工具版本与当前实现不一致")
-    if (
-        preheat.prefix_sha256 != context.prefix_sha256
-        or preheat.prompt_version != context.prompt_version
-        or preheat.tool_version != context.tool_version
-    ):
-        raise ValueError("条款详情预热结果与公共上下文不一致")
-
     settings = get_settings().mllm
     generation_profile = build_clause_content_generation_profile(settings.generation)
     semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
@@ -829,7 +785,6 @@ async def extract_clause_contents(
             target_prompt_version=CLAUSE_CONTENT_TARGET_PROMPT_VERSION,
             tool_version=context.tool_version,
             prefix_sha256=context.prefix_sha256,
-            preheat=preheat,
             generation_profile=generation_profile,
             clauses=clauses,
             elapsed_ms=round((perf_counter() - started_at) * 1000, 3),
@@ -838,8 +793,8 @@ async def extract_clause_contents(
 
 
 __all__ = [
+    "assemble_clause_extraction_context",
     "build_clause_content_generation_profile",
     "discover_clause_candidates",
     "extract_clause_contents",
-    "preheat_clause_extraction_context",
 ]

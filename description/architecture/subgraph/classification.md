@@ -1,25 +1,24 @@
 # 合同分类子图
 
-> **用途：** 本文定义合同分类在主工作流中的输入、公共前缀、工具预热、逐类别并发判定和输出边界。
+> **用途：** 本文定义合同分类在主工作流中的输入、公共前缀、逐类别并发判定和输出边界。
 
 ---
 
 ## 子图定位
 
-分类子图位于基础前缀组装节点与最终预热子图之间。它读取已经稳定组装的 `ContractBaseContext`、启动期类别快照和 PDF 页数，对全部已知类别分别判断合同是否具备该类别的核心权利义务结构，并将紧凑分类结果交给最终前缀组装节点。
+分类子图位于基础前缀组装节点与最终前缀组装节点之间。它读取已经稳定组装的 `ContractBaseContext`、启动期类别快照和 PDF 页数，对全部已知类别分别判断合同是否具备该类别的核心权利义务结构，并将紧凑分类结果交给最终前缀组装节点。
 
 ```mermaid
 flowchart TD
     input["ContractBaseContext + ContractCategoryCatalog + page_count"]
     assemble["assemble_classification_context<br/>组装分类公共前缀"]
-    prefill["prefill_classification_context<br/>携带工具预热"]
     classify["classify_contract<br/>逐类别并发工具循环"]
     output["合同分类结果"]
 
-    input --> assemble --> prefill --> classify --> output
+    input --> assemble --> classify --> output
 ```
 
-三个节点均已实现。类别定义与正反例由 FastAPI 启动生命周期全量加载为不可变 `ContractCategoryCatalog`，保存在 `application.state.contract_category_catalog`，再由业务用例作为显式输入传入主图和分类子图；子图不会在每份合同或每个类别请求中重复扫描 YAML，也不依赖可变的模块级全局目录。
+两个节点均已实现。类别定义与正反例由 FastAPI 启动生命周期全量加载为不可变 `ContractCategoryCatalog`，保存在 `application.state.contract_category_catalog`，再由业务用例作为显式输入传入主图和分类子图；子图不会在每份合同或每个类别请求中重复扫描 YAML，也不依赖可变的模块级全局目录。
 
 ---
 
@@ -59,29 +58,21 @@ flowchart TD
 
 ---
 
-## 分类公共前缀预热节点
-
-`prefill_classification_context` 在并行分类之前向本地 vLLM 发起异步单 token 请求。请求复用完整 `ClassificationContext`，使用独立 user 消息追加一次性预热任务，并携带与后续单类别判别完全相同、顺序稳定的 `CLASSIFICATION_TOOLS`、`tool_choice="auto"`、`tool_placement="before_task"` 和 `enable_thinking=false`。
-
-> **工具模板属于缓存边界：** vLLM 的聊天模板可能把函数工具定义序列化到模型提示中。仅预热 messages 而不传工具，可能使正式分类请求在 PDF 之前就发生 token 分叉。因此预热和并行分类必须复用同一套工具定义及顺序。
-
-节点输出私有 `ClassificationPreheatResult`，记录状态、模型、提示词版本、公共前缀指纹、耗时及可用的 prompt、completion 和 cached token 指标。连接或超时错误记为 `degraded` 并继续分类；请求参数或工具契约错误属于实现问题，不能静默降级。预热生成内容不是业务结果，不进入后续分类上下文。
-
-分类节点私有的 function tools 位于 `subgraph/classification/tool.py`，只由预热和正式判定节点使用，不从分类子图的公开入口导出。服务端 Schema 使用 `strict:false` 绕过 XGrammar，本地 Pydantic 仍禁止额外参数和宽松类型转换。
-
----
-
 ## 单类别判别工具
+
+分类节点私有的 function tools 位于 `subgraph/classification/tool.py`，只由正式判定节点使用，不从分类子图的公开入口导出。服务端 Schema 使用 `strict:false` 绕过 XGrammar，本地 Pydantic 仍禁止额外参数和宽松类型转换。
+
+并发分类直接复用同一个 `ClassificationContext`、相同工具定义和稳定工具顺序，让 vLLM 在首批请求之间自然建立公共前缀缓存。隔离 A/B 实验表明显式单 token 分类预热只带来很小的计算 token 节约，未形成墙钟收益，因此分类子图不再额外发送预热请求。
 
 每个单类别模型会话固定拥有三个工具：`think` 记录一段自然语言推理但不产生正式决定；`not_belong_to_category` 提交不命中决定并终止当前类别判别；`belong_to_category` 提交命中决定、生成下游命中卡片并终止当前类别判别。节点使用 `strict:false + tool_choice:auto`；提示词明确合法 XML 工具调用格式，程序每轮仍只接受恰好一个工具调用，绝不把自由文本解析为分类结果。
 
 两个终止工具都按“证据 → 推理摘要 → 决定”组织参数。`not_belong_to_category` 的工具名称已经表达最终决定，因此只提交页面证据与不命中理由；`belong_to_category` 最后额外提交当前合同交易场景概括。证据只记录物理页码和可核对的短内容，不接受坐标或其他视觉位置。
 
-`category_code` 与 `category_name` 不属于模型参数。程序必须从当前请求对应的权威 `definition.yaml` 注入这两个身份，并与模型提交的证据、推理摘要和场景概括共同构造 `CategoryMatchCard`。这样可以避免模型改写目标类别，也能让最终预热和下游节点获得稳定、可审计的分类卡片。
+`category_code` 与 `category_name` 不属于模型参数。程序必须从当前请求对应的权威 `definition.yaml` 注入这两个身份，并与模型提交的证据、推理摘要和场景概括共同构造 `CategoryMatchCard`。这样可以避免模型改写目标类别，也能让最终前缀和下游节点获得稳定、可审计的分类卡片。
 
 工具成功反馈只保留是否接受和一句后续指引；错误反馈必须指出参数路径、具体问题和修正方向。参数缺失时要求补充，出现未定义参数时要求删除，类型或取值错误时要求按当前工具 Schema 修正。工具层只校验静态结构，页码是否超出当前 PDF 范围仍由后续节点结合文档状态校验。
 
-`classify_contract` 按 MLLM 共享并发配额并发处理全部类别，每个类别拥有隔离的 messages、工具反馈和最多八轮短期记忆。没有恰好一个工具调用时，程序保留有限原始文本到私有审计，追加不回显原文的 XML 纠正反馈并提供两次恢复机会；纠正成功后删除临时错误轨迹，连续第三次失败才把该类别标记为 `failed`。连续 `think` 超过两次会收到要求作出终止决定的错误反馈；终止工具引用的页码必须位于 `1..page_count`。单个类别失败不会取消其他类别任务。
+`classify_contract` 按 MLLM 共享并发配额并发处理全部类别，每个类别拥有隔离的 messages、工具反馈和最多八轮短期记忆。没有恰好一个工具调用时，程序保留有限原始文本到私有审计，追加不回显原文的 XML 纠正反馈并提供两次恢复机会；未知工具、参数错误、连续 `think` 超限和终止证据页码越界也进入同一临时纠错记忆。后续动作通过全部校验后删除整条错误轨迹，只保留正确动作和私有审计；连续第三次协议失败才把该类别标记为 `failed`。终止工具引用的页码必须位于 `1..page_count`，单个类别失败不会取消其他类别任务。
 
 当全部类别成功结束且没有任何 `matched` 时，节点额外发起一次 `unmapped-type-description-v3` 请求。该请求复用分类公共前缀，只提供一个 non-strict `describe_unmapped_type` 工具，并采用同一有界协议恢复，让模型按证据、推理摘要、最终描述生成一段简短中文交易类型说明。它不创建类别 code、不命名为 `other`、不写定义目录，也不触发第二套类别发现流程；`partial` 或 `failed` 不调用该兜底，因为此时不能确认正式目录确实没有覆盖合同。
 
@@ -93,7 +84,6 @@ flowchart TD
 
 - 输入：不可变的 `contract-base-context-v3` `ContractBaseContext`、启动期 `ContractCategoryCatalog` 和物理 `page_count`。
 - 中间状态：不可变的 `ClassificationContext`，包含基础前缀与分类公共规则；只供分类子图内部使用。
-- 预热状态：`ClassificationPreheatResult` 只记录缓存请求观测信息，不作为分类证据。
 - 私有输出：`ContractClassificationRun` 保存全部类别的 `matched`、`not_matched` 或 `failed` 终态、工具审计、用量、耗时，以及可选的未映射描述证据、错误和兜底工具审计，只供运行观测与实验分析。
 - 下游输出：`ContractClassificationResult` 保存状态、目录与提示词版本、命中卡片、失败类别 code，以及 `unmapped` 时可选的一段类型描述，并追加到 `ContractPrefillContext`；未命中证据、工具历史和短期记忆不进入下游公共前缀。
 
@@ -106,7 +96,7 @@ flowchart TD
 | `partial` | 至少一个类别失败，不能宣称类别覆盖完整；保留已确认命中。 |
 | `failed` | 所有类别会话均失败。 |
 
-> **前缀边界：** 单类别请求复用“基础前缀 + 分类公共规则”；最终预热和三个下游任务复用“基础前缀 + 分类结果”。各上下文拥有独立指纹，不允许原地改写上游对象。
+> **前缀边界：** 单类别请求复用“基础前缀 + 分类公共规则”；三个下游任务复用“基础前缀 + 分类结果”。各上下文拥有独立指纹，不允许原地改写上游对象。
 
 ---
 
@@ -124,12 +114,12 @@ flowchart TD
 
 子图由 `app.agent.contract_extraction.subgraph.classification` 自行装配，主图只调用 `build_classification_subgraph`。当前最小验证包括：
 
-- 子图严格按 `assemble_classification_context` → `prefill_classification_context` → `classify_contract` 排列。
+- 子图严格按 `assemble_classification_context` → `classify_contract` 排列。
 - 输入 `ContractBaseContext` 不被修改。
 - 相同基础前缀重复组装时，`ClassificationContext` 消息和指纹完全一致。
-- 预热请求携带与并行分类一致的三个工具、固定工具顺序和单 token 生成上限。
+- 所有并发分类请求携带相同的三个工具、固定工具顺序和同一公共消息前缀，不插入独立分类预热请求。
 - 正式请求显式使用 `before_task`，并把工具稳定放在公共消息与类别任务消息之间。
 - 单类别页码错误进入短期记忆后可以修正，命中身份始终由程序注入。
 - 全部类别未命中时只额外调用一次描述工具，公开结果只保留类型描述字符串。
 - 私有 `classification_run` 与下游 `classification` 结果严格分离。
-- 主图顺序严格为“基础组装 → 分类 → 最终预热”。
+- 主图顺序严格为“基础组装 → 分类 → 最终前缀组装”。

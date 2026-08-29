@@ -1,19 +1,73 @@
 """合同信息抽取工作流的输入、状态与占位输出契约。"""
 
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, SerializeAsAny
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializeAsAny,
+    field_validator,
+    model_validator,
+)
 from typing_extensions import TypedDict
 
 
 class ContractExtractionRequest(BaseModel):
-    """工作流的最小输入；字段定义和模型参数将在后续节点中补充。"""
+    """工作流的 PDF 输入；文件路径和内存字节必须二选一。"""
 
     model_config = ConfigDict(frozen=True)
 
-    pdf_path: Path
+    pdf_path: Path | None = None
+    pdf_bytes: bytes | None = Field(default=None, repr=False, exclude=True)
+    file_name: str | None = None
+
+    @field_validator("file_name")
+    @classmethod
+    def normalize_file_name(cls, value: str | None) -> str | None:
+        """内存上传只保留安全的展示文件名，不把它解释为服务器路径。"""
+        if value is None:
+            return None
+        normalized = Path(value.strip()).name
+        if not normalized or normalized in {".", ".."}:
+            raise ValueError("PDF 文件名不能为空")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "ContractExtractionRequest":
+        """拒绝无来源或同时提供两个来源的含混请求。"""
+        has_path = self.pdf_path is not None
+        has_bytes = self.pdf_bytes is not None
+        if has_path == has_bytes:
+            raise ValueError("pdf_path 与 pdf_bytes 必须且只能提供一个")
+        if has_bytes:
+            if not self.pdf_bytes:
+                raise ValueError("PDF 字节不能为空")
+            if self.file_name is None:
+                raise ValueError("内存 PDF 必须提供 file_name")
+        return self
+
+    @property
+    def source_name(self) -> str:
+        """返回可安全展示的源文件名。"""
+        if self.file_name is not None:
+            return self.file_name
+        assert self.pdf_path is not None
+        return self.pdf_path.name
+
+    @property
+    def source_path(self) -> Path:
+        """返回路径输入或仅用于兼容内部结果的展示路径。"""
+        return self.pdf_path if self.pdf_path is not None else Path(self.source_name)
+
+    @property
+    def pdf_source(self) -> Path | bytes:
+        """返回预处理工具能够直接读取的实际来源。"""
+        if self.pdf_path is not None:
+            return self.pdf_path
+        assert self.pdf_bytes is not None
+        return self.pdf_bytes
 
 
 class WorkflowPlaceholder(BaseModel):
@@ -27,12 +81,11 @@ class WorkflowPlaceholder(BaseModel):
 
 
 class FieldExtractionResult(BaseModel):
-    """字段提取父子图汇总 Core 正式结果与 Attribute 当前结果。"""
+    """字段提取子图汇总的 Core 正式结果。"""
 
     model_config = ConfigDict(frozen=True)
 
     core: SerializeAsAny[BaseModel]
-    attribute: WorkflowPlaceholder
 
 
 class PreparedPDFPage(BaseModel):
@@ -97,7 +150,7 @@ class ContractBaseContext(BaseModel):
 
 
 class ContractPrefillContext(BaseModel):
-    """追加分类结果后，供最终预热与三个下游子图复用的不可变前缀。"""
+    """追加分类结果后，供三个下游子图复用的不可变前缀。"""
 
     model_config = ConfigDict(frozen=True)
 
@@ -107,24 +160,6 @@ class ContractPrefillContext(BaseModel):
     prefix_sha256: str
 
 
-class ContractPreheatResult(BaseModel):
-    """包含 PDF、文档结构与分类结果的最终公共前缀预热结果。"""
-
-    model_config = ConfigDict(frozen=True)
-
-    status: Literal["warmed", "degraded"]
-    document_id: str
-    prompt_version: str
-    model: str
-    completed_at: datetime
-    prefix_sha256: str
-    elapsed_ms: float
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
-    cached_tokens: int | None = None
-    error: str | None = None
-
-
 class ContractExtractionResult(BaseModel):
     """结构理解与三个业务子图合并后的工作流结果。"""
 
@@ -132,11 +167,12 @@ class ContractExtractionResult(BaseModel):
 
     pdf_path: Path
     classification: SerializeAsAny[BaseModel]
-    preheat: ContractPreheatResult
     document_structure: SerializeAsAny[BaseModel]
     field_extraction: FieldExtractionResult
     clause_extraction: SerializeAsAny[BaseModel]
-    summary_generation: WorkflowPlaceholder
+    retrieval_questions: SerializeAsAny[BaseModel]
+    retrieval_question_embeddings: SerializeAsAny[BaseModel]
+    contract_retrieval_vector: SerializeAsAny[BaseModel]
 
 
 class ContractExtractionState(TypedDict, total=False):
@@ -145,14 +181,16 @@ class ContractExtractionState(TypedDict, total=False):
     request: ContractExtractionRequest
     category_catalog: BaseModel
     field_definition_catalog: BaseModel
+    retrieval_view_guide_catalog: BaseModel
     prepared_pdf: PreparedPDF
     prompt_context: PDFPromptContext
     base_context: ContractBaseContext
     classification: BaseModel
     prefill_context: ContractPrefillContext
-    preheat: ContractPreheatResult
     document_structure: BaseModel
     field_extraction: FieldExtractionResult
     clause_extraction: BaseModel
-    summary_generation: WorkflowPlaceholder
+    retrieval_questions: BaseModel
+    retrieval_question_embeddings: BaseModel
+    contract_retrieval_vector: BaseModel
     result: ContractExtractionResult

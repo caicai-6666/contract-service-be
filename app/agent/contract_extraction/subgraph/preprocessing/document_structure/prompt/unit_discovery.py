@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from app.agent.contract_extraction.state import PDFPromptPage, PreparedPDFPage
-from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
 from app.agent.contract_extraction.subgraph.preprocessing.prompt import (
     build_pdf_messages,
 )
+from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
 
-UNIT_DISCOVERY_PROMPT_VERSION = "document-structure-unit-discovery-v11"
+UNIT_DISCOVERY_PROMPT_VERSION = "document-structure-unit-discovery-v12"
 
-UNIT_DISCOVERY_TASK = f"""你已获得按物理页码排列的完整合同 PDF。当前任务是建立一份中等粒度的合同导航结构，供字段、条款和摘要等具体任务准确定位合同内容。
+UNIT_DISCOVERY_TASK = f"""你已获得按物理页码排列的完整合同 PDF。当前任务是建立一份中等粒度的合同导航结构，供字段、条款和问题驱动的检索视图等具体任务准确定位合同内容。
 
 内容单元定义：
 内容单元位于“整份合同”和“最小条款”之间，是合同原始顺序中一个连续、功能完整且可以独立导航的内容区域。在同一具体功能内部尽量合并，不同导航功能之间保持分离。

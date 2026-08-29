@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict
@@ -73,23 +72,6 @@ class ClauseExtractionContext(ClauseExtractionModel):
     tool_version: str
     messages: tuple[dict[str, Any], ...]
     prefix_sha256: str
-
-
-class ClauseExtractionPreheatResult(ClauseExtractionModel):
-    """条款详情公共任务与固定工具块的预热观测结果。"""
-
-    status: Literal["warmed", "degraded"]
-    document_id: str
-    prompt_version: str
-    tool_version: str
-    model: str
-    completed_at: datetime
-    prefix_sha256: str
-    elapsed_ms: float
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
-    cached_tokens: int | None = None
-    error: str | None = None
 
 
 class ClauseContentToolCallAudit(ClauseExtractionModel):
@@ -178,7 +160,6 @@ class ClauseExtractionResult(ClauseExtractionModel):
     target_prompt_version: str
     tool_version: str
     prefix_sha256: str
-    preheat: ClauseExtractionPreheatResult
     generation_profile: ClauseContentGenerationProfile
     clauses: tuple[ClauseContentOutcome, ...]
     elapsed_ms: float
@@ -192,7 +173,6 @@ class ClauseExtractionSubgraphState(TypedDict, total=False):
     prefill_context: ContractPrefillContext
     clause_candidates: ClauseCandidateDiscoveryResult
     clause_extraction_context: ClauseExtractionContext
-    clause_extraction_preheat: ClauseExtractionPreheatResult
     clause_extraction: ClauseExtractionResult
 
 
@@ -206,7 +186,6 @@ __all__ = [
     "ClauseDiscoveryToolCallAudit",
     "ClauseExtractionContext",
     "ClauseExtractionModel",
-    "ClauseExtractionPreheatResult",
     "ClauseExtractionResult",
     "ClauseExtractionSubgraphState",
     "ExtractedClause",

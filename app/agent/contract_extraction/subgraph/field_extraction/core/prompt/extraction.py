@@ -57,9 +57,6 @@ CORE_FIELD_TASK = """当前唯一提取对象定义如下。定义是对象语�
 ```
 """
 
-CORE_PREFILL_TASK = """你已获得当前合同及 Core 对象提取通用规则，但尚未获得唯一对象定义和对应工具。请先读取已有材料，并准备在收到具体对象定义后进行提取；现在不要提取任何对象。"""
-
-
 def serialize_field_definition(definition: FieldDefinition) -> str:
     """按模型提取对象定义顺序生成稳定 YAML。"""
     return yaml.safe_dump(
@@ -83,16 +80,6 @@ def build_core_common_messages(
     )
 
 
-def append_core_prefill_task(
-    core_messages: tuple[dict[str, Any], ...],
-) -> list[dict[str, Any]]:
-    """复制 Core 公共任务，并追加不属于共享前缀的单 token 任务。"""
-    return append_contract_task(
-        core_messages,
-        task_suffix=CORE_PREFILL_TASK,
-    )
-
-
 def build_core_messages(
     core_context: CoreContext,
     definition: FieldDefinition,
@@ -110,7 +97,6 @@ __all__ = [
     "CORE_COMMON_PROMPT_VERSION",
     "CORE_EXTRACTION_PROMPT_VERSION",
     "FIELD_DEFINITION_GUIDE",
-    "append_core_prefill_task",
     "build_core_common_messages",
     "build_core_messages",
     "serialize_field_definition",

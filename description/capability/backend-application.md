@@ -1,6 +1,6 @@
 # FastAPI 后端应用骨架
 
-> **用途：** 本能力文档说明 HTTP 服务的分层边界、启动期只读业务目录、Elasticsearch 客户端生命周期和当前可用的系统接口。
+> **用途：** 本能力文档说明 HTTP 服务的分层边界、启动期只读业务目录、共享客户端生命周期、配置和应用启动方式。合同处理接口见[合同提取 API](../api/contract-extraction.md)，状态机见[合同提取应用运行时](../architecture/contract-extraction-runtime.md)。
 
 ---
 
@@ -8,13 +8,13 @@
 
 | 包 | 职责 |
 | --- | --- |
-| `app.main` | 创建 FastAPI 应用，加载只读业务目录，并管理共享客户端的启动与关闭。 |
+| `app.main` | 创建 FastAPI 应用，加载只读业务目录，管理共享客户端，并提供本地开发服务器入口。 |
 | `app.api` | 定义 HTTP 路由并组合版本化接口。 |
-| `app.schema` | 定义请求和响应的 Pydantic 契约。 |
+| `app.schema` | 定义跨能力复用的简单 HTTP Schema。 |
 | `app.core` | 加载和校验应用配置。 |
 | `app.infrastructure` | 适配 Elasticsearch 等外部系统。 |
 | `app.agent` | 存放可复用的合同处理 Agent 工作流。 |
-| `app.service` | 承载业务用例，调用 Agent 工作流并协调外部依赖。 |
+| `app.service` | 承载业务用例及其应用契约，调用 Agent 工作流并协调外部依赖。 |
 | `app.tool` | 存放无业务状态的通用技术工具，例如 PDF 页面渲染和压缩。 |
 
 路由层只负责协议转换和依赖装配；服务层负责业务用例、权限、幂等性和持久化边界；复杂的模型编排与状态流转位于 `agent`。
@@ -25,7 +25,9 @@
 
 ## Elasticsearch 边界
 
-Elasticsearch 是当前唯一规划的持久化和检索后端。应用启动时使用 HTTPS、CA 证书校验和基本认证创建一个 `AsyncElasticsearch` 客户端，并在关闭时释放；创建客户端本身不探测服务连通性，因此 `/api/health` 仅反映 API 进程是否可用。
+Elasticsearch 是当前唯一规划的正式持久化和检索后端。应用启动时使用 HTTPS、CA 证书校验和基本认证创建一个 `AsyncElasticsearch` 客户端，并在关闭时释放；创建客户端本身不探测服务连通性，因此 `/contract/api/health` 仅反映 API 进程是否可用。
+
+自动合同处理的原始 PDF、阶段状态和草稿不写入 Elasticsearch，只驻留当前 API 进程内存。只有未来由专家确认后的最终对象才允许进入正式索引；完整边界见[合同提取应用运行时](../architecture/contract-extraction-runtime.md)。
 
 需要访问 Elasticsearch 的路由或服务通过 `get_elasticsearch_client` 注入客户端。具体索引、mapping 和查询策略应随相应业务能力建立专题文档和机器可读契约。
 
@@ -37,15 +39,37 @@ Elasticsearch 是当前唯一规划的持久化和检索后端。应用启动时
 
 加载发生在服务开始接收请求之前；任一文件布局、Schema 或跨类别引用错误都会使启动失败。目录只在每个应用进程启动时读取一次，运行期间分类用例复用同一个内存快照。类别对象、严格校验和内容指纹的完整契约见[合同交易类别定义结构](../architecture/contract-category-definition.md)。
 
-同一生命周期还会从 `FIELD_DEFINITION_DIR` 全量读取 Core 与 Attribute YAML，构造不可变 `FieldDefinitionCatalog` 并保存到 `application.state.field_definition_catalog`。Core 必须非空，Attribute 允许为空；两类名称必须全局唯一。字段对象结构、目录边界和指纹规则见[模型提取对象定义结构](../architecture/field-definition.md)。
+同一生命周期还会从 `FIELD_DEFINITION_DIR` 全量读取 Core YAML，构造不可变 `FieldDefinitionCatalog` 并保存到 `application.state.field_definition_catalog`。Core 必须非空且名称全局唯一；根目录不允许出现 `core` 之外的职责目录。字段对象结构、目录边界和指纹规则见[模型提取对象定义结构](../architecture/field-definition.md)。
 
 ---
 
-## 配置与接口
+## 配置与启动
 
-配置从项目根目录的 `.env` 加载；可复制 `.env.example` 作为本地模板。合同类别目录使用 `CONTRACT_CATEGORY_DEFINITION_DIR`，字段定义总目录使用 `FIELD_DEFINITION_DIR`。Elasticsearch 使用逗号分隔的 `ELASTICSEARCH_HOSTS`、`ELASTICSEARCH_USERNAME`、`ELASTICSEARCH_PASSWORD`、`ELASTICSEARCH_CA_CERTS` 和 `ELASTICSEARCH_VERIFY_CERTS`。用户名和密码必须同时配置。
+配置从项目根目录的 `.env` 加载；可复制 `.env.example` 作为本地模板。合同类别目录使用 `CONTRACT_CATEGORY_DEFINITION_DIR`，字段定义总目录使用 `FIELD_DEFINITION_DIR`，检索问题指南目录使用 `RETRIEVAL_VIEW_GUIDE_DIR`。`RETRIEVAL_VIEW_MAX_QUESTIONS` 是单份合同由模型提出的问题数量上限，默认值为 `8`，必须大于零；实际问题数量可以更少。Elasticsearch 使用逗号分隔的 `ELASTICSEARCH_HOSTS`、`ELASTICSEARCH_USERNAME`、`ELASTICSEARCH_PASSWORD`、`ELASTICSEARCH_CA_CERTS` 和 `ELASTICSEARCH_VERIFY_CERTS`。用户名和密码必须同时配置。
+
+### 合同处理内存配置
+
+合同处理期间的 PDF、阶段结果和事件只驻留当前 API 进程。以下配置决定内存任务的保留、订阅和重试边界；状态转换语义见[合同提取应用运行时](../architecture/contract-extraction-runtime.md)。
+
+| 环境变量 | 默认值 | 作用 |
+| --- | ---: | --- |
+| `CONTRACT_EXTRACTION_RUN_TTL_SECONDS` | `3600` | 最近一次状态更新后的内存保留时间。 |
+| `CONTRACT_EXTRACTION_CLEANUP_INTERVAL_SECONDS` | `30` | 到期任务扫描间隔。 |
+| `CONTRACT_EXTRACTION_EVENT_BUFFER_SIZE` | `256` | 每个任务可供 SSE 回放的业务事件数。 |
+| `CONTRACT_EXTRACTION_SSE_HEARTBEAT_SECONDS` | `15` | 无业务事件时的 SSE 心跳间隔。 |
+| `CONTRACT_EXTRACTION_MAX_STAGE_ATTEMPTS` | `3` | 每个下游分支包含首次执行在内的最大尝试次数。 |
+
+本地开发可从项目根目录直接启动应用：
+
+```bash
+python -m app.main
+```
+
+该入口使用导入字符串 `app.main:app` 启动 Uvicorn，因此支持热更新。监听地址和端口分别由 `APP_HOST`、`APP_PORT` 控制；默认端口为 `8080`，避免与默认监听 `8000` 的 MLLM 冲突。`APP_RELOAD=true` 时监视 Python 源码变化并重启应用，部署环境必须显式设置为 `false`。热更新与多 worker 互斥，当前入口不创建额外 worker。
 
 正式写入使用 `ELASTICSEARCH_INDEX_NAME=contracts-v1`；入库验收只能使用 `ELASTICSEARCH_INGESTION_EXPERIMENT_INDEX_NAME=contracts-ingestion-experiment-v1`，可删除并按正式 mapping 重建，但绝不能触碰正式索引。向量维度、分片数和副本数分别由 `ELASTICSEARCH_VECTOR_DIMENSIONS`、`ELASTICSEARCH_NUMBER_OF_SHARDS` 和 `ELASTICSEARCH_NUMBER_OF_REPLICAS` 配置。`data/certs/` 是本地运行时证书目录，已被 Git 忽略。
+
+---
 
 ## 本地模型配置
 
@@ -53,7 +77,7 @@ Elasticsearch 是当前唯一规划的持久化和检索后端。应用启动时
 
 | 模型 | 默认地址 | 端点 | 主要职责 |
 | --- | --- | --- | --- |
-| MLLM | `http://127.0.0.1:8000/v1` | `chat_completions` | 合同的 Core→Attribute、Clause 与 Abstract 提取。 |
+| MLLM | `http://127.0.0.1:8000/v1` | `chat_completions` | 合同的 Core、Clause 与 Retrieval Question 生成。 |
 | Embedding | `http://127.0.0.1:8001/v1` | `embeddings` | 字段、合同与候选的向量化。 |
 | Reranker | `http://127.0.0.1:8002/v1` | `rerank` | 检索候选的重排。 |
 
@@ -88,4 +112,4 @@ vllm serve ~/autodl-tmp/model/Qwen3.6-35B-A3B-FP8 \
 
 若 vLLM 因 KV cache 容量不足而拒绝 `65536`，应优先降低 `--max-num-seqs`，再根据实际显存调整 `--gpu-memory-utilization`，不能让应用配置的上下文大于服务端上限。配置模型同时校验 MLLM 的非视觉预留和显式视觉上限不超过上下文窗口、重排 `top_n` 不超过候选上限，以及 Embedding 输出维度与 Elasticsearch 向量维度一致。
 
-当前提供 `GET /api/health`，响应服务状态和运行环境。ASGI 服务器应加载 `app.main:app`。
+所有业务路由统一使用 `/contract/api` 前缀。当前系统接口为 `GET /contract/api/health`；合同上传、状态、SSE 与重试接口见[合同提取 API](../api/contract-extraction.md)。ASGI 服务器应加载 `app.main:app`。
