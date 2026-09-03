@@ -13,6 +13,8 @@ __pycache__/
 /data/**
 !/data/input/
 !/data/input/.gitkeep
+!/data/contract/
+!/data/contract/.gitkeep
 !/data/template/
 !/data/template/qwen3.6-tools-placement.jinja
 !/data/definition/
