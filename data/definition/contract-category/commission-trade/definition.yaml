@@ -1,0 +1,32 @@
+code: commission_trade
+name: 行纪
+aliases:
+  - 行纪业务
+  - 委托购销
+  - 代购代销
+meaning: >-
+  行纪人接受委托，以自己的名义为委托人从事贸易活动，交易经济效果按约归属于委托人，委托人支付报酬。
+core_exchange:
+  provider_obligation: 以自己名义按照委托要求完成买卖等贸易活动并报告结果
+  counterparty_obligation: 提供交易条件、承受约定经济效果并支付行纪报酬和费用
+includes:
+  - 以行纪人自身名义实施的代购或代销
+  - 符合行纪结构的商品贸易代理
+excludes:
+  - 以委托人名义处理普通事务
+  - 仅报告交易机会或撮合交易
+  - 经销商自行买入后承担风险再销售
+distinguish_from:
+  - category: mandate
+    rule: 行纪人的决定性特征是以自己名义为委托人从事贸易活动。
+  - category: intermediation
+    rule: 中介不成为目标交易的一方，行纪人以自己名义实施目标交易。
+  - category: sale
+    rule: 行纪人若自行承担买卖风险并取得货物所有权后转售，可能构成独立买卖而非行纪。
+evidence_hints:
+  strong:
+    - 明确受托方以自己名义从事购销
+    - 明确交易结果归属、费用承担和行纪报酬
+  insufficient:
+    - 合同使用代理、代购或经销字样
+    - 一方仅协助联系供应商

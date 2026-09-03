@@ -1,0 +1,30 @@
+code: utilities_supply
+name: 供用电、水、气、热力
+aliases:
+  - 供电
+  - 供水
+  - 供气
+  - 供热
+meaning: >-
+  一方持续供应电、水、气或热力，另一方按照用量、周期或约定标准支付费用的交易。
+core_exchange:
+  provider_obligation: 按约定持续提供电、水、气或热力
+  counterparty_obligation: 接受供应并按用量或周期支付费用
+includes:
+  - 工商业供电、供水、供气或供热
+  - 园区或物业范围内独立约定的能源供应
+excludes:
+  - 一次性购买瓶装气、燃料或供能设备
+  - 物业费中未独立形成交易的能耗分摊
+distinguish_from:
+  - category: sale
+    rule: 持续供应公共能源并按用量结算属于本类；一次性交付商品通常属于买卖。
+  - category: property_service
+    rule: 能源供应形成独立价格和持续供用义务时属于本类，物业综合服务中的附带代收代付不单独触发。
+evidence_hints:
+  strong:
+    - 约定供用设施、计量方式、单价及周期结算
+    - 约定持续供用、停供或用量责任
+  insufficient:
+    - 合同仅提及水电费由某方承担
+    - 设备技术参数中出现电、水或气

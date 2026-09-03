@@ -1,0 +1,29 @@
+code: custody
+name: 保管
+aliases:
+  - 寄存
+  - 代为保管
+  - 保管服务
+meaning: >-
+  保管人接收寄存人交付的特定物并妥善保管，在约定时间返还原物，寄存人按约支付保管费或无偿寄存。
+core_exchange:
+  provider_obligation: 接收、妥善保管并返还寄存物
+  counterparty_obligation: 如实交付寄存物并按约支付保管费用
+includes:
+  - 特定设备、物品或车辆寄存保管
+  - 有偿或无偿的原物返还安排
+excludes:
+  - 面向批量货物、库存及出入库管理的商业仓储
+  - 租赁物使用期间承租人的普通保管责任
+distinguish_from:
+  - category: warehousing
+    rule: 特定物的接收、保管和原物返还更倾向保管；批量库存和专业出入库管理更倾向仓储。
+  - category: lease
+    rule: 保管人不能以使用寄存物为交易目的，租赁则让渡使用收益。
+evidence_hints:
+  strong:
+    - 明确寄存物交付、保管责任和原物返还
+    - 明确寄存人、保管人及保管期间
+  insufficient:
+    - 主合同要求一方妥善保管对方资料
+    - 承租人承担租赁物保管责任

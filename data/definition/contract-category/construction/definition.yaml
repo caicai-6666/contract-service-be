@@ -1,0 +1,30 @@
+code: construction
+name: 建设工程
+aliases:
+  - 工程施工
+  - 工程承包
+  - 工程设计
+  - 工程勘察
+meaning: >-
+  围绕建设工程的勘察、设计或施工形成权利义务，承包方完成约定工程工作，发包方进行验收并支付工程价款。
+core_exchange:
+  provider_obligation: 按工程规范和图纸完成勘察、设计或施工并交付工程成果
+  counterparty_obligation: 提供工程条件、组织验收并支付工程价款
+includes:
+  - 建筑、安装、装修等工程施工
+  - 建设工程勘察或设计
+excludes:
+  - 独立设备的一般维修、加工或简单安装
+  - 只提供项目管理咨询而不承担工程成果
+distinguish_from:
+  - category: work
+    rule: 工作成果构成建设工程及其勘察设计施工时归入本类，普通定作维修归入承揽。
+  - category: general_service
+    rule: 仅提供监理、咨询或管理活动而不承担工程成果时，应判断为一般服务或其他具体类别。
+evidence_hints:
+  strong:
+    - 明确工程范围、地点、图纸、工程量或施工组织
+    - 明确竣工验收、工程价款及质量保修
+  insufficient:
+    - 标题中出现项目或工程字样
+    - 设备供货包含现场简单安装

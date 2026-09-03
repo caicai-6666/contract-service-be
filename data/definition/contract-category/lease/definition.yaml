@@ -1,0 +1,30 @@
+code: lease
+name: 租赁
+aliases:
+  - 出租
+  - 承租
+  - 场地租用
+  - 设备租用
+meaning: >-
+  一方在一定期间将房屋、场地、设备或其他物交由另一方占有、使用或收益，另一方支付租金，所有权原则上不转移。
+core_exchange:
+  provider_obligation: 交付租赁物并保障约定期间的使用收益
+  counterparty_obligation: 按约使用、保管租赁物并支付租金
+includes:
+  - 房屋、场地、车辆或设备租赁
+  - 约定期限和租金的使用权让渡
+excludes:
+  - 最终以转移标的物所有权为核心的买卖
+  - 出租人为承租人选购资产并提供融资的融资租赁
+distinguish_from:
+  - category: sale
+    rule: 租赁期满原则上返还租赁物，买卖则以所有权转移为核心。
+  - category: finance_lease
+    rule: 普通租赁以既有资产使用为核心；融资租赁通常由出租人按承租人选择购买资产并提供融资。
+evidence_hints:
+  strong:
+    - 明确租赁物、租期、租金和返还义务
+    - 明确出租人和承租人的使用维护责任
+  insufficient:
+    - 合同中出现租赁场所地址
+    - 服务方临时提供工具或设备供履约使用

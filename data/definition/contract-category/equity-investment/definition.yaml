@@ -1,0 +1,34 @@
+code: equity_investment
+name: 股权与投资
+aliases:
+  - 股权转让
+  - 增资
+  - 认购
+  - 投资协议
+  - 资本投入
+meaning: >-
+  围绕公司股权、出资份额或资本权益进行转让、认购、增资、投资和退出，投资方取得或处分股东权益并承担相应投资风险。
+core_exchange:
+  provider_obligation: 转让、发行或确认约定股权及相应股东权益
+  counterparty_obligation: 支付股权对价或履行出资义务并承担投资风险
+includes:
+  - 股权转让、增资扩股和股权认购
+  - 以取得资本权益为核心的投资及退出安排
+excludes:
+  - 固定期限返还本金和利息的借款
+  - 各方共同经营、共享收益并分担亏损的合伙
+  - 单纯转让设备、不动产或其他非股权资产
+distinguish_from:
+  - category: loan
+    rule: 投资方取得股权并承担经营风险时属于股权与投资；固定返本付息更倾向借款。
+  - category: partnership
+    rule: 公司股权和股东权利交易属于本类；合同各方直接形成共同事业和共担亏损关系时更倾向合伙。
+  - category: sale
+    rule: 普通资产所有权买卖与公司股权或资本权益交易应分开判断。
+evidence_hints:
+  strong:
+    - 明确目标公司、股权比例、估值、出资或转让价款
+    - 明确股东权利、交割、工商变更或投资退出
+  insufficient:
+    - 合同标题出现投资、资本或合作
+    - 一方向项目支付普通履约资金

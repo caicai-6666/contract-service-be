@@ -1,0 +1,29 @@
+code: loan
+name: 借款
+aliases:
+  - 借贷
+  - 贷款
+  - 资金拆借
+meaning: >-
+  一方提供一定金额的资金，另一方在约定期限返还本金，并可能支付利息或资金使用成本。
+core_exchange:
+  provider_obligation: 向借款方提供约定资金
+  counterparty_obligation: 按期返还本金并按约支付利息或费用
+includes:
+  - 金融机构贷款
+  - 企业或个人之间的资金拆借
+excludes:
+  - 买卖或服务合同中的预付款、保证金和延期付款
+  - 投资人承担投资风险并取得股权或收益权
+distinguish_from:
+  - category: equity_investment
+    rule: 固定返还本金是借款核心；以资本投入换取股权并承担经营风险更倾向股权与投资。
+  - category: factoring
+    rule: 借款以资金返还为核心；保理以应收账款转让及保理服务为核心。
+evidence_hints:
+  strong:
+    - 明确约定借款本金、期限、利率及还款计划
+    - 明确使用出借人、借款人或贷款人等角色
+  insufficient:
+    - 普通合同出现预付款或分期付款
+    - 一方暂时代垫履约费用

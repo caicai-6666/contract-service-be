@@ -1,0 +1,29 @@
+code: property_service
+name: 物业服务
+aliases:
+  - 物业管理
+  - 前期物业服务
+  - 园区物业
+meaning: >-
+  物业服务人在特定物业服务区域提供建筑物及附属设施维护、环境清洁、绿化、秩序维护等综合管理服务，业主或使用人支付物业费。
+core_exchange:
+  provider_obligation: 在物业区域持续提供约定的综合维护和管理服务
+  counterparty_obligation: 配合物业管理并支付物业服务费用
+includes:
+  - 住宅、商业楼宇或园区物业服务
+  - 前期物业及业主共同委托的综合管理
+excludes:
+  - 单项保洁、安保、绿化或设备维修外包
+  - 单纯房屋或场地租赁
+distinguish_from:
+  - category: general_service
+    rule: 围绕特定物业区域提供法定或约定的综合管理属于物业服务；单项外包通常属于一般服务。
+  - category: lease
+    rule: 物业服务提供管理活动，租赁让渡房屋或场地使用权，两者可在同一文件中并存但不得混同。
+evidence_hints:
+  strong:
+    - 明确物业服务区域、服务事项、质量标准和物业费
+    - 明确业主、物业使用人和物业服务人的权利义务
+  insufficient:
+    - 合同履行地点位于某物业或园区
+    - 租赁合同附带公共区域管理约定

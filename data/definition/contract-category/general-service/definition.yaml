@@ -1,0 +1,34 @@
+code: general_service
+name: 一般服务
+aliases:
+  - 服务
+  - 业务外包
+  - 运营服务
+  - 咨询服务
+  - 维护服务
+meaning: >-
+  一方持续或阶段性提供专业、运营、维护、咨询或其他活动，另一方支付服务报酬，且交易不满足更具体合同类别的核心结构。
+core_exchange:
+  provider_obligation: 按约定范围、标准和期间提供服务活动
+  counterparty_obligation: 提供必要配合、确认服务并支付服务费用
+includes:
+  - 保洁、安保、运营、维护、商务或管理咨询
+  - 不形成劳动关系的企业间服务外包
+excludes:
+  - 具有可交付特定工作成果和成果验收核心的承揽
+  - 围绕明确技术成果或技术问题的技术合同
+  - 自然人在组织管理下持续劳动的劳动用工
+distinguish_from:
+  - category: work
+    rule: 一般服务强调活动或过程履行；承揽强调独立完成并交付可验收的特定成果。
+  - category: technology
+    rule: 服务目标明确涉及技术成果、技术开发或专门技术责任时优先选择技术。
+  - category: employment
+    rule: 企业间独立服务通常属于一般服务；自然人受组织管理并按劳动关系取得工资时属于劳动与用工。
+evidence_hints:
+  strong:
+    - 明确服务范围、服务周期、服务标准和服务费
+    - 明确服务人员或活动由服务方独立组织管理
+  insufficient:
+    - 合同名称中单独出现服务
+    - 买卖合同包含售后、培训或质保服务

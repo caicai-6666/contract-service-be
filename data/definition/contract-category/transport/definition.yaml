@@ -1,0 +1,32 @@
+code: transport
+name: 运输
+aliases:
+  - 货运
+  - 客运
+  - 承运
+  - 多式联运
+meaning: >-
+  承运人将旅客或货物从起运地点运送至约定地点，托运人、旅客或其他付款方支付运输费用。
+core_exchange:
+  provider_obligation: 安全、及时地将旅客或货物运至约定地点
+  counterparty_obligation: 提供必要运输信息并支付票款或运费
+includes:
+  - 公路、铁路、水路、航空货运或客运
+  - 多式联运和独立物流运输
+excludes:
+  - 卖方按买卖合同负责将自有货物送达
+  - 只提供仓储、装卸或物流信息服务
+distinguish_from:
+  - category: sale
+    rule: 卖方送货通常是买卖附随义务；独立承运他人货物并收取运费才构成运输。
+  - category: warehousing
+    rule: 运输以空间位移为核心，仓储以一定期间保管货物为核心。
+  - category: general_service
+    rule: 物流平台或调度服务不直接承担承运义务时可能属于一般服务。
+evidence_hints:
+  strong:
+    - 明确起运地、目的地、运输对象和运费
+    - 明确承运责任、货损风险或签收义务
+  insufficient:
+    - 交货条款中出现运输方式
+    - 价款中包含卖方送货费用

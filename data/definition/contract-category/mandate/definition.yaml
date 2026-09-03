@@ -1,0 +1,32 @@
+code: mandate
+name: 委托
+aliases:
+  - 委托办理
+  - 受托
+  - 代理事务
+meaning: >-
+  受托人根据委托人的授权和指示处理特定事务，处理结果或法律经济利益主要归属于委托人。
+core_exchange:
+  provider_obligation: 依照授权、指示和注意义务处理委托事务并报告结果
+  counterparty_obligation: 提供必要授权和条件并按约支付报酬、费用
+includes:
+  - 委托代办、代管、代理申报或事务处理
+  - 受托人以委托人利益处理持续或特定事务
+excludes:
+  - 服务方以自身名义独立交付专业服务成果
+  - 仅报告交易机会或促成双方签约
+  - 以自己名义为委托人从事贸易活动
+distinguish_from:
+  - category: general_service
+    rule: 委托强调代委托人处理事务和授权关系；一般服务强调服务方履行自身服务义务。
+  - category: commission_trade
+    rule: 行纪人以自己名义从事交易，普通委托通常依授权为委托人处理事务。
+  - category: intermediation
+    rule: 中介只报告机会或促成交易，不代为处理目标事务。
+evidence_hints:
+  strong:
+    - 明确委托事项、授权范围、指示和报告义务
+    - 明确事务结果或费用由委托人承受
+  insufficient:
+    - 合同标题使用委托但正文仅约定普通服务
+    - 一方要求另一方完成自身履约事项

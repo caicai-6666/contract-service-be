@@ -1,0 +1,35 @@
+code: technology
+name: 技术
+aliases:
+  - 技术开发
+  - 技术转让
+  - 技术许可
+  - 技术咨询
+  - 技术服务
+meaning: >-
+  围绕技术成果的研究开发、转让、许可、咨询或专业技术服务形成交易，并对技术目标、成果、知识权利或技术报酬作出约定。
+core_exchange:
+  provider_obligation: 提供、开发或许可约定技术成果并履行技术协作义务
+  counterparty_obligation: 提供研发条件、接受技术成果并支付技术价款或报酬
+includes:
+  - 委托或合作技术开发
+  - 专利技术、技术秘密转让或许可
+  - 以解决特定技术问题为核心的咨询或服务
+excludes:
+  - 普通商品买卖中附带的说明和售后支持
+  - 不涉及技术成果的管理、法律或商务咨询
+  - 单纯商标或非技术型著作权许可
+distinguish_from:
+  - category: work
+    rule: 核心在技术创新、技术成果或专门技术问题时属于技术；按既定要求制作普通成果时更倾向承揽。
+  - category: intellectual_property
+    rule: 专利技术和技术秘密许可优先属于技术；商标、内容著作权等非技术型权利交易归入知识产权。
+  - category: general_service
+    rule: 只有服务目标本身具有明确技术内容和技术成果责任时才选择技术。
+evidence_hints:
+  strong:
+    - 明确技术目标、技术路线、成果形式及验收指标
+    - 明确技术成果权属、技术秘密或专利许可范围
+  insufficient:
+    - 合同主体属于科技公司
+    - 标的名称中出现软件、系统或技术字样

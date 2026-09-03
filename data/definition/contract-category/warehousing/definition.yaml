@@ -1,0 +1,29 @@
+code: warehousing
+name: 仓储
+aliases:
+  - 仓储服务
+  - 入库保管
+  - 库存管理
+meaning: >-
+  仓储经营者接收并储存批量货物，提供入库、保管、盘点和出库等专业管理，存货人支付仓储费用。
+core_exchange:
+  provider_obligation: 接收货物并提供专业储存、库存及出入库管理
+  counterparty_obligation: 提供真实货物信息并支付仓储费用
+includes:
+  - 商业仓库、冷库或保税仓储
+  - 包含仓单、库存台账和出入库操作的储存服务
+excludes:
+  - 对单件特定物进行简单寄存并返还原物
+  - 运输途中的短暂停放或卖方交付前自有库存
+distinguish_from:
+  - category: custody
+    rule: 批量货物和专业库存管理属于仓储，特定物的单纯保管返还更倾向保管。
+  - category: transport
+    rule: 仓储以储存期间和库存管理为核心，运输以空间位移为核心。
+evidence_hints:
+  strong:
+    - 明确仓库、库位、入库、出库和库存盘点
+    - 明确仓储费、损耗标准或仓单管理
+  insufficient:
+    - 运输合同提到临时堆存
+    - 买卖合同约定卖方负责库存备货

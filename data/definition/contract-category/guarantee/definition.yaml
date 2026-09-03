@@ -1,0 +1,29 @@
+code: guarantee
+name: 保证
+aliases:
+  - 担保
+  - 连带责任保证
+  - 一般保证
+meaning: >-
+  保证人为他人的主债务提供信用保障，并在债务人不履行或约定条件发生时承担保证责任。
+core_exchange:
+  provider_obligation: 在保证范围和期间内为主债务承担约定保证责任
+  counterparty_obligation: 债权人接受保证并按约定条件主张保证责任
+includes:
+  - 独立保证合同
+  - 主合同中形成完整保证关系的保证条款
+excludes:
+  - 合同当事人对自身违约承担的普通违约责任
+  - 抵押、质押等以特定财产设立的担保物权安排
+distinguish_from:
+  - category: loan
+    rule: 保证保障他人的债务履行，不等同于保证人直接向借款人提供资金。
+  - category: debt_settlement
+    rule: 对既存债务重新确认还款不当然构成第三方保证。
+evidence_hints:
+  strong:
+    - 明确存在债权人、债务人和保证人三方关系
+    - 明确保证方式、保证范围和保证期间
+  insufficient:
+    - 合同仅约定违约金或赔偿责任
+    - 一方承诺其自身会按期履约

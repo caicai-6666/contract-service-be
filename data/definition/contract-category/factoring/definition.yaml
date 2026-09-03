@@ -1,0 +1,29 @@
+code: factoring
+name: 保理
+aliases:
+  - 应收账款保理
+  - 商业保理
+  - 保理融资
+meaning: >-
+  应收账款债权人向保理人转让现有或未来应收账款，由保理人提供融资、账款管理、催收或付款担保等服务。
+core_exchange:
+  provider_obligation: 受让应收账款并提供约定的保理融资或管理服务
+  counterparty_obligation: 转让真实应收账款并支付保理费用或履行回购等约定义务
+includes:
+  - 有追索权或无追索权保理
+  - 以应收账款转让为基础的保理融资
+excludes:
+  - 仅以应收账款提供质押担保的普通借款
+  - 不伴随保理服务的单纯债权转让
+distinguish_from:
+  - category: loan
+    rule: 仅提供资金并要求返还属于借款；应收账款转让及保理服务构成交易基础时属于保理。
+  - category: debt_settlement
+    rule: 既存债务的确认或清偿安排不等同于应收账款保理。
+evidence_hints:
+  strong:
+    - 明确应收账款转让、保理融资或保理服务
+    - 明确基础交易、应收账款债务人和追索安排
+  insufficient:
+    - 合同仅提及应收账款账户
+    - 普通借款以应收账款作为还款来源

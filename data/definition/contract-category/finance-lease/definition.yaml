@@ -1,0 +1,29 @@
+code: finance_lease
+name: 融资租赁
+aliases:
+  - 融资租赁业务
+  - 售后回租
+  - 直租
+meaning: >-
+  出租人根据承租人对出卖人和租赁物的选择购买资产并出租给承租人使用，承租人支付租金，交易兼具融资与融物结构。
+core_exchange:
+  provider_obligation: 按承租人选择购置租赁物并提供长期使用
+  counterparty_obligation: 接收租赁物并按期支付具有融资属性的租金
+includes:
+  - 直接融资租赁
+  - 符合融资租赁结构的售后回租
+excludes:
+  - 出租自有既存资产的普通租赁
+  - 分期付款但直接转移所有权的买卖
+distinguish_from:
+  - category: lease
+    rule: 是否存在按承租人选择购买资产并以租金回收融资成本，是区分普通租赁的重要依据。
+  - category: sale
+    rule: 承租人支付租金取得使用权不等同于立即作为买受人取得所有权。
+evidence_hints:
+  strong:
+    - 明确出租人、承租人和出卖人关系
+    - 明确租赁物选择、购买、租金构成及期末安排
+  insufficient:
+    - 租赁期限较长或租金总额较高
+    - 普通租赁包含购买选择权

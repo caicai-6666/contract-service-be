@@ -1,0 +1,30 @@
+code: partnership
+name: 合伙
+aliases:
+  - 合伙经营
+  - 联合经营
+  - 共同投资经营
+meaning: >-
+  两个以上主体为共同事业投入资金、实物、劳务或其他资源，共同经营或协作，并按照约定共享利益、分担风险或亏损。
+core_exchange:
+  provider_obligation: 各方按约投入资源并参与共同事业
+  counterparty_obligation: 各方共同经营、共享收益并承担约定风险
+includes:
+  - 形成共同事业和共同风险的合伙安排
+  - 明确出资、事务执行、收益分配和亏损承担的联合经营
+excludes:
+  - 仅以合作、战略合作或联合等名称表达意向
+  - 一方付款、另一方交付商品或服务的双边交换
+  - 对公司进行股权投资但不形成当事人之间的合伙关系
+distinguish_from:
+  - category: equity_investment
+    rule: 投资取得公司股权不当然形成合同各方共同经营和共担亏损的合伙关系。
+  - category: general_service
+    rule: 一方按工作收取固定报酬通常属于服务，共享事业收益并共担风险才倾向合伙。
+evidence_hints:
+  strong:
+    - 明确共同事业、各方出资或投入
+    - 明确共同决策、收益分配和亏损或风险承担
+  insufficient:
+    - 标题出现合作协议或战略合作
+    - 双方约定长期业务往来

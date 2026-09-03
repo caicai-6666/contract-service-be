@@ -1,0 +1,30 @@
+code: insurance
+name: 保险
+aliases:
+  - 投保
+  - 保险单
+  - 保单
+  - 承保
+meaning: >-
+  投保人支付保险费，保险人对约定的可能事故造成的财产损失承担赔偿责任，或在被保险人死亡、伤残、疾病、达到约定年龄或期限等条件发生时承担给付保险金责任。
+core_exchange:
+  provider_obligation: 在保险期间内承保约定风险并按条件赔偿或给付保险金
+  counterparty_obligation: 如实告知风险并按约支付保险费
+includes:
+  - 财产保险、人身保险、责任保险及保证保险
+  - 保险单、保险协议及形成保险权利义务的批单
+excludes:
+  - 一般合同中的质量保证、履约保证或保修承诺
+  - 第三人为债务提供的民事保证
+distinguish_from:
+  - category: guarantee
+    rule: 保险以保险费换取对约定风险的赔偿或给付保障；保证以第三方信用保障特定主债务履行。
+  - category: general_service
+    rule: 风险事件发生后的赔偿或给付责任是保险的决定性结构，不是普通风险管理服务。
+evidence_hints:
+  strong:
+    - 明确投保人、保险人、被保险人和保险标的
+    - 明确保险责任、责任免除、保险期间、保险金额和保险费
+  insufficient:
+    - 合同要求某方自行购买保险
+    - 普通合同出现保险凭证或保险费用报销

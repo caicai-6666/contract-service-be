@@ -1,0 +1,32 @@
+code: intermediation
+name: 中介
+aliases:
+  - 居间
+  - 撮合
+  - 经纪
+meaning: >-
+  中介人向委托人报告订立合同的机会或提供促成合同订立的媒介服务，委托人在约定条件满足时支付报酬。
+core_exchange:
+  provider_obligation: 提供真实交易机会信息或促成目标合同订立
+  counterparty_obligation: 在约定成果或条件达成时支付中介报酬和必要费用
+includes:
+  - 房产、融资、商务等交易机会介绍
+  - 以促成第三方合同为目标的撮合服务
+excludes:
+  - 代委托人处理目标交易事务
+  - 以自己名义为委托人订立目标交易
+  - 直接承担商品、工程或服务交付义务
+distinguish_from:
+  - category: mandate
+    rule: 中介主要提供机会或撮合，不代为处理目标事务。
+  - category: commission_trade
+    rule: 中介不以自己名义实施目标交易，行纪人则以自己名义交易。
+  - category: general_service
+    rule: 报酬与促成交易或报告机会紧密关联时更倾向中介，而非一般过程服务。
+evidence_hints:
+  strong:
+    - 明确目标交易、撮合条件和成功报酬
+    - 明确中介人不作为目标交易买卖双方
+  insufficient:
+    - 合同仅出现咨询费或服务费
+    - 一方介绍联系人但不承担持续撮合义务

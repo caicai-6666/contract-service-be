@@ -19,5 +19,9 @@ __pycache__/
 !/data/definition/field/
 !/data/definition/field/core/
 !/data/definition/field/core/*.yaml
+!/data/definition/contract-category/
+!/data/definition/contract-category/**
+!/data/definition/retrieval-view/
+!/data/definition/retrieval-view/**
 !/data/user/
 !/data/user/users.yaml

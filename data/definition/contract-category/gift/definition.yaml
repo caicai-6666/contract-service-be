@@ -1,0 +1,29 @@
+code: gift
+name: 赠与
+aliases:
+  - 捐赠
+  - 无偿赠送
+  - 赠予
+meaning: >-
+  一方无偿将财产给予另一方，受赠方不承担与该财产相对应的交易对价。
+core_exchange:
+  provider_obligation: 无偿转移约定财产或财产权利
+  counterparty_obligation: 接受赠与，必要时履行不构成等价交换的附随义务
+includes:
+  - 无偿捐赠资金、物资或其他财产
+  - 明确不收取对价的赠与安排
+excludes:
+  - 买卖中的促销赠品、折扣或样品
+  - 以取得服务、宣传或其他实质对价为条件的赞助
+distinguish_from:
+  - category: sale
+    rule: 受领方需要支付与财产相对应的价款时属于买卖，不属于赠与。
+  - category: general_service
+    rule: 表面无现金价款但要求对方提供实质服务或宣传回报时，应根据实际交换判断。
+evidence_hints:
+  strong:
+    - 明确使用无偿、赠与或捐赠并列明赠与财产
+    - 明确受赠方无需支付价款或等价回报
+  insufficient:
+    - 买卖清单中出现赠品
+    - 合同约定免费保修或免费培训
