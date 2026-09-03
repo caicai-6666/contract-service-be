@@ -3,16 +3,21 @@
 __pycache__/
 *.py[cod]
 
-# 实验内容和产物仅在本地保留，Git 只保留根目录。
-/experiment/**
-!/experiment/.gitkeep
+# 实验方案和运行器进入版本控制；运行产物只在本地保留。
+/experiment/**/output/
 
 # 测试代码与产物不纳入 Git。
-/test/
+/tests/
 
-# 数据与定义文件不纳入 Git，仅保留 data/input 目录。
+# 运行数据不纳入 Git；Core 字段定义作为启动配置进入版本控制。
 /data/**
 !/data/input/
 !/data/input/.gitkeep
 !/data/template/
 !/data/template/qwen3.6-tools-placement.jinja
+!/data/definition/
+!/data/definition/field/
+!/data/definition/field/core/
+!/data/definition/field/core/*.yaml
+!/data/user/
+!/data/user/users.yaml

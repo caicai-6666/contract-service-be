@@ -16,6 +16,9 @@ from app.agent.contract_extraction.subgraph.clause_extraction.state import (
 from app.agent.contract_extraction.subgraph.field_extraction.core.state import (
     CoreExtractionResult,
 )
+from app.agent.contract_extraction.subgraph.field_extraction.definition import (
+    FieldCardinality,
+)
 from app.service.contract_extraction.executor import RetrievalViewOutput
 from app.service.contract_extraction.model import (
     ClauseDraftData,
@@ -58,46 +61,60 @@ def project_classification(
     )
 
 
-def _public_field_object(item: BaseModel) -> dict[str, Any]:
-    """保留字段审核真正需要的证据、理由和扁平值。"""
-    return {
-        "evidence": [
-            evidence.model_dump(mode="json") for evidence in item.evidence
-        ],
-        "reasoning": item.reasoning,
-        "value": dict(item.value),
-    }
+def _project_core_objects(field_result: BaseModel) -> list[dict[str, Any]]:
+    """把中文属性名值转换为 Elasticsearch 使用的稳定属性 code。"""
+    source_objects = (
+        field_result.objects
+        if field_result.status == "extracted"
+        else field_result.partial_objects
+        if field_result.status == "failed"
+        else ()
+    )
+    objects: list[dict[str, Any]] = []
+    for extracted in source_objects:
+        objects.append(
+            {
+                field_result.property_codes[property_name]: extracted.value[
+                    property_name
+                ]
+                for property_name in field_result.property_names
+                if property_name in extracted.value
+            }
+        )
+    return objects
+
+
+def _collapse_core_value(
+    field_result: BaseModel,
+    objects: list[dict[str, Any]],
+) -> Any | None:
+    """按 Core 基数生成 ES 标量、严格对象或 nested 数组形状。"""
+    if not objects:
+        return None
+    if field_result.cardinality is FieldCardinality.MULTIPLE:
+        return tuple(objects)
+    first = objects[0]
+    if len(field_result.property_names) == 1:
+        property_name = field_result.property_names[0]
+        return first.get(field_result.property_codes[property_name])
+    return first
 
 
 def project_core(result: BaseModel) -> ProjectedSection:
-    """投影 Core 结果；失败原因和模型用量只留在私有运行记录中。"""
+    """按 ES Core 形状投影；未提取定义以 null 保留给审核端。"""
     if not isinstance(result, CoreExtractionResult):
         raise TypeError("Core 分支返回了未知结果类型")
     if result.status == "failed":
         raise UnusableBranchResultError("Core 字段没有形成可用结果")
 
-    fields: list[dict[str, Any]] = []
+    fields: dict[str, Any | None] = {}
     for field_result in result.fields:
-        item: dict[str, Any] = {
-            "name": field_result.name,
-            "cardinality": field_result.cardinality.value,
-            "status": field_result.status,
-            "property_names": list(field_result.property_names),
-        }
-        if field_result.status == "extracted":
-            item["objects"] = [
-                _public_field_object(value) for value in field_result.objects
-            ]
-        elif field_result.status == "abandoned":
-            item["objects"] = []
-            item["reasoning"] = field_result.reasoning
-        else:
-            item["objects"] = [
-                _public_field_object(value)
-                for value in field_result.partial_objects
-            ]
-            item["message"] = "该字段本次未能完成提取，可稍后重试。"
-        fields.append(item)
+        if field_result.code in fields:
+            raise ValueError(f"Core 结果包含重复 code：{field_result.code}")
+        fields[field_result.code] = _collapse_core_value(
+            field_result,
+            _project_core_objects(field_result),
+        )
 
     return ProjectedSection(
         result_status=(
@@ -105,37 +122,39 @@ def project_core(result: BaseModel) -> ProjectedSection:
             if result.status == "completed"
             else ResultStatus.PARTIAL
         ),
-        data=CoreDraftData.model_validate({"fields": fields}),
+        data=CoreDraftData(root=fields),
     )
 
 
 def project_clause(result: ClauseExtractionResult) -> ProjectedSection:
-    """投影条款顺序、边界和正文，去除每轮请求与工具审计。"""
+    """按 ES clauses 形状投影成功条款，去除候选、证据与审计。"""
     if result.status == "failed":
         raise UnusableBranchResultError("条款分支没有形成可用结果")
 
     clauses: list[dict[str, Any]] = []
     for clause in result.clauses:
+        if clause.status != "extracted":
+            continue
         candidate = clause.candidate
         item: dict[str, Any] = {
-            "candidate_id": candidate.candidate_id,
+            "clause_id": candidate.candidate_id,
             "order": candidate.order,
             "identifier": candidate.identifier,
-            "title_hint": candidate.title_hint,
-            "document_path": [
-                segment.model_dump(mode="json")
+            "path": [
+                " ".join(
+                    filter(None, (segment.identifier, segment.title_hint))
+                )
                 for segment in candidate.document_path
             ],
-            "parent_candidate_id": candidate.parent_candidate_id,
             "level": candidate.level,
-            "evidence": candidate.evidence.model_dump(mode="json"),
-            "status": clause.status,
+            "start_page": candidate.evidence.start.page_number,
+            "end_page": candidate.evidence.end.page_number,
+            "content": clause.content,
         }
-        if clause.status == "extracted":
-            item["reasoning_summary"] = clause.reasoning_summary
-            item["content"] = clause.content
-        else:
-            item["message"] = "该条款本次未能完成提取，可稍后重试。"
+        if candidate.title_hint:
+            item["title"] = candidate.title_hint
+        if candidate.parent_candidate_id:
+            item["parent_clause_id"] = candidate.parent_candidate_id
         clauses.append(item)
 
     return ProjectedSection(
@@ -144,7 +163,7 @@ def project_clause(result: ClauseExtractionResult) -> ProjectedSection:
             if result.status == "completed"
             else ResultStatus.PARTIAL
         ),
-        data=ClauseDraftData.model_validate({"clauses": clauses}),
+        data=ClauseDraftData(root=tuple(clauses)),
     )
 
 

@@ -1,0 +1,20 @@
+name: 是否含税
+code: tax_included
+aliases:
+  - 含税
+  - 不含税
+  - 价税合计
+  - 税价合计
+meaning: |
+  合同总金额明确包含税费时为 true，明确说明合同总金额不含税时为 false。必须以总金额附近的税务说明或价款条款为依据。
+excludes: |
+  不因合同出现发票、税号或税率就自动判定为 true；合同没有明确说明总金额是否含税时，不得用 false 代替未发现。
+cardinality: single
+properties:
+  - name: 是否含税
+    code: included
+    aliases: []
+    type: boolean
+    required: true
+    meaning: 合同总金额是否明确包含税费。
+    excludes: 不仅因出现发票、税号或税率就判定含税。

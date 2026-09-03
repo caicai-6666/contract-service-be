@@ -11,25 +11,27 @@ from app.agent.contract_extraction.state import ContractExtractionState
 from app.agent.contract_extraction.subgraph import (
     build_classification_subgraph,
     build_clause_extraction_subgraph,
+    build_document_understanding_subgraph,
     build_field_extraction_subgraph,
-    build_preprocessing_subgraph,
     build_retrieval_view_generation_subgraph,
 )
 
 
 def build_contract_extraction_graph():
-    """组装“预处理 → 基础组装 → 分类 → 最终组装 → 并行任务 → 合并”。"""
-    preprocessing_subgraph = build_preprocessing_subgraph()
+    """组装“文档理解 → 分类 → 并行业务任务 → 结果合并”。"""
+    document_understanding_subgraph = build_document_understanding_subgraph()
     classification_subgraph = build_classification_subgraph()
     field_subgraph = build_field_extraction_subgraph()
     clause_subgraph = build_clause_extraction_subgraph()
     retrieval_question_subgraph = build_retrieval_view_generation_subgraph()
 
-    async def run_preprocessing_subgraph(
+    async def run_document_understanding_subgraph(
         state: ContractExtractionState,
     ) -> ContractExtractionState:
-        """调用预处理子图，并写回页面与权威文档结构。"""
-        result = await preprocessing_subgraph.ainvoke({"request": state["request"]})
+        """读取已准备页面，并写回提示词上下文与权威文档结构。"""
+        result = await document_understanding_subgraph.ainvoke(
+            {"prepared_pdf": state["prepared_pdf"]}
+        )
         return {
             "prepared_pdf": result["prepared_pdf"],
             "prompt_context": result["prompt_context"],
@@ -95,7 +97,10 @@ def build_contract_extraction_graph():
         }
 
     graph = StateGraph(ContractExtractionState)
-    graph.add_node("pdf_preprocessing", run_preprocessing_subgraph)
+    graph.add_node(
+        "document_understanding",
+        run_document_understanding_subgraph,
+    )
     graph.add_node("assemble_base_context", assemble_base_context)
     graph.add_node("classification", run_classification_subgraph)
     graph.add_node("assemble_prefill_context", assemble_prefill_context)
@@ -107,8 +112,8 @@ def build_contract_extraction_graph():
     )
     graph.add_node("merge_extraction_results", merge_extraction_results)
 
-    graph.add_edge(START, "pdf_preprocessing")
-    graph.add_edge("pdf_preprocessing", "assemble_base_context")
+    graph.add_edge(START, "document_understanding")
+    graph.add_edge("document_understanding", "assemble_base_context")
     graph.add_edge("assemble_base_context", "classification")
     graph.add_edge("classification", "assemble_prefill_context")
     graph.add_edge("assemble_prefill_context", "field_extraction")

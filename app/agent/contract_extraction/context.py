@@ -11,10 +11,10 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from app.agent.contract_extraction.state import PDFPromptPage, PreparedPDFPage
-from app.agent.contract_extraction.subgraph.preprocessing.document_structure.state import (
+from app.agent.contract_extraction.subgraph.document_understanding.document_structure.state import (
     DocumentStructureMetadata,
 )
-from app.agent.contract_extraction.subgraph.preprocessing.prompt import (
+from app.agent.contract_extraction.subgraph.document_understanding.prompt import (
     build_pdf_common_messages,
 )
 

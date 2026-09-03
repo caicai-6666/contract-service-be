@@ -9,6 +9,7 @@ from time import perf_counter
 from pydantic import ValidationError
 
 from app.agent.contract_extraction.context import context_sha256
+from app.agent.contract_extraction.progress import ParallelProgressTracker
 from app.agent.contract_extraction.subgraph.clause_extraction.prompt import (
     CLAUSE_CONTENT_COMMON_PROMPT_VERSION,
     CLAUSE_CONTENT_TARGET_PROMPT_VERSION,
@@ -751,18 +752,22 @@ async def extract_clause_contents(
     settings = get_settings().mllm
     generation_profile = build_clause_content_generation_profile(settings.generation)
     semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
+    progress = ParallelProgressTracker(len(discovery.candidates))
+    await progress.report_counted()
     async with MLLMClient(settings) as client:
         clauses = tuple(
             await asyncio.gather(
                 *(
-                    _extract_one_clause(
-                        candidate,
-                        workspace=discovery.candidates,
-                        context=context,
-                        client=client,
-                        semaphore=semaphore,
-                        generation_profile=generation_profile,
-                        seed=settings.generation.seed,
+                    progress.track(
+                        _extract_one_clause(
+                            candidate,
+                            workspace=discovery.candidates,
+                            context=context,
+                            client=client,
+                            semaphore=semaphore,
+                            generation_profile=generation_profile,
+                            seed=settings.generation.seed,
+                        )
                     )
                     for candidate in discovery.candidates
                 )

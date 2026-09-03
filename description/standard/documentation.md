@@ -22,12 +22,26 @@
 | 目录 | 职责 |
 | --- | --- |
 | `description/standard/` | 跨模块提示词、文档、实验和开发规范。 |
-| `description/architecture/` | 系统、工作流、数据流和跨模块设计。 |
-| `description/architecture/subgraph/` | 单个 Agent 子图的职责、状态、节点和约束。 |
 | `description/api/` | 面向外部调用方的 HTTP、SSE、请求响应和错误契约。 |
-| `description/capability/` | 可复用应用能力、技术工具、运行方式和配置说明。 |
+| `description/architecture/system/` | 跨模块系统边界、总体流程、应用状态机和数据流。 |
+| `description/architecture/workflow/` | 按业务任务容纳相互独立的 Agent 工作流文档包。 |
+| `description/architecture/workflow/<task>/` | 一个任务的主工作流、节点、子图、共享上下文、状态和失败边界。 |
+| `description/architecture/data/` | 业务定义、DTO、索引结构和其他精确数据契约。 |
+| `description/capability/application/` | 后端框架、应用组合根、服务包和 Agent 包装配能力。 |
+| `description/capability/infrastructure/` | Elasticsearch、模型服务等外部系统的适配、部署和观测能力。 |
+| `description/capability/document/` | PDF、图像和其他文档处理工具的行为与限制。 |
 
-除 `project.md` 和 `readme.md` 外，不在 `description/` 根目录新增专题文档。目录名使用单数，避免同义目录并存。
+除 `project.md` 和 `readme.md` 外，不在 `description/` 根目录新增专题文档；`architecture/` 和 `capability/` 根目录也不直接放置文档。目录名使用单数，避免同义目录并存。
+
+归类时先判断文档回答的问题：跨模块如何协作放入 `system/`，模型节点如何执行放入对应的 `workflow/<task>/`，数据长什么样放入 `data/`，可复用技术如何配置和运行则按应用、基础设施或文档处理能力归档。一个专题只选择一个主目录，不按对应 Python 文件路径机械复制层级。
+
+每个工作流任务包遵循以下固定结构：
+
+- 目录名使用稳定的 kebab-case 任务名称，例如 `contract-extraction/`。
+- `readme.md` 是该工作流唯一入口，说明任务目标、总体拓扑、输入输出和包内文档导航。
+- 节点与子图文档直接放在所属任务包内，不平铺到 `workflow/`，也不借用其他任务包。
+- 多个工作流共享的开发规范进入 `standard/`，共享技术能力进入 `capability/`，共享数据契约进入 `architecture/data/`。
+- 新增工作流时建立与现有任务包并列的新目录，并同步更新项目文档导航。
 
 ### 1.2 单一权威来源
 

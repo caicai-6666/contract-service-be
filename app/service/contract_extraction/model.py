@@ -1,29 +1,40 @@
-"""合同提取运行状态、草稿与 SSE 事件的稳定应用契约。"""
+"""合同处理运行状态、Core/Clause 结果与 SSE 事件的稳定应用契约。"""
 
 from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Generic, Literal, Self, TypeVar
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 
 
 class RunStatus(StrEnum):
     """一次内存合同处理任务的用户可见状态。"""
 
     PROCESSING = "processing"
+    NOT_A_CONTRACT = "not_a_contract"
+    AWAITING_DEDUPLICATION_REVIEW = "awaiting_deduplication_review"
     PARTIAL_READY = "partial_ready"
     READY = "ready"
     FAILED = "failed"
+    CANCELLED = "cancelled"
     EXPIRED = "expired"
+
+
+class RunListStatus(StrEnum):
+    """运行列表用于区分自动推进与等待人工处理的粗粒度状态。"""
+
+    PROCESSING = "processing"
+    BLOCKED = "blocked"
 
 
 class StageCode(StrEnum):
     """不暴露内部节点名称的用户业务阶段。"""
 
-    DOCUMENT_READING = "document_reading"
-    DOCUMENT_UNDERSTANDING = "document_understanding"
+    CONTRACT_DOCUMENT_DETECTION = "contract_document_detection"
+    PDF_DEDUPLICATION = "pdf_deduplication"
+    CONTRACT_STRUCTURE_RECOGNITION = "contract_structure_recognition"
     CONTRACT_CLASSIFICATION = "contract_classification"
     CORE_EXTRACTION = "core_extraction"
     CLAUSE_EXTRACTION = "clause_extraction"
@@ -41,19 +52,10 @@ class StageStatus(StrEnum):
 
 
 class DraftSectionCode(StrEnum):
-    """可以独立生成和替换的合同草稿分区。"""
+    """提取接口可以独立返回的用户审核分区。"""
 
     CORE = "core"
     CLAUSE = "clause"
-    RETRIEVAL_VIEW = "retrieval_view"
-
-
-class RetryableStageCode(StrEnum):
-    """HTTP 接口允许单独重试的三个业务阶段。"""
-
-    CORE_EXTRACTION = StageCode.CORE_EXTRACTION.value
-    CLAUSE_EXTRACTION = StageCode.CLAUSE_EXTRACTION.value
-    RETRIEVAL_PREPARATION = StageCode.RETRIEVAL_PREPARATION.value
 
 
 class EventType(StrEnum):
@@ -65,8 +67,14 @@ class EventType(StrEnum):
     STAGE_COMPLETED = "stage.completed"
     STAGE_FAILED = "stage.failed"
     STAGE_RETRYING = "stage.retrying"
+    RUN_DOCUMENT_REJECTED = "run.document_rejected"
+    RUN_DEDUPLICATION_REVIEW_REQUIRED = (
+        "run.deduplication_review_required"
+    )
+    RUN_CONTINUED = "run.continued"
     DRAFT_UPDATED = "draft.updated"
     RUN_REVIEW_READY = "run.review_ready"
+    RUN_CANCELLED = "run.cancelled"
     RUN_EXPIRED = "run.expired"
 
 
@@ -102,7 +110,61 @@ class StageSnapshot(ContractExtractionViewModel):
     progress: StageProgress | None = None
     result_status: ResultStatus | None = None
     result_revision: int | None = Field(default=None, ge=1)
+    started_at: datetime | None = None
     updated_at: datetime
+
+
+class ContractDocumentEvidenceView(ContractExtractionViewModel):
+    """前端可以回到上传 PDF 核对的一条文档类型证据。"""
+
+    page_number: int = Field(ge=1)
+    observation: str = Field(min_length=1)
+
+
+class ContractDocumentDetectionView(ContractExtractionViewModel):
+    """合同文档识别形成的紧凑二分类结果。"""
+
+    is_contract: bool
+    evidence: tuple[ContractDocumentEvidenceView, ...] = Field(min_length=1)
+    reasoning_summary: str = Field(min_length=1)
+
+
+class DeduplicationCandidateView(ContractExtractionViewModel):
+    """一份被判定为重复或相似的 Top-3 召回候选。"""
+
+    rank: int = Field(ge=1, le=3)
+    cosine_similarity: float = Field(ge=-1, le=1)
+    relation: Literal["duplicate", "similar"]
+    document_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    file_name: str = Field(
+        min_length=1,
+        description="Elasticsearch 合同文档中供前端展示的友好文件名。",
+    )
+    file_uri: str = Field(
+        min_length=1,
+        description="Elasticsearch 合同文档中的原始文件地址。",
+    )
+    page_count: int = Field(gt=0)
+    reasoning_summary: str = Field(min_length=1)
+
+
+class DeduplicationReviewView(ContractExtractionViewModel):
+    """查重完成后的暂停点结果与固定审核期限。"""
+
+    status: Literal["unique", "duplicate", "failed"]
+    candidates: tuple[DeduplicationCandidateView, ...] = Field(max_length=3)
+    review_expires_at: datetime
+    continued_at: datetime | None = None
+
+
+class ProcessedPDFMetadataView(ContractExtractionViewModel):
+    """任务持有的处理版 PDF 基本信息。"""
+
+    file_name: str = Field(min_length=1)
+    processed_file_size_bytes: int = Field(ge=1)
+    page_count: int = Field(ge=1)
+    cover_width_pixels: int = Field(ge=1)
+    cover_height_pixels: int = Field(ge=1)
 
 
 class ProcessingRunSnapshot(ContractExtractionViewModel):
@@ -113,17 +175,29 @@ class ProcessingRunSnapshot(ContractExtractionViewModel):
     created_at: datetime
     updated_at: datetime
     expires_at: datetime
+    document: ProcessedPDFMetadataView
     stages: dict[StageCode, StageSnapshot]
     available_sections: tuple[DraftSectionCode, ...]
+    document_detection: ContractDocumentDetectionView | None = None
+    deduplication: DeduplicationReviewView | None = None
+    classification: ContractClassificationView | None = None
 
 
-class ContractDocumentView(ContractExtractionViewModel):
-    """合同草稿引用的稳定源文档信息。"""
+class ContractExtractionRunSummary(ContractExtractionViewModel):
+    """一项尚未入库且可由前端恢复的内存任务摘要。"""
 
-    document_id: str
-    file_name: str
-    file_size_bytes: int = Field(gt=0)
-    page_count: int = Field(gt=0)
+    run_id: str
+    document: ProcessedPDFMetadataView
+    status: RunListStatus
+    created_at: datetime
+    updated_at: datetime
+    expires_at: datetime
+
+
+class ContractExtractionRunList(
+    RootModel[tuple[ContractExtractionRunSummary, ...]]
+):
+    """按最近更新时间倒序排列的可恢复内存任务列表。"""
 
 
 class ContractCategoryView(ContractExtractionViewModel):
@@ -142,115 +216,39 @@ class ContractClassificationView(ContractExtractionViewModel):
     unmapped_type_description: str | None = None
 
 
-class TextEvidenceView(ContractExtractionViewModel):
-    """用户审核字段时可回到原 PDF 核对的一条文本证据。"""
-
-    page_number: int = Field(ge=1)
-    content: str
-
-
 FieldScalar = str | int | float | bool
+CoreObjectValue = dict[str, FieldScalar]
+CoreStoredValue = FieldScalar | CoreObjectValue | tuple[CoreObjectValue, ...]
 
 
-class CoreFieldObjectView(ContractExtractionViewModel):
-    """一个已经通过字段 Schema 校验的扁平对象。"""
-
-    evidence: tuple[TextEvidenceView, ...]
-    reasoning: str
-    value: dict[str, FieldScalar]
-
-
-class CoreFieldView(ContractExtractionViewModel):
-    """一个 Core 定义在当前合同上的审核结果。"""
-
-    name: str
-    cardinality: Literal["single", "multiple"]
-    status: Literal["extracted", "abandoned", "failed"]
-    property_names: tuple[str, ...]
-    objects: tuple[CoreFieldObjectView, ...]
-    reasoning: str | None = None
-    message: str | None = None
-
-    @model_validator(mode="after")
-    def validate_status_payload(self) -> Self:
-        """让状态和用户可见负载保持互斥且完整。"""
-        if self.status == "extracted" and (
-            not self.objects or self.reasoning is not None or self.message is not None
-        ):
-            raise ValueError("extracted Core 字段只能包含一个或多个提取对象")
-        if self.status == "abandoned" and (
-            self.objects or not self.reasoning or self.message is not None
-        ):
-            raise ValueError("abandoned Core 字段只能包含放弃理由")
-        if self.status == "failed" and (
-            not self.message or self.reasoning is not None
-        ):
-            raise ValueError("failed Core 字段必须包含用户消息且不能伪装理由")
-        return self
-
-
-class CoreDraftData(ContractExtractionViewModel):
-    """面向审核端的完整 Core 分区。"""
-
-    fields: tuple[CoreFieldView, ...]
-
-
-class ClausePathSegmentView(ContractExtractionViewModel):
-    """条款在原合同层级路径中的一个可见结构段。"""
-
-    identifier: str
-    title_hint: str | None
-
-
-class ClauseBoundaryAnchorView(ContractExtractionViewModel):
-    """条款边界的一条单页原文锚点。"""
-
-    page_number: int = Field(ge=1)
-    anchor: str
-
-
-class ClauseBoundaryView(ContractExtractionViewModel):
-    """条款自身的包含式起止锚点。"""
-
-    start: ClauseBoundaryAnchorView
-    end: ClauseBoundaryAnchorView
+class CoreDraftData(RootModel[dict[str, CoreStoredValue | None]]):
+    """使用 ES Core code 返回的审核值；未提取字段保留为 null。"""
 
 
 class ClauseView(ContractExtractionViewModel):
-    """一个按合同顺序排列的条款审核结果。"""
+    """与 Elasticsearch clauses 元素一致的条款审核值。"""
 
-    candidate_id: str
+    clause_id: str
     order: int = Field(ge=1)
     identifier: str
-    title_hint: str | None
-    document_path: tuple[ClausePathSegmentView, ...]
-    parent_candidate_id: str | None
+    title: str | None = None
+    path: tuple[str, ...]
+    parent_clause_id: str | None = None
     level: int = Field(ge=1)
-    evidence: ClauseBoundaryView
-    status: Literal["extracted", "failed"]
-    reasoning_summary: str | None = None
-    content: str | None = None
-    message: str | None = None
+    start_page: int = Field(ge=1)
+    end_page: int = Field(ge=1)
+    content: str = Field(min_length=1)
 
     @model_validator(mode="after")
-    def validate_status_payload(self) -> Self:
-        """成功条款只承载正文，失败条款只承载可执行提示。"""
-        if self.status == "extracted":
-            if not self.reasoning_summary or not self.content or self.message is not None:
-                raise ValueError("extracted 条款必须包含理由和正文")
-        elif (
-            not self.message
-            or self.reasoning_summary is not None
-            or self.content is not None
-        ):
-            raise ValueError("failed 条款只能包含用户可见失败消息")
+    def validate_page_order(self) -> Self:
+        """条款结束页不得早于起始页。"""
+        if self.start_page > self.end_page:
+            raise ValueError("条款结束页不能早于起始页")
         return self
 
 
-class ClauseDraftData(ContractExtractionViewModel):
-    """面向审核端的完整条款分区。"""
-
-    clauses: tuple[ClauseView, ...]
+class ClauseDraftData(RootModel[tuple[ClauseView, ...]]):
+    """与 Elasticsearch clauses 数组一致的条款审核值。"""
 
 
 class RetrievalQuestionView(ContractExtractionViewModel):
@@ -270,39 +268,29 @@ class RetrievalViewDraftData(ContractExtractionViewModel):
     source_question_count: int = Field(gt=0)
 
 
-DraftData = TypeVar("DraftData", bound=BaseModel)
-
-
-class DraftSection(ContractExtractionViewModel, Generic[DraftData]):
-    """可独立重试和原子替换的一份草稿结果。"""
-
-    revision: int = Field(ge=1)
-    result_status: ResultStatus
-    updated_at: datetime
-    data: DraftData
-
-
 class ContractExtractionDraft(ContractExtractionViewModel):
-    """至少一个并行分支成功后形成的可审核合同草稿。"""
+    """提取接口只返回可供用户复核的 Core 和 Clause 值。"""
 
-    revision: int = Field(ge=1)
-    document: ContractDocumentView
-    classification: ContractClassificationView
-    core: DraftSection[CoreDraftData] | None = None
-    clause: DraftSection[ClauseDraftData] | None = None
-    retrieval_view: DraftSection[RetrievalViewDraftData] | None = None
-    updated_at: datetime
+    core: CoreDraftData | None = None
+    clauses: ClauseDraftData | None = None
+
+    @model_validator(mode="after")
+    def validate_available_result(self) -> Self:
+        """没有任何用户可见分区时不应构造空提取结果。"""
+        if self.core is None and self.clauses is None:
+            raise ValueError("提取结果必须至少包含 Core 或 Clause")
+        return self
 
 
 class ContractExtractionSnapshot(ContractExtractionViewModel):
-    """普通查询接口返回的当前原子快照。"""
+    """普通查询接口返回的运行状态、分类与当前 Core/Clause 结果。"""
 
     run: ProcessingRunSnapshot
     draft: ContractExtractionDraft | None
 
 
 class ContractExtractionEvent(ContractExtractionViewModel):
-    """统一 SSE 事件；完整结果始终通过快照接口获取。"""
+    """统一 SSE 事件；业务关口事件可以附带对应紧凑结果。"""
 
     sequence: int = Field(ge=1)
     run_id: str
@@ -312,32 +300,35 @@ class ContractExtractionEvent(ContractExtractionViewModel):
     stage: StageSnapshot | None = None
     draft_revision: int | None = Field(default=None, ge=1)
     available_sections: tuple[DraftSectionCode, ...]
+    document_detection: ContractDocumentDetectionView | None = None
+    deduplication: DeduplicationReviewView | None = None
+    classification: ContractClassificationView | None = None
     occurred_at: datetime
 
 
 __all__ = [
-    "ClauseBoundaryAnchorView",
-    "ClauseBoundaryView",
     "ClauseDraftData",
-    "ClausePathSegmentView",
     "ClauseView",
     "ContractCategoryView",
     "ContractClassificationView",
-    "ContractDocumentView",
+    "ContractDocumentDetectionView",
+    "ContractDocumentEvidenceView",
     "ContractExtractionDraft",
     "ContractExtractionEvent",
+    "ContractExtractionRunList",
+    "ContractExtractionRunSummary",
     "ContractExtractionSnapshot",
+    "DeduplicationCandidateView",
+    "DeduplicationReviewView",
     "CoreDraftData",
-    "CoreFieldObjectView",
-    "CoreFieldView",
-    "DraftSection",
     "DraftSectionCode",
     "EventType",
+    "ProcessedPDFMetadataView",
     "ProcessingRunSnapshot",
     "ResultStatus",
     "RetrievalQuestionView",
     "RetrievalViewDraftData",
-    "RetryableStageCode",
+    "RunListStatus",
     "RunStatus",
     "StageCode",
     "StageProgress",

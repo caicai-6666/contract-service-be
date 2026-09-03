@@ -10,6 +10,7 @@ from time import perf_counter
 from pydantic import ValidationError
 
 from app.agent.contract_extraction.context import context_sha256
+from app.agent.contract_extraction.progress import ParallelProgressTracker
 from app.agent.contract_extraction.state import PreparedPDF
 from app.agent.contract_extraction.subgraph.retrieval_view_generation.definition import (
     RetrievalViewGuideCatalog,
@@ -402,19 +403,23 @@ async def generate_questions_from_plans(
     settings = get_settings().mllm
     started_at = perf_counter()
     semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
+    progress = ParallelProgressTracker(len(discovery.focuses))
+    await progress.report_counted()
 
     async with MLLMClient(settings) as client:
         outcomes = tuple(
             await asyncio.gather(
                 *(
-                    _generate_one_question_from_plan(
-                        focus=focus,
-                        prepared_pdf=prepared_pdf,
-                        guide_catalog=guide_catalog,
-                        context=context,
-                        client=client,
-                        semaphore=semaphore,
-                        generation=settings.generation,
+                    progress.track(
+                        _generate_one_question_from_plan(
+                            focus=focus,
+                            prepared_pdf=prepared_pdf,
+                            guide_catalog=guide_catalog,
+                            context=context,
+                            client=client,
+                            semaphore=semaphore,
+                            generation=settings.generation,
+                        )
                     )
                     for focus in discovery.focuses
                 )

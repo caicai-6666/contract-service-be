@@ -1,0 +1,20 @@
+name: 币种
+code: currency
+aliases:
+  - 货币
+  - 结算币种
+  - 金额币种
+  - Currency
+meaning: |
+  合同总金额使用的法定货币，优先采用合同明确写出的标准简称；人民币符号“¥”或大写人民币金额可作为人民币证据。
+excludes: |
+  不包括金额数值、汇率、税率，或仅在换算和参考说明中出现但不用于合同总价结算的其他币种。
+cardinality: single
+properties:
+  - name: 币种
+    code: currency
+    aliases: []
+    type: string
+    required: true
+    meaning: 合同总金额使用的法定货币。
+    excludes: 不包括金额数值、汇率、税率或参考换算币种。

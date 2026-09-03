@@ -62,7 +62,8 @@ class MLLMSettings(BaseModel):
     endpoint: str = "chat_completions"
     timeout_seconds: int = Field(default=300, gt=0)
     max_concurrent_requests: int = Field(default=20, gt=0)
-    context_window_tokens: int = Field(default=65536, gt=0)
+    use_media_references: bool = True
+    context_window_tokens: int = Field(default=262144, gt=0)
     generation: MLLMGenerationSettings = MLLMGenerationSettings()
     vision: MLLMVisionSettings = MLLMVisionSettings()
 
@@ -157,35 +158,57 @@ class RerankerSettings(BaseModel):
         return self
 
 
+class PDFDeduplicationSettings(BaseModel):
+    """PDF 查重候选召回与逐候选判定配置。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    single_shot_visual_token_ratio: float = Field(
+        default=0.75,
+        gt=0,
+        le=1,
+    )
+    single_shot_max_total_pages: int = Field(default=20, gt=0)
+    minimum_recall_cosine_similarity: float = Field(
+        default=0.60,
+        ge=-1,
+        le=1,
+    )
+
+
 class Settings(BaseModel):
     """应用运行所需的不可变配置。"""
 
     model_config = ConfigDict(frozen=True)
 
     app_env: str = "development"
-    app_host: str = "127.0.0.1"
-    app_port: int = Field(default=8080, ge=1, le=65535)
-    app_reload: bool = True
-    log_level: str = "INFO"
     contract_category_definition_dir: Path = Path(
         "data/definition/contract-category"
     )
     field_definition_dir: Path = Path("data/definition/field")
     retrieval_view_guide_dir: Path = Path("data/definition/retrieval-view")
+    reviewer_user_file: Path = Path("data/user/users.yaml")
+    auth_login_code_ttl_seconds: int = Field(default=3600, gt=0)
     retrieval_view_max_questions: int = Field(default=8, gt=0)
     contract_extraction_run_ttl_seconds: int = Field(default=3600, gt=0)
+    contract_deduplication_review_ttl_seconds: int = Field(
+        default=600,
+        gt=0,
+        le=600,
+    )
     contract_extraction_cleanup_interval_seconds: int = Field(default=30, gt=0)
     contract_extraction_event_buffer_size: int = Field(default=256, gt=0)
     contract_extraction_sse_heartbeat_seconds: int = Field(default=15, gt=0)
     contract_extraction_max_stage_attempts: int = Field(default=3, gt=0)
-    elasticsearch_hosts: tuple[str, ...] = ("https://localhost:9200",)
-    elasticsearch_username: str | None = None
-    elasticsearch_password: str | None = None
-    elasticsearch_ca_certs: Path = Path("data/certs/http_ca.crt")
-    elasticsearch_verify_certs: bool = True
+    elasticsearch_hosts: tuple[str, ...] = ("http://127.0.0.1:9200",)
     elasticsearch_index_name: str = "contracts-v1"
     elasticsearch_ingestion_experiment_index_name: str = (
         "contracts-ingestion-experiment-v1"
+    )
+    elasticsearch_text_analyzer: str = Field(
+        default="smartcn",
+        min_length=1,
+        pattern=r"^[a-z][a-z0-9_-]*$",
     )
     elasticsearch_vector_dimensions: int = Field(default=4096, gt=0)
     elasticsearch_number_of_shards: int = Field(default=1, gt=0)
@@ -193,24 +216,14 @@ class Settings(BaseModel):
     mllm: MLLMSettings = MLLMSettings()
     embedding: EmbeddingSettings = EmbeddingSettings()
     reranker: RerankerSettings = RerankerSettings()
+    pdf_deduplication: PDFDeduplicationSettings = PDFDeduplicationSettings()
 
     @model_validator(mode="after")
     def validate_integrations(self) -> Self:
         """校验跨组件配置约束。"""
-        if bool(self.elasticsearch_username) != bool(self.elasticsearch_password):
-            raise ValueError(
-                "ELASTICSEARCH_USERNAME 与 ELASTICSEARCH_PASSWORD 必须同时配置"
-            )
         if self.embedding.dimensions != self.elasticsearch_vector_dimensions:
             raise ValueError("嵌入模型维度必须与 Elasticsearch 向量维度一致")
         return self
-
-    @property
-    def elasticsearch_ca_cert_path(self) -> Path:
-        """将相对 CA 路径固定解析到项目根目录。"""
-        if self.elasticsearch_ca_certs.is_absolute():
-            return self.elasticsearch_ca_certs
-        return _PROJECT_ROOT / self.elasticsearch_ca_certs
 
     @property
     def contract_category_definition_path(self) -> Path:
@@ -233,6 +246,13 @@ class Settings(BaseModel):
             return self.retrieval_view_guide_dir
         return _PROJECT_ROOT / self.retrieval_view_guide_dir
 
+    @property
+    def reviewer_user_path(self) -> Path:
+        """将相对审核用户文件固定解析到项目根目录。"""
+        if self.reviewer_user_file.is_absolute():
+            return self.reviewer_user_file
+        return _PROJECT_ROOT / self.reviewer_user_file
+
 
 def _optional_env(name: str) -> str | None:
     """将空环境变量统一解析为未配置。"""
@@ -249,7 +269,10 @@ def _hosts_env() -> tuple[str, ...]:
     """读取逗号分隔的 Elasticsearch 节点列表。"""
     hosts = tuple(
         host.strip()
-        for host in _env("ELASTICSEARCH_HOSTS", "https://localhost:9200").split(",")
+        for host in _env(
+            "ELASTICSEARCH_HOSTS",
+            "http://127.0.0.1:9200",
+        ).split(",")
         if host.strip()
     )
     if not hosts:
@@ -263,10 +286,6 @@ def get_settings() -> Settings:
     load_dotenv(_PROJECT_ROOT / ".env")
     return Settings(
         app_env=_env("APP_ENV", "development"),
-        app_host=_env("APP_HOST", "127.0.0.1"),
-        app_port=_env("APP_PORT", "8080"),
-        app_reload=_env("APP_RELOAD", "true"),
-        log_level=_env("LOG_LEVEL", "INFO"),
         contract_category_definition_dir=_env(
             "CONTRACT_CATEGORY_DEFINITION_DIR",
             "data/definition/contract-category",
@@ -279,6 +298,14 @@ def get_settings() -> Settings:
             "RETRIEVAL_VIEW_GUIDE_DIR",
             "data/definition/retrieval-view",
         ),
+        reviewer_user_file=_env(
+            "REVIEWER_USER_FILE",
+            "data/user/users.yaml",
+        ),
+        auth_login_code_ttl_seconds=_env(
+            "AUTH_LOGIN_CODE_TTL_SECONDS",
+            "3600",
+        ),
         retrieval_view_max_questions=_env(
             "RETRIEVAL_VIEW_MAX_QUESTIONS",
             "8",
@@ -286,6 +313,10 @@ def get_settings() -> Settings:
         contract_extraction_run_ttl_seconds=_env(
             "CONTRACT_EXTRACTION_RUN_TTL_SECONDS",
             "3600",
+        ),
+        contract_deduplication_review_ttl_seconds=_env(
+            "CONTRACT_DEDUPLICATION_REVIEW_TTL_SECONDS",
+            "600",
         ),
         contract_extraction_cleanup_interval_seconds=_env(
             "CONTRACT_EXTRACTION_CLEANUP_INTERVAL_SECONDS",
@@ -304,14 +335,14 @@ def get_settings() -> Settings:
             "3",
         ),
         elasticsearch_hosts=_hosts_env(),
-        elasticsearch_username=_optional_env("ELASTICSEARCH_USERNAME"),
-        elasticsearch_password=_optional_env("ELASTICSEARCH_PASSWORD"),
-        elasticsearch_ca_certs=_env("ELASTICSEARCH_CA_CERTS", "data/certs/http_ca.crt"),
-        elasticsearch_verify_certs=_env("ELASTICSEARCH_VERIFY_CERTS", "true"),
         elasticsearch_index_name=_env("ELASTICSEARCH_INDEX_NAME", "contracts-v1"),
         elasticsearch_ingestion_experiment_index_name=_env(
             "ELASTICSEARCH_INGESTION_EXPERIMENT_INDEX_NAME",
             "contracts-ingestion-experiment-v1",
+        ),
+        elasticsearch_text_analyzer=_env(
+            "ELASTICSEARCH_TEXT_ANALYZER",
+            "smartcn",
         ),
         elasticsearch_vector_dimensions=_env("ELASTICSEARCH_VECTOR_DIMENSIONS", "4096"),
         elasticsearch_number_of_shards=_env("ELASTICSEARCH_NUMBER_OF_SHARDS", "1"),
@@ -324,7 +355,13 @@ def get_settings() -> Settings:
             endpoint=_env("VLLM_MLLM_ENDPOINT", "chat_completions"),
             timeout_seconds=_env("VLLM_MLLM_TIMEOUT_SECONDS", "300"),
             max_concurrent_requests=_env("VLLM_MLLM_MAX_CONCURRENT_REQUESTS", "20"),
-            context_window_tokens=_env("VLLM_MLLM_CONTEXT_WINDOW_TOKENS", "65536"),
+            use_media_references=_env(
+                "VLLM_MLLM_USE_MEDIA_REFERENCES",
+                "true",
+            ),
+            context_window_tokens=_env(
+                "VLLM_MLLM_CONTEXT_WINDOW_TOKENS", "262144"
+            ),
             generation=MLLMGenerationSettings(
                 enable_thinking=_env("VLLM_MLLM_ENABLE_THINKING", "false"),
                 temperature=_env("VLLM_MLLM_TEMPERATURE", "0.7"),
@@ -375,5 +412,19 @@ def get_settings() -> Settings:
             timeout_seconds=_env("VLLM_RERANKER_TIMEOUT_SECONDS", "60"),
             candidate_limit=_env("VLLM_RERANKER_CANDIDATE_LIMIT", "20"),
             top_n=_env("VLLM_RERANKER_TOP_N", "5"),
+        ),
+        pdf_deduplication=PDFDeduplicationSettings(
+            single_shot_visual_token_ratio=_env(
+                "PDF_DEDUP_SINGLE_SHOT_VISUAL_TOKEN_RATIO",
+                "0.75",
+            ),
+            single_shot_max_total_pages=_env(
+                "PDF_DEDUP_SINGLE_SHOT_MAX_TOTAL_PAGES",
+                "20",
+            ),
+            minimum_recall_cosine_similarity=_env(
+                "PDF_DEDUP_MINIMUM_RECALL_COSINE_SIMILARITY",
+                "0.60",
+            ),
         ),
     )

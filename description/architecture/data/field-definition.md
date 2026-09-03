@@ -1,0 +1,223 @@
+# 模型提取对象定义结构
+
+> **用途：** 本文定义 Core 的统一 YAML 契约，使单值事实和可重复的紧密关联事实都以扁平对象表达，并允许为字符串属性声明 Elasticsearch 分词策略。
+
+该契约主要表达“提取什么、允许提取几次、每个对象包含哪些属性”。`code` 服务 HTTP 结果与 Elasticsearch 的稳定机器身份，`tokenize` 只服务 Elasticsearch mapping；二者均不属于模型可见提取定义。契约不保存模型输出、证据、工具调用或节点状态。提取流程见[字段提取子图](../workflow/contract-extraction/field-extraction.md)。
+
+Core 定义位于 [Core 定义目录](../../../data/definition/field/core)。一个 YAML 文件只定义一种提取对象，顶层不使用对象列表包裹。
+
+---
+
+## 启动期内存目录
+
+应用启动时从 `FIELD_DEFINITION_DIR` 一次性读取全部 Core YAML，构造不可变 `FieldDefinitionCatalog` 并保存到 `application.state.field_definition_catalog`。默认根目录为 `data/definition/field`，其下只允许 `core` 目录。
+
+目录对象包含：
+
+- `core`：按文件名稳定排列的 Core 定义集合，必须至少包含一个定义。
+- `content_sha256`：由相对路径和原始文件字节计算的全目录确定性指纹；Core 集合同时保留自己的指纹。
+
+加载器会在服务接收请求前完成目录布局、YAML、Pydantic Schema、名称与索引代码唯一性校验。Core 名称或 `code` 重复、出现未知目录条目都会阻止应用启动。运行期间不再扫描目录；字段工作流直接接收并复用这一内存快照。
+
+前端通过[Core 审核表单定义接口](../../api/contract.md#获取-core-审核表单定义)读取同一份启动期快照的精简投影。该投影只包含字段和属性的 `code`、`name`、`cardinality`、`type`、`required`，用于生成与提取结果一致的审核表单；模型语义、别名、排除规则和分词配置仍留在服务内部。
+
+---
+
+## 标准结构
+
+~~~yaml
+name: 相关方
+code: related_parties
+aliases:
+  - 合同主体
+  - 签约方
+meaning: |
+  在当前合同中被明确列为签约主体的对象。
+excludes: |
+  不包括仅作为联系人、银行或承运人出现的对象。
+cardinality: multiple
+properties:
+  - name: 名称
+    code: name
+    aliases:
+      - 主体名称
+    type: string
+    tokenize: true
+    required: true
+    meaning: 相关方在合同中展示的完整签约名称。
+    excludes: 不包括联系人姓名、部门名称或品牌名。
+  - name: 角色
+    code: role
+    aliases:
+      - 签约角色
+    type: string
+    required: true
+    meaning: 合同原文赋予该相关方的角色。
+    excludes: 不包括法定代表人、联系人或委托代理人等人员身份。
+~~~
+
+| 顶层属性 | 形式 | 职责 |
+| --- | --- | --- |
+| name | 非空字符串 | 提取对象的稳定名称，也是目录内唯一身份。 |
+| code | 小写 snake_case | `core` 下的稳定 ES 字段路径，目录内唯一。 |
+| aliases | 一维字符串列表 | 合同中可能指向该对象类别的同义标题。 |
+| meaning | 非空字符串 | 正向定义什么样的事实构成一个该类对象。 |
+| excludes | 非空字符串 | 排除容易被误当成该对象的相邻概念。 |
+| cardinality | single 或 multiple | 决定单份合同只允许一个对象，还是允许逐个提交多个对象。 |
+| properties | 一维属性定义列表 | 定义单个提取对象内的扁平属性；至少一项且名称唯一。 |
+
+---
+
+## 属性结构
+
+properties 中每个元素必须包含：
+
+| 属性 | 形式 | 职责 |
+| --- | --- | --- |
+| name | 非空字符串 | 对象内稳定且唯一的属性名。 |
+| code | 小写 snake_case | 对象型 Core 下的稳定 ES 属性路径，同一对象内唯一。 |
+| aliases | 一维字符串列表 | 原文中可能指向该属性的同义标签；可为空列表。 |
+| type | 基本类型枚举 | 统一约束模型 Schema 与 Python 校验。 |
+| tokenize | 可选布尔值 | 仅用于 `string` 属性；`true` 表示 ES 全文分词，缺省或 `false` 表示精确值。 |
+| required | 布尔值 | 决定每个对象是否必须提交该属性。 |
+| meaning | 非空字符串 | 定义属性的目标值和成立条件。 |
+| excludes | 非空字符串 | 排除相似但不属于该属性的内容。 |
+
+每种对象至少需要一个 required: true 属性。可选属性没有证据时直接省略，不能用 null、空字符串、0 或 false 冒充未发现。
+
+### Elasticsearch mapping 元数据
+
+`code` 只允许小写英文字母开头，并由小写字母、数字和下划线组成。单属性 `single` 定义使用顶层 `code` 直接生成 `core.<code>` 标量；`multiple` 定义生成 `nested`，属性 `code` 成为 nested 对象内的字段名；多属性 `single` 定义生成严格 `object`。
+
+`tokenize` 采用最小规则：
+
+| 属性定义 | Elasticsearch 类型 | 分析器 |
+| --- | --- | --- |
+| `type: string` 且 `tokenize: true` | `text` | `analyzer` 和 `search_analyzer` 均使用 `ELASTICSEARCH_TEXT_ANALYZER`。 |
+| `type: string` 且未配置或配置 `tokenize: false` | `keyword` | 不分词。 |
+| `type: integer` | `integer` | 不允许声明 `tokenize`。 |
+| `type: number` | `double` | 不允许声明 `tokenize`。 |
+| `type: boolean` | `boolean` | 不允许声明 `tokenize`。 |
+
+分词字段只创建 `text`，不自动增加 `.keyword` 或 `.raw` 多字段。需要精确匹配的字符串应保持 `tokenize` 缺省或 `false`，直接映射为 `keyword`。
+
+构造模型消息时，程序会移除顶层和属性 `code`，并从每个属性中移除 `tokenize`；动态提取工具 Schema 也不会读取它们。模型完成提取后，程序再附加稳定 `code`，用于生成 HTTP Core 值和正式入库字段。因此更改 `code` 会改变对外机器键和 Elasticsearch 路径，但不会改变提示词或模型可见工具参数；更改 `tokenize` 只改变 Elasticsearch mapping。
+
+```mermaid
+flowchart LR
+    yaml["Core YAML 属性"]
+    model_projection["提取投影<br/>移除 code 与 tokenize"]
+    model["提示词与工具 Schema"]
+    index_projection["入库 mapping 投影"]
+    text["text + 配置分析器"]
+    keyword["keyword"]
+
+    yaml --> model_projection --> model
+    yaml --> index_projection
+    index_projection -->|"tokenize: true"| text
+    index_projection -->|"缺省或 false"| keyword
+```
+
+---
+
+## 基数语义
+
+### single
+
+合同级唯一事实使用 single，例如合同编号、合同总金额和签订日期。状态机最多接受一个通过校验的对象。
+
+~~~json
+{"合同编号": "DK-XS25081208"}
+~~~
+
+### multiple
+
+合同中可以存在多个并列实例时使用 multiple，例如相关方、交易明细和分期付款。它表示同一种扁平对象可以被独立提交多次，不表示某个属性的值可以是数组。
+
+~~~json
+[
+  {"名称": "深圳现象光伏科技有限公司", "角色": "买方"},
+  {"名称": "深圳市大肯科技有限公司", "角色": "卖方"}
+]
+~~~
+
+列表是运行时收集多次对象提交的外层容器，不是任何对象属性的类型。
+
+---
+
+## 禁止对象嵌套
+
+type 只允许四种 JSON 基本类型：
+
+| type | JSON Schema | Python 校验 | 适用内容 |
+| --- | --- | --- | --- |
+| string | object schema 中的 string | str | 名称、编号、日期文本与短描述 |
+| integer | object schema 中的 integer | int，且排除 bool | 整数数量或期限 |
+| number | object schema 中的 number | int 或 float，且排除 bool | 金额、比例和其他数值 |
+| boolean | object schema 中的 boolean | bool | 有明确合同证据的是非状态 |
+
+不允许 object、array 或自定义复合类型，属性也不得再声明 properties、items 或子 Schema。因此：
+
+- 一个“相关方”对象可以同时包含名称和角色，但不能再包含地址对象或角色数组。
+- 同一主体有多个独立角色时，应由后续状态机的实例边界和去重规则处理，不把多个角色塞入数组。
+- 需要更深结构时，应拆成另一种顶层提取对象，通过稳定基本值关联，不在 YAML 内嵌套子对象。
+
+---
+
+## 相关方语义
+
+Core 目录不再定义“我方名称”“我方角色”“相对方名称”和“相对方角色”，统一使用 [相关方定义](../../../data/definition/field/core/related-party.yaml) 表达客观的签约主体与原文角色。
+
+模型只负责提取合同明示的相关方，不猜测谁是“我方”。若业务后续需要识别关注主体，应使用系统配置的主体标识对结果做程序化匹配，不把主观视角重新注入提取定义。
+
+---
+
+## 合同标的语义
+
+Core 的“合同标的”是 `multiple` 扁平对象，不再使用一个字符串概括整份合同。一个能够独立识别、交付或验收的货物、设备、材料、服务、工程、权利或其他履行对象对应一个实例；同一合同中的并列标的必须逐个提交。
+
+单个标的使用“标的类型 + 标的名称”作为必填身份，并可按原文补充品牌、规格型号、数量、单位、单价和范围说明。可选属性没有明确证据时直接省略；不得以 `null` 或猜测值占位。
+
+~~~yaml
+- 标的类型: 设备
+  标的名称: 加热台
+  规格型号: ET-3030
+  数量: 1
+  单位: 台
+  单价: 2300
+  范围说明: 发热板规格300×300×20mm
+- 标的类型: 加工服务
+  标的名称: HolderWithR5 零件加工制造服务
+  范围说明: 按双方确认的加工图纸制造零件
+~~~
+
+单价只描述当前对象每一计量单位的价格；同时存在未税与含税单价时取实际应付的含税单价。合同标的本身不保存单价含税口径，整份合同的含税状态与税率继续由独立 Core 字段负责。合同总价、单项小计、税额、折扣、分期付款金额和只有总费用而没有单位计价关系的服务费不属于合同标的，继续由其他字段或后续模块负责。
+
+成套设备内部没有独立交付边界的夹爪、电机等配置不拆成多个标的，可在必要时写入简短“范围说明”。独立报价、独立交付或独立验收的产品与服务即使属于同一个项目，也应分别形成标的实例。
+
+---
+
+## 动态校验约束
+
+Definition 加载阶段必须拒绝：
+
+- 顶层缺少 name、code、aliases、meaning、excludes、cardinality 或 properties；
+- cardinality 不是 single 或 multiple；
+- properties 为空、属性名或 code 重复，或没有任何必填属性；
+- 顶层或属性 code 不是小写 snake_case，或同一 Core 目录的顶层 code 重复；
+- 属性 type 不是四种基本类型；
+- 非 string 属性声明 tokenize，包括声明为 false；
+- 出现未知属性，包括用于嵌套的 items 或子 properties；
+- 名称或正负语义为空，或别名包含空值和重复值；
+- 同一目录存在重复的顶层 name。
+
+~~~text
+版本化对象定义
+  → 读取 cardinality 决定提取次数
+  → 移除仅供索引使用的 code 与 tokenize
+  → 根据其余 properties 生成扁平 strict JSON Schema
+  → 逐对象校验基本类型和必填属性
+  → 收集一个或多个通过校验的对象
+~~~
+
+Core 状态机已根据 `cardinality` 执行单对象自动结束或多对象显式 `finish_extraction` 结束；每次成功对象都会进入当前定义的短期记忆。

@@ -9,6 +9,7 @@ from time import perf_counter
 from pydantic import ValidationError
 
 from app.agent.contract_extraction.context import context_sha256
+from app.agent.contract_extraction.progress import ParallelProgressTracker
 from app.agent.contract_extraction.subgraph.field_extraction.core.prompt import (
     CORE_COMMON_PROMPT_VERSION,
     CORE_EXTRACTION_PROMPT_VERSION,
@@ -180,8 +181,12 @@ def _failed_field(
 ) -> FailedCore:
     return FailedCore(
         name=definition.name,
+        code=definition.code,
         cardinality=definition.cardinality,
         property_names=tuple(item.name for item in definition.properties),
+        property_codes={
+            item.name: item.code for item in definition.properties
+        },
         rounds=len(audits),
         elapsed_ms=round((perf_counter() - started_at) * 1000, 3),
         tool_calls=tuple(audits),
@@ -454,10 +459,14 @@ async def _extract_one_core(
             if definition.cardinality is FieldCardinality.SINGLE:
                 return ExtractedCore(
                     name=definition.name,
+                    code=definition.code,
                     cardinality=definition.cardinality,
                     property_names=tuple(
                         item.name for item in definition.properties
                     ),
+                    property_codes={
+                        item.name: item.code for item in definition.properties
+                    },
                     rounds=round_number,
                     elapsed_ms=round((perf_counter() - started_at) * 1000, 3),
                     tool_calls=tuple(audits),
@@ -468,8 +477,14 @@ async def _extract_one_core(
         if accepted_abandon is not None:
             return AbandonedCore(
                 name=definition.name,
+                code=definition.code,
                 cardinality=definition.cardinality,
-                property_names=tuple(item.name for item in definition.properties),
+                property_names=tuple(
+                    item.name for item in definition.properties
+                ),
+                property_codes={
+                    item.name: item.code for item in definition.properties
+                },
                 rounds=round_number,
                 elapsed_ms=round((perf_counter() - started_at) * 1000, 3),
                 tool_calls=tuple(audits),
@@ -479,8 +494,14 @@ async def _extract_one_core(
         if accepted_finish is not None:
             return ExtractedCore(
                 name=definition.name,
+                code=definition.code,
                 cardinality=definition.cardinality,
-                property_names=tuple(item.name for item in definition.properties),
+                property_names=tuple(
+                    item.name for item in definition.properties
+                ),
+                property_codes={
+                    item.name: item.code for item in definition.properties
+                },
                 rounds=round_number,
                 elapsed_ms=round((perf_counter() - started_at) * 1000, 3),
                 tool_calls=tuple(audits),
@@ -514,15 +535,19 @@ async def extract_core(
     definitions = state["core_definitions"]
     settings = get_settings().mllm
     semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
+    progress = ParallelProgressTracker(len(definitions.definitions))
+    await progress.report_counted()
     async with MLLMClient(settings) as client:
         fields = tuple(
             await asyncio.gather(
                 *(
-                    _extract_one_core(
-                        definition,
-                        state=state,
-                        client=client,
-                        semaphore=semaphore,
+                    progress.track(
+                        _extract_one_core(
+                            definition,
+                            state=state,
+                            client=client,
+                            semaphore=semaphore,
+                        )
                     )
                     for definition in definitions.definitions
                 )

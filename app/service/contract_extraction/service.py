@@ -1,10 +1,9 @@
-"""合同提取的进程内任务、增量草稿与 SSE 事件服务。"""
+"""合同提取的进程内任务、增量草稿、SSE 事件与断点重试服务。"""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import logging
 from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
@@ -12,25 +11,39 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
+from app.agent.contract_extraction.progress import (
+    ParallelProgressPhase,
+    ParallelProgressUpdate,
+)
 from app.agent.contract_extraction.state import ContractExtractionRequest
+from app.service.contract_extraction.deduplication import PDFDeduplicationExecutor
+from app.service.contract_extraction.document_detection import (
+    ContractDocumentDetectionExecutor,
+)
 from app.service.contract_extraction.executor import (
     ContractExtractionExecutor,
+    DocumentUnderstandingOutput,
     ExtractionContext,
-    PreprocessingOutput,
 )
 from app.service.contract_extraction.model import (
     ClauseDraftData,
-    ContractDocumentView,
+    ContractDocumentDetectionView,
+    ContractDocumentEvidenceView,
     ContractExtractionDraft,
     ContractExtractionEvent,
+    ContractExtractionRunList,
+    ContractExtractionRunSummary,
     ContractExtractionSnapshot,
     CoreDraftData,
-    DraftSection,
+    DeduplicationCandidateView,
+    DeduplicationReviewView,
     DraftSectionCode,
     EventType,
+    ProcessedPDFMetadataView,
     ProcessingRunSnapshot,
     ResultStatus,
     RetrievalViewDraftData,
+    RunListStatus,
     RunStatus,
     StageCode,
     StageProgress,
@@ -45,13 +58,19 @@ from app.service.contract_extraction.projector import (
     project_retrieval_view,
 )
 from app.service.contract_extraction.registry import (
+    InternalDraftSectionCode,
     MemoryRunRegistry,
     MutableDraft,
     MutableDraftSection,
     MutableStage,
     MutableStageAttempt,
     RunAggregate,
+    RunNotFoundError,
     SourceDocument,
+)
+from app.service.pdf_preparation import (
+    PDFPreparationError,
+    PDFPreparationService,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,12 +81,13 @@ class RunConflictError(RuntimeError):
 
 
 class StageRetryError(RunConflictError):
-    """目标阶段不存在、不可重试或已经超过次数限制。"""
+    """目标阶段未失败、缺少成功前置结果或已经超过次数限制。"""
 
 
 _STAGE_ORDER = (
-    StageCode.DOCUMENT_READING,
-    StageCode.DOCUMENT_UNDERSTANDING,
+    StageCode.CONTRACT_DOCUMENT_DETECTION,
+    StageCode.PDF_DEDUPLICATION,
+    StageCode.CONTRACT_STRUCTURE_RECOGNITION,
     StageCode.CONTRACT_CLASSIFICATION,
     StageCode.CORE_EXTRACTION,
     StageCode.CLAUSE_EXTRACTION,
@@ -78,66 +98,113 @@ _BRANCH_STAGES = (
     StageCode.CLAUSE_EXTRACTION,
     StageCode.RETRIEVAL_PREPARATION,
 )
-_SECTION_ORDER = (
-    DraftSectionCode.CORE,
-    DraftSectionCode.CLAUSE,
-    DraftSectionCode.RETRIEVAL_VIEW,
+_LISTABLE_RUN_STATUSES = {
+    RunStatus.PROCESSING,
+    RunStatus.AWAITING_DEDUPLICATION_REVIEW,
+    RunStatus.PARTIAL_READY,
+    RunStatus.READY,
+    RunStatus.FAILED,
+}
+_PUBLIC_SECTION_ORDER = (
+    InternalDraftSectionCode.CORE,
+    InternalDraftSectionCode.CLAUSE,
 )
+_INTERNAL_TO_PUBLIC_SECTION = {
+    InternalDraftSectionCode.CORE: DraftSectionCode.CORE,
+    InternalDraftSectionCode.CLAUSE: DraftSectionCode.CLAUSE,
+}
 _STAGE_NAMES = {
-    StageCode.DOCUMENT_READING: "读取合同",
-    StageCode.DOCUMENT_UNDERSTANDING: "理解文档结构",
+    StageCode.CONTRACT_DOCUMENT_DETECTION: "确认合同文档",
+    StageCode.CONTRACT_STRUCTURE_RECOGNITION: "识别合同结构",
+    StageCode.PDF_DEDUPLICATION: "检查重复合同",
     StageCode.CONTRACT_CLASSIFICATION: "识别合同类型",
     StageCode.CORE_EXTRACTION: "提取核心信息",
     StageCode.CLAUSE_EXTRACTION: "提取合同条款",
     StageCode.RETRIEVAL_PREPARATION: "准备智能检索",
 }
 _PENDING_MESSAGES = {
-    StageCode.DOCUMENT_READING: "等待读取上传的 PDF。",
-    StageCode.DOCUMENT_UNDERSTANDING: "等待分析合同的页面与内容结构。",
+    StageCode.CONTRACT_DOCUMENT_DETECTION: "等待确认上传内容是否属于合同文档。",
+    StageCode.CONTRACT_STRUCTURE_RECOGNITION: "等待识别合同的页面与内容结构。",
+    StageCode.PDF_DEDUPLICATION: "等待检查是否存在重复合同。",
     StageCode.CONTRACT_CLASSIFICATION: "等待识别合同涉及的交易类型。",
     StageCode.CORE_EXTRACTION: "等待提取合同核心信息。",
     StageCode.CLAUSE_EXTRACTION: "等待提取合同条款。",
     StageCode.RETRIEVAL_PREPARATION: "等待生成合同检索信息。",
 }
 _RUNNING_MESSAGES = {
-    StageCode.DOCUMENT_READING: "正在读取并整理合同页面。",
-    StageCode.DOCUMENT_UNDERSTANDING: "正在理解合同的内容结构。",
+    StageCode.CONTRACT_DOCUMENT_DETECTION: "正在确认上传内容是否属于合同文档。",
+    StageCode.CONTRACT_STRUCTURE_RECOGNITION: "正在识别合同的内容结构。",
+    StageCode.PDF_DEDUPLICATION: "正在检查是否存在重复合同。",
     StageCode.CONTRACT_CLASSIFICATION: "正在识别合同涉及的交易类型。",
     StageCode.CORE_EXTRACTION: "正在提取合同核心信息。",
     StageCode.CLAUSE_EXTRACTION: "正在识别并提取合同条款。",
     StageCode.RETRIEVAL_PREPARATION: "正在生成便于检索合同的信息。",
 }
 _COMPLETED_MESSAGES = {
-    StageCode.DOCUMENT_READING: "合同页面已读取。",
-    StageCode.DOCUMENT_UNDERSTANDING: "合同内容结构已识别。",
+    StageCode.CONTRACT_DOCUMENT_DETECTION: "合同文档属性已确认。",
+    StageCode.CONTRACT_STRUCTURE_RECOGNITION: "合同内容结构已识别。",
+    StageCode.PDF_DEDUPLICATION: "重复合同检查已完成。",
     StageCode.CONTRACT_CLASSIFICATION: "合同类型已识别。",
     StageCode.CORE_EXTRACTION: "合同核心信息已生成。",
     StageCode.CLAUSE_EXTRACTION: "合同条款已生成。",
     StageCode.RETRIEVAL_PREPARATION: "合同检索信息已准备。",
 }
 _FAILED_MESSAGES = {
-    StageCode.DOCUMENT_READING: "暂时无法读取这份合同，请确认文件后重新上传。",
-    StageCode.DOCUMENT_UNDERSTANDING: "暂时无法完成合同结构理解。",
-    StageCode.CONTRACT_CLASSIFICATION: "暂时无法识别合同类型。",
-    StageCode.CORE_EXTRACTION: "本次未能完成核心信息提取，可以单独重试。",
-    StageCode.CLAUSE_EXTRACTION: "本次未能完成合同条款提取，可以单独重试。",
-    StageCode.RETRIEVAL_PREPARATION: "本次未能完成检索准备，可以单独重试。",
+    StageCode.CONTRACT_DOCUMENT_DETECTION: "暂时无法确认上传内容是否属于合同文档",
+    StageCode.CONTRACT_STRUCTURE_RECOGNITION: "暂时无法识别合同结构",
+    StageCode.PDF_DEDUPLICATION: "暂时无法完成重复合同检查",
+    StageCode.CONTRACT_CLASSIFICATION: "暂时无法识别合同类型",
+    StageCode.CORE_EXTRACTION: "本次未能完成核心信息提取",
+    StageCode.CLAUSE_EXTRACTION: "本次未能完成合同条款提取",
+    StageCode.RETRIEVAL_PREPARATION: "本次未能完成检索准备",
 }
 _STAGE_TO_SECTION = {
-    StageCode.CORE_EXTRACTION: DraftSectionCode.CORE,
-    StageCode.CLAUSE_EXTRACTION: DraftSectionCode.CLAUSE,
-    StageCode.RETRIEVAL_PREPARATION: DraftSectionCode.RETRIEVAL_VIEW,
+    StageCode.CORE_EXTRACTION: InternalDraftSectionCode.CORE,
+    StageCode.CLAUSE_EXTRACTION: InternalDraftSectionCode.CLAUSE,
+    StageCode.RETRIEVAL_PREPARATION: (
+        InternalDraftSectionCode.RETRIEVAL_VIEW
+    ),
+}
+_COUNTING_MESSAGES = {
+    StageCode.CONTRACT_CLASSIFICATION: "正在统计待识别的合同类别数量。",
+    StageCode.CORE_EXTRACTION: "正在统计待提取的核心字段数量。",
+    StageCode.CLAUSE_EXTRACTION: "正在统计待提取的合同条款数量。",
+    StageCode.RETRIEVAL_PREPARATION: "正在统计待生成的检索问题数量。",
+}
+_COUNTED_MESSAGE_TEMPLATES = {
+    StageCode.CONTRACT_CLASSIFICATION: "数量统计完成，共需识别 {total} 个合同类别。",
+    StageCode.CORE_EXTRACTION: "数量统计完成，共需提取 {total} 个核心字段。",
+    StageCode.CLAUSE_EXTRACTION: "数量统计完成，共需提取 {total} 个合同条款。",
+    StageCode.RETRIEVAL_PREPARATION: "数量统计完成，共需生成 {total} 个检索问题。",
+}
+_EXTRACTING_MESSAGE_TEMPLATES = {
+    StageCode.CONTRACT_CLASSIFICATION: (
+        "正在识别合同类别，已完成 {completed} / {total}。"
+    ),
+    StageCode.CORE_EXTRACTION: (
+        "正在提取核心字段，已完成 {completed} / {total}。"
+    ),
+    StageCode.CLAUSE_EXTRACTION: (
+        "正在提取合同条款，已完成 {completed} / {total}。"
+    ),
+    StageCode.RETRIEVAL_PREPARATION: (
+        "正在生成检索问题，已完成 {completed} / {total}。"
+    ),
 }
 
 
 class ContractExtractionService:
-    """在单进程内协调上传、并行处理、事件订阅和分支重试。"""
+    """在单进程内协调上传、并行处理、事件订阅和失败断点重试。"""
 
     def __init__(
         self,
         *,
         executor: ContractExtractionExecutor,
+        document_detection_executor: ContractDocumentDetectionExecutor,
+        deduplication_executor: PDFDeduplicationExecutor,
+        pdf_preparation_service: PDFPreparationService,
         run_ttl_seconds: int = 3600,
+        deduplication_review_ttl_seconds: int = 600,
         cleanup_interval_seconds: int = 30,
         event_buffer_size: int = 256,
         sse_heartbeat_seconds: int = 15,
@@ -146,6 +213,8 @@ class ContractExtractionService:
     ) -> None:
         if run_ttl_seconds <= 0:
             raise ValueError("任务内存保留时间必须大于 0")
+        if not 0 < deduplication_review_ttl_seconds <= 600:
+            raise ValueError("查重审核等待时间必须在 1 到 600 秒之间")
         if cleanup_interval_seconds <= 0:
             raise ValueError("任务清理间隔必须大于 0")
         if event_buffer_size <= 0:
@@ -155,7 +224,13 @@ class ContractExtractionService:
         if max_stage_attempts <= 0:
             raise ValueError("阶段最大尝试次数必须大于 0")
         self._executor = executor
+        self._document_detection_executor = document_detection_executor
+        self._deduplication_executor = deduplication_executor
+        self._pdf_preparation_service = pdf_preparation_service
         self._run_ttl = timedelta(seconds=run_ttl_seconds)
+        self._deduplication_review_ttl = timedelta(
+            seconds=deduplication_review_ttl_seconds
+        )
         self._cleanup_interval_seconds = cleanup_interval_seconds
         self._event_buffer_size = event_buffer_size
         self._sse_heartbeat_seconds = sse_heartbeat_seconds
@@ -163,6 +238,7 @@ class ContractExtractionService:
         self._registry = registry or MemoryRunRegistry()
         self._cleanup_task: asyncio.Task[None] | None = None
         self._run_tasks: dict[str, set[asyncio.Task[None]]] = {}
+        self._review_expiry_tasks: dict[str, asyncio.Task[None]] = {}
 
     @property
     def sse_heartbeat_seconds(self) -> int:
@@ -188,34 +264,44 @@ class ContractExtractionService:
         if self._cleanup_task is not None and not self._cleanup_task.done():
             self._cleanup_task.cancel()
             tasks.append(self._cleanup_task)
+        tasks.extend(
+            task for task in self._review_expiry_tasks.values() if not task.done()
+        )
+        for task in self._review_expiry_tasks.values():
+            task.cancel()
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._run_tasks.clear()
+        self._review_expiry_tasks.clear()
         self._cleanup_task = None
 
     async def create_run(
         self,
         *,
+        reviewer_user_name: str,
         file_name: str,
         pdf_bytes: bytes,
     ) -> ContractExtractionSnapshot:
-        """把一次上传注册为内存任务并立即异步启动处理。"""
-        # 正式文件类型、页数、加密与业务规则校验留给后续独立校验阶段；
-        # 当前只建立工作流能够安全识别来源所需的最小输入契约。
-        request = ContractExtractionRequest(
-            file_name=file_name,
-            pdf_bytes=pdf_bytes,
-        )
+        """请求内准备 PDF，通过校验后注册任务并先确认是否为合同。"""
+        try:
+            request = ContractExtractionRequest(
+                file_name=file_name,
+                pdf_bytes=pdf_bytes,
+            )
+        except ValueError as exc:
+            raise PDFPreparationError("PDF 文件名或内容无效") from exc
+        prepared_pdf = await self._pdf_preparation_service.prepare(request)
         now = _utcnow()
         aggregate = RunAggregate(
             run_id=str(uuid4()),
+            reviewer_user_name=reviewer_user_name,
             source=SourceDocument(
                 file_name=request.source_name,
-                pdf_bytes=pdf_bytes,
-                document_id=hashlib.sha256(pdf_bytes).hexdigest(),
+                document_id=prepared_pdf.document_id,
             ),
+            prepared_pdf=prepared_pdf,
             created_at=now,
             updated_at=now,
             expires_at=now + self._run_ttl,
@@ -238,48 +324,322 @@ class ContractExtractionService:
                 EventType.RUN_STARTED,
                 "合同已接收，开始处理。",
             )
+            self._begin_stage_locked(
+                aggregate,
+                StageCode.CONTRACT_DOCUMENT_DETECTION,
+                retry=False,
+            )
             snapshot = self._snapshot_locked(aggregate)
-        self._spawn(aggregate.run_id, self._run_pipeline(aggregate, request))
+        self._spawn(
+            aggregate,
+            self._run_from_document_detection(aggregate),
+        )
         return snapshot
 
-    async def get_snapshot(self, run_id: str) -> ContractExtractionSnapshot:
+    async def get_snapshot(
+        self,
+        run_id: str,
+        *,
+        reviewer_user_name: str,
+    ) -> ContractExtractionSnapshot:
         """返回状态与当前草稿在同一把锁下形成的原子快照。"""
-        aggregate = await self._registry.get(run_id)
+        aggregate = await self._get_live_aggregate(
+            run_id,
+            reviewer_user_name=reviewer_user_name,
+        )
         async with aggregate.lock:
+            if aggregate.cancelled or aggregate.expired:
+                raise RunNotFoundError(run_id)
             return self._snapshot_locked(aggregate)
+
+    async def list_unpersisted_runs(
+        self,
+        *,
+        reviewer_user_name: str,
+    ) -> ContractExtractionRunList:
+        """列出仍在自动处理或等待人工操作、但尚未入库的任务。"""
+        # 列表读取不续期；先清理已到期且没有活跃执行的任务，避免前端
+        # 选择一个随即返回 404 的陈旧 run_id。
+        await self.expire_due_runs()
+        summaries: list[ContractExtractionRunSummary] = []
+        for aggregate in await self._registry.values():
+            async with aggregate.lock:
+                if (
+                    aggregate.cancelled
+                    or aggregate.expired
+                    or aggregate.reviewer_user_name != reviewer_user_name
+                ):
+                    continue
+                run_status = self._run_status_locked(aggregate)
+                if run_status not in _LISTABLE_RUN_STATUSES:
+                    continue
+                summaries.append(
+                    ContractExtractionRunSummary(
+                        run_id=aggregate.run_id,
+                        document=self._processed_pdf_metadata_locked(
+                            aggregate
+                        ),
+                        status=self._run_list_status_locked(
+                            aggregate,
+                            run_status,
+                        ),
+                        created_at=aggregate.created_at,
+                        updated_at=aggregate.updated_at,
+                        expires_at=aggregate.expires_at,
+                    )
+                )
+        summaries.sort(
+            key=lambda item: (item.updated_at, item.run_id),
+            reverse=True,
+        )
+        return ContractExtractionRunList(root=tuple(summaries))
+
+    async def cancel_run(
+        self,
+        run_id: str,
+        *,
+        reviewer_user_name: str,
+    ) -> None:
+        """终止当前用户的运行，并释放其全部进程内资源。"""
+        aggregate = await self._get_live_aggregate(
+            run_id,
+            reviewer_user_name=reviewer_user_name,
+        )
+        async with aggregate.lock:
+            # 与继续、重试的状态变更共用聚合锁；标记后即使其请求已经
+            # 通过初次查询，也不能在锁释放后重新创建后台任务。
+            if aggregate.cancelled or aggregate.expired:
+                raise RunNotFoundError(run_id)
+            aggregate.cancelled = True
+            aggregate.awaiting_deduplication_review = False
+            self._publish_locked(
+                aggregate,
+                EventType.RUN_CANCELLED,
+                "合同处理任务已取消。",
+                touch=False,
+            )
+            # run.cancelled 必须成为每个订阅队列中的最终可见项；不能再
+            # 追加 None，否则容量为 1 时会把取消事件本身淘汰。
+            aggregate.subscribers.clear()
+            removed = await self._registry.remove(run_id)
+            if removed is not aggregate:
+                raise RunNotFoundError(run_id)
+
+        run_tasks = tuple(self._run_tasks.pop(run_id, ()))
+        expiry_task = self._review_expiry_tasks.pop(run_id, None)
+        tasks = [task for task in run_tasks if not task.done()]
+        if expiry_task is not None and not expiry_task.done():
+            tasks.append(expiry_task)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    @staticmethod
+    def _run_list_status_locked(
+        aggregate: RunAggregate,
+        run_status: RunStatus,
+    ) -> RunListStatus:
+        """把细粒度运行状态投影为列表中的自动推进/人工介入状态。"""
+        if run_status is RunStatus.PROCESSING:
+            # 公共前置节点衔接的极短间隔内可能暂时没有 running 阶段，
+            # 但后台协程仍会继续推进，不应在列表中闪烁为阻塞。
+            return RunListStatus.PROCESSING
+        if run_status is RunStatus.PARTIAL_READY and any(
+            stage.status in {StageStatus.RUNNING, StageStatus.RETRYING}
+            for stage in aggregate.stages.values()
+        ):
+            return RunListStatus.PROCESSING
+        # 查重暂停、失败节点、分支停止以及提取完成后都需要用户确认、
+        # 重试或入库操作，统一标记为 blocked。
+        return RunListStatus.BLOCKED
+
+    async def _get_live_aggregate(
+        self,
+        run_id: str,
+        *,
+        reviewer_user_name: str,
+    ) -> RunAggregate:
+        """让任何访问都严格执行暂停截止时间，不依赖定时任务调度精度。"""
+        aggregate = await self._registry.get(run_id)
+        cancelled = False
+        expired = False
+        async with aggregate.lock:
+            if aggregate.reviewer_user_name != reviewer_user_name:
+                raise RunNotFoundError(run_id)
+            if aggregate.cancelled:
+                cancelled = True
+            elif aggregate.expired:
+                expired = True
+            elif (
+                aggregate.awaiting_deduplication_review
+                and aggregate.expires_at <= _utcnow()
+            ):
+                self._expire_locked(aggregate)
+                expired = True
+        # 取消路径自行负责取消并等待后台协程；并发读取不能调用过期清理
+        # 抢先弹出任务索引，否则可能令被取消协程失去引用后继续执行。
+        if cancelled:
+            raise RunNotFoundError(run_id)
+        if expired:
+            await self._remove_expired_run(aggregate)
+            raise RunNotFoundError(run_id)
+        return aggregate
+
+    async def continue_run(
+        self,
+        run_id: str,
+        *,
+        reviewer_user_name: str,
+    ) -> ContractExtractionSnapshot:
+        """消费唯一暂停点并继续执行结构识别及后续提取。"""
+        aggregate = await self._get_live_aggregate(
+            run_id,
+            reviewer_user_name=reviewer_user_name,
+        )
+        expired = False
+        async with aggregate.lock:
+            now = _utcnow()
+            # 存活检查和暂停点消费必须在同一把锁中完成，避免截止时刻
+            # “到期任务”和“继续请求”竞态时错误放行已过期任务。
+            if aggregate.cancelled:
+                raise RunNotFoundError(run_id)
+            if (
+                aggregate.expired
+                or (
+                    aggregate.awaiting_deduplication_review
+                    and aggregate.expires_at <= now
+                )
+            ):
+                self._expire_locked(aggregate)
+                expired = True
+            elif not aggregate.awaiting_deduplication_review:
+                raise RunConflictError("任务当前不在查重结果等待确认状态")
+            else:
+                aggregate.awaiting_deduplication_review = False
+                aggregate.continued_at = now
+                aggregate.updated_at = now
+                aggregate.expires_at = now + self._run_ttl
+                self._publish_locked(
+                    aggregate,
+                    EventType.RUN_CONTINUED,
+                    "查重结果已确认，继续提取合同内容。",
+                )
+                self._begin_stage_locked(
+                    aggregate,
+                    StageCode.CONTRACT_STRUCTURE_RECOGNITION,
+                    retry=False,
+                )
+                snapshot = self._snapshot_locked(aggregate)
+
+        if expired:
+            await self._remove_expired_run(aggregate)
+            raise RunNotFoundError(run_id)
+        expiry_task = self._review_expiry_tasks.pop(run_id, None)
+        if expiry_task is not None:
+            expiry_task.cancel()
+        self._spawn(
+            aggregate,
+            self._run_after_deduplication_review(
+                aggregate,
+                structure_recognition_already_started=True,
+            ),
+        )
+        return snapshot
 
     async def retry_stage(
         self,
         run_id: str,
         stage_code: StageCode,
+        *,
+        reviewer_user_name: str,
     ) -> ContractExtractionSnapshot:
-        """异步重跑一个业务分支，并在成功前保留旧草稿分区。"""
-        if stage_code not in _BRANCH_STAGES:
-            raise StageRetryError("只有核心信息、合同条款和检索准备支持单独重试")
-        aggregate = await self._registry.get(run_id)
+        """异步重跑失败阶段，并从该阶段已有的成功前置结果继续。"""
+        aggregate = await self._get_live_aggregate(
+            run_id,
+            reviewer_user_name=reviewer_user_name,
+        )
+        understanding: DocumentUnderstandingOutput | None = None
         async with aggregate.lock:
-            if aggregate.expired:
-                raise StageRetryError("任务已经过期")
-            if aggregate.prerequisites is None:
-                raise StageRetryError("合同公共处理尚未完成，暂时不能重试该阶段")
+            if aggregate.cancelled or aggregate.expired:
+                raise RunNotFoundError(run_id)
             stage = aggregate.stages[stage_code]
-            if stage.status in {StageStatus.RUNNING, StageStatus.RETRYING}:
-                raise StageRetryError("该阶段正在处理中，请勿重复提交")
+            if stage.status is not StageStatus.FAILED:
+                raise StageRetryError("只有执行失败的阶段可以重试")
             if stage.attempt >= self._max_stage_attempts:
                 raise StageRetryError("该阶段已达到最大尝试次数")
+            self._validate_retry_prerequisites_locked(aggregate, stage_code)
+            if stage_code is StageCode.CONTRACT_CLASSIFICATION:
+                understanding = aggregate.structure_result
+                assert isinstance(understanding, DocumentUnderstandingOutput)
             self._begin_stage_locked(aggregate, stage_code, retry=True)
             snapshot = self._snapshot_locked(aggregate)
+
+        if stage_code is StageCode.CONTRACT_DOCUMENT_DETECTION:
+            operation = self._run_from_document_detection(aggregate)
+        elif stage_code is StageCode.PDF_DEDUPLICATION:
+            operation = self._run_until_deduplication_review(aggregate)
+        elif stage_code is StageCode.CONTRACT_STRUCTURE_RECOGNITION:
+            operation = self._run_after_deduplication_review(
+                aggregate,
+                structure_recognition_already_started=True,
+            )
+        elif stage_code is StageCode.CONTRACT_CLASSIFICATION:
+            assert understanding is not None
+            operation = self._run_from_classification(
+                aggregate,
+                understanding,
+                classification_already_started=True,
+            )
+        else:
+            operation = self._execute_branch(
+                aggregate,
+                stage_code,
+                already_started=True,
+            )
         self._spawn(
-            aggregate.run_id,
-            self._execute_branch(aggregate, stage_code, already_started=True),
+            aggregate,
+            operation,
         )
         return snapshot
+
+    @staticmethod
+    def _validate_retry_prerequisites_locked(
+        aggregate: RunAggregate,
+        stage_code: StageCode,
+    ) -> None:
+        """确认断点之前的权威结果仍在，不允许为重试倒退执行流程。"""
+        if stage_code is StageCode.CONTRACT_DOCUMENT_DETECTION:
+            return
+        if stage_code is StageCode.PDF_DEDUPLICATION:
+            detection = aggregate.document_detection_result
+            if detection is None or not detection.is_contract:
+                raise StageRetryError("合同文档识别结果不可用，无法重试查重")
+            return
+        if stage_code is StageCode.CONTRACT_STRUCTURE_RECOGNITION:
+            if (
+                aggregate.stages[StageCode.PDF_DEDUPLICATION].status
+                is not StageStatus.SUCCEEDED
+                or aggregate.continued_at is None
+            ):
+                raise StageRetryError("查重确认结果不可用，无法重试结构识别")
+            return
+        if stage_code is StageCode.CONTRACT_CLASSIFICATION:
+            if not isinstance(
+                aggregate.structure_result,
+                DocumentUnderstandingOutput,
+            ):
+                raise StageRetryError("合同结构识别结果不可用，无法重试分类")
+            return
+        if not isinstance(aggregate.prerequisites, ExtractionContext):
+            raise StageRetryError("合同分类结果不可用，无法重试提取阶段")
 
     @asynccontextmanager
     async def subscribe_events(
         self,
         run_id: str,
         *,
+        reviewer_user_name: str,
         after_sequence: int | None = None,
     ) -> AsyncIterator[
         tuple[
@@ -288,11 +648,16 @@ class ContractExtractionService:
         ]
     ]:
         """原子注册订阅者并回放断线期间仍在缓冲区中的事件。"""
-        aggregate = await self._registry.get(run_id)
+        aggregate = await self._get_live_aggregate(
+            run_id,
+            reviewer_user_name=reviewer_user_name,
+        )
         queue: asyncio.Queue[ContractExtractionEvent | None] = asyncio.Queue(
             maxsize=self._event_buffer_size
         )
         async with aggregate.lock:
+            if aggregate.cancelled or aggregate.expired:
+                raise RunNotFoundError(run_id)
             threshold = after_sequence or 0
             replay = tuple(
                 event for event in aggregate.events if event.sequence > threshold
@@ -309,87 +674,274 @@ class ContractExtractionService:
         current = now or _utcnow()
         expired_count = 0
         for aggregate in await self._registry.values():
-            if aggregate.expires_at > current or self._has_active_task(
-                aggregate.run_id
+            if (
+                aggregate.cancelled
+                or aggregate.expires_at > current
+                or self._has_active_task(aggregate.run_id)
             ):
                 continue
             async with aggregate.lock:
-                if aggregate.expired or aggregate.expires_at > current:
+                if (
+                    aggregate.cancelled
+                    or aggregate.expired
+                    or aggregate.expires_at > current
+                ):
                     continue
                 if any(
                     stage.status in {StageStatus.RUNNING, StageStatus.RETRYING}
                     for stage in aggregate.stages.values()
                 ):
                     continue
-                aggregate.expired = True
-                self._publish_locked(
-                    aggregate,
-                    EventType.RUN_EXPIRED,
-                    "该处理任务已过期，请重新上传合同。",
-                    touch=False,
-                )
-                aggregate.subscribers.clear()
-            await self._registry.remove(aggregate.run_id)
-            self._run_tasks.pop(aggregate.run_id, None)
+                self._expire_locked(aggregate)
+            await self._remove_expired_run(aggregate)
             expired_count += 1
         return expired_count
 
-    async def _run_pipeline(
+    def _schedule_review_expiry(self, aggregate: RunAggregate) -> None:
+        """为 10 分钟暂停点建立精确到期任务，不依赖周期扫描延迟。"""
+        previous = self._review_expiry_tasks.pop(aggregate.run_id, None)
+        if previous is not None:
+            previous.cancel()
+
+        async def expire_at_deadline() -> None:
+            delay = max(
+                0.0,
+                (aggregate.expires_at - _utcnow()).total_seconds(),
+            )
+            await asyncio.sleep(delay)
+            try:
+                current = await self._registry.get(aggregate.run_id)
+            except RunNotFoundError:
+                return
+            async with current.lock:
+                if (
+                    current.cancelled
+                    or current.expired
+                    or not current.awaiting_deduplication_review
+                    or current.expires_at > _utcnow()
+                ):
+                    return
+                self._expire_locked(current)
+            await self._remove_expired_run(current)
+
+        task = asyncio.create_task(
+            expire_at_deadline(),
+            name=f"contract-deduplication-review-expiry:{aggregate.run_id}",
+        )
+        self._review_expiry_tasks[aggregate.run_id] = task
+
+        def discard(completed: asyncio.Task[None]) -> None:
+            if self._review_expiry_tasks.get(aggregate.run_id) is completed:
+                self._review_expiry_tasks.pop(aggregate.run_id, None)
+
+        task.add_done_callback(discard)
+
+    def _expire_locked(self, aggregate: RunAggregate) -> None:
+        """在聚合锁内发布最终事件并使所有后续操作失效。"""
+        if aggregate.expired:
+            return
+        aggregate.expired = True
+        self._publish_locked(
+            aggregate,
+            EventType.RUN_EXPIRED,
+            "该处理任务已过期，请重新上传合同。",
+            touch=False,
+        )
+        aggregate.subscribers.clear()
+
+    async def _remove_expired_run(self, aggregate: RunAggregate) -> None:
+        """从注册表和任务索引中释放过期聚合的全部强引用。"""
+        await self._registry.remove(aggregate.run_id)
+        self._run_tasks.pop(aggregate.run_id, None)
+        expiry_task = self._review_expiry_tasks.pop(aggregate.run_id, None)
+        if expiry_task is not None and expiry_task is not asyncio.current_task():
+            expiry_task.cancel()
+
+    async def _run_from_document_detection(
         self,
         aggregate: RunAggregate,
-        request: ContractExtractionRequest,
     ) -> None:
-        """完成公共前置阶段，再并行且相互隔离地执行三个业务分支。"""
-        await self._begin_stage(aggregate, StageCode.DOCUMENT_READING)
-
-        async def on_preprocessing_update(
-            node_name: str,
-            values: dict[str, Any],
-        ) -> None:
-            if node_name == "prepare_pdf":
-                prepared_pdf = values.get("prepared_pdf")
-                page_count = getattr(prepared_pdf, "page_count", None)
-                progress = (
-                    StageProgress(completed=page_count, total=page_count)
-                    if isinstance(page_count, int) and page_count > 0
-                    else None
-                )
-                await self._complete_stage(
-                    aggregate,
-                    StageCode.DOCUMENT_READING,
-                    progress=progress,
-                    result=prepared_pdf,
-                )
-                await self._begin_stage(
-                    aggregate,
-                    StageCode.DOCUMENT_UNDERSTANDING,
-                )
-            elif node_name == "discover_document_units":
-                await self._report_stage_progress(
-                    aggregate,
-                    StageCode.DOCUMENT_UNDERSTANDING,
-                    "合同内容单元已识别，正在确认页面位置。",
-                )
-
+        """先识别合同文档；仅可靠判定为合同时启动查重。"""
         try:
-            preprocessing = await self._executor.preprocess(
-                request,
-                on_preprocessing_update,
-            )
-            await self._ensure_preprocessing_stages_completed(
-                aggregate,
-                preprocessing,
+            detection = await self._document_detection_executor.detect(
+                aggregate.prepared_pdf
             )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.exception("合同预处理失败，run_id=%s", aggregate.run_id)
-            await self._fail_active_prerequisite_stage(aggregate, exc)
+            logger.exception("合同文档识别失败，run_id=%s", aggregate.run_id)
+            await self._fail_stage(
+                aggregate,
+                StageCode.CONTRACT_DOCUMENT_DETECTION,
+                exc,
+            )
             return
 
-        await self._begin_stage(aggregate, StageCode.CONTRACT_CLASSIFICATION)
+        if detection.status == "failed":
+            async with aggregate.lock:
+                aggregate.document_detection_result = detection
+            await self._fail_stage(
+                aggregate,
+                StageCode.CONTRACT_DOCUMENT_DETECTION,
+                RuntimeError(detection.error or "合同文档识别没有形成可靠结果"),
+            )
+            return
+
+        async with aggregate.lock:
+            aggregate.document_detection_result = detection
+            self._complete_stage_locked(
+                aggregate,
+                StageCode.CONTRACT_DOCUMENT_DETECTION,
+                result=detection,
+            )
+            if not detection.is_contract:
+                self._publish_locked(
+                    aggregate,
+                    EventType.RUN_DOCUMENT_REJECTED,
+                    "上传内容不属于合同文档，处理已停止。",
+                    document_detection=(
+                        self._document_detection_view_locked(aggregate)
+                    ),
+                )
+                return
+            self._begin_stage_locked(
+                aggregate,
+                StageCode.PDF_DEDUPLICATION,
+                retry=False,
+            )
+
+        await self._run_until_deduplication_review(aggregate)
+
+    async def _run_until_deduplication_review(
+        self,
+        aggregate: RunAggregate,
+    ) -> None:
+        """完成 PDF 查重，然后在用户可见暂停点停止推进。"""
+        prepared_pdf = aggregate.prepared_pdf
         try:
-            context = await self._executor.classify(preprocessing)
+            deduplication = await self._deduplication_executor.deduplicate(
+                prepared_pdf
+            )
+            if deduplication.status == "failed":
+                raise RuntimeError(
+                    deduplication.error or "PDF 查重没有形成可靠结果"
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("PDF 查重失败，run_id=%s", aggregate.run_id)
+            await self._fail_stage(
+                aggregate,
+                StageCode.PDF_DEDUPLICATION,
+                exc,
+            )
+            return
+
+        async with aggregate.lock:
+            aggregate.deduplication_result = deduplication
+            self._complete_stage_locked(
+                aggregate,
+                StageCode.PDF_DEDUPLICATION,
+                result=deduplication,
+            )
+            now = _utcnow()
+            aggregate.awaiting_deduplication_review = True
+            aggregate.updated_at = now
+            review_expires_at = now + self._deduplication_review_ttl
+            aggregate.deduplication_review_expires_at = review_expires_at
+            aggregate.expires_at = review_expires_at
+            # 先建立精确定时器再公开暂停事件，确保前端收到事件后立即
+            # 提交 continue 时一定能取消对应任务，不遗留长时间空转任务。
+            self._schedule_review_expiry(aggregate)
+            self._publish_locked(
+                aggregate,
+                EventType.RUN_DEDUPLICATION_REVIEW_REQUIRED,
+                "重复合同检查已完成，请处理候选结果后继续。",
+                deduplication=self._deduplication_view_locked(aggregate),
+                touch=False,
+            )
+
+    async def _run_after_deduplication_review(
+        self,
+        aggregate: RunAggregate,
+        *,
+        structure_recognition_already_started: bool = False,
+    ) -> None:
+        """继续执行结构识别、分类及三个相互隔离的业务分支。"""
+        if not structure_recognition_already_started:
+            await self._begin_stage(
+                aggregate,
+                StageCode.CONTRACT_STRUCTURE_RECOGNITION,
+            )
+
+        async def on_structure_recognition_update(
+            node_name: str,
+            values: dict[str, Any],
+        ) -> None:
+            if node_name == "discover_document_units":
+                await self._report_stage_progress(
+                    aggregate,
+                    StageCode.CONTRACT_STRUCTURE_RECOGNITION,
+                    "合同内容单元已识别，正在确认页面位置。",
+                )
+
+        try:
+            understanding = await self._executor.understand_document(
+                aggregate.prepared_pdf,
+                on_structure_recognition_update,
+            )
+            async with aggregate.lock:
+                aggregate.structure_result = understanding
+                self._complete_stage_locked(
+                    aggregate,
+                    StageCode.CONTRACT_STRUCTURE_RECOGNITION,
+                    result={
+                        "document_structure": understanding.document_structure,
+                        "unit_discovery_audit": understanding.unit_discovery_audit,
+                        "unit_grounding_audit": understanding.unit_grounding_audit,
+                    },
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("合同结构识别失败，run_id=%s", aggregate.run_id)
+            await self._fail_stage(
+                aggregate,
+                StageCode.CONTRACT_STRUCTURE_RECOGNITION,
+                exc,
+            )
+            return
+
+        await self._run_from_classification(aggregate, understanding)
+
+    async def _run_from_classification(
+        self,
+        aggregate: RunAggregate,
+        understanding: DocumentUnderstandingOutput,
+        *,
+        classification_already_started: bool = False,
+    ) -> None:
+        """复用结构识别结果执行分类，成功后启动三个下游分支。"""
+        if not classification_already_started:
+            await self._begin_stage(
+                aggregate,
+                StageCode.CONTRACT_CLASSIFICATION,
+            )
+
+        async def on_classification_progress(
+            update: ParallelProgressUpdate,
+        ) -> None:
+            await self._report_parallel_progress(
+                aggregate,
+                StageCode.CONTRACT_CLASSIFICATION,
+                update,
+            )
+
+        try:
+            context = await self._executor.classify(
+                understanding,
+                on_progress=on_classification_progress,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -403,6 +955,12 @@ class ContractExtractionService:
 
         async with aggregate.lock:
             aggregate.prerequisites = context
+            classification_view = project_classification(
+                context.classification
+            )
+            # 分类投影独立保存，使分支尚未提交或 SSE 事件已淘汰时，
+            # 单任务快照仍可稳定恢复分类结果。
+            aggregate.classification_view = classification_view
             self._complete_stage_locked(
                 aggregate,
                 StageCode.CONTRACT_CLASSIFICATION,
@@ -410,6 +968,7 @@ class ContractExtractionService:
                     "classification": context.classification,
                     "classification_audit": context.classification_audit,
                 },
+                classification=classification_view,
             )
 
         await asyncio.gather(
@@ -439,14 +998,30 @@ class ContractExtractionService:
             return
 
         try:
+            async def on_progress(update: ParallelProgressUpdate) -> None:
+                await self._report_parallel_progress(
+                    aggregate,
+                    stage_code,
+                    update,
+                )
+
             if stage_code is StageCode.CORE_EXTRACTION:
-                internal_result = await self._executor.extract_core(context)
+                internal_result = await self._executor.extract_core(
+                    context,
+                    on_progress=on_progress,
+                )
                 projected = project_core(internal_result)
             elif stage_code is StageCode.CLAUSE_EXTRACTION:
-                internal_result = await self._executor.extract_clause(context)
+                internal_result = await self._executor.extract_clause(
+                    context,
+                    on_progress=on_progress,
+                )
                 projected = project_clause(internal_result)
             else:
-                internal_result = await self._executor.prepare_retrieval_view(context)
+                internal_result = await self._executor.prepare_retrieval_view(
+                    context,
+                    on_progress=on_progress,
+                )
                 projected = project_retrieval_view(internal_result)
             await self._commit_branch_result(
                 aggregate,
@@ -479,30 +1054,32 @@ class ContractExtractionService:
                 raise TypeError("提交分支结果时缺少合同公共处理结果")
             section_code = _STAGE_TO_SECTION[stage_code]
             expected_data_type = {
-                DraftSectionCode.CORE: CoreDraftData,
-                DraftSectionCode.CLAUSE: ClauseDraftData,
-                DraftSectionCode.RETRIEVAL_VIEW: RetrievalViewDraftData,
+                InternalDraftSectionCode.CORE: CoreDraftData,
+                InternalDraftSectionCode.CLAUSE: ClauseDraftData,
+                InternalDraftSectionCode.RETRIEVAL_VIEW: RetrievalViewDraftData,
             }[section_code]
             if not isinstance(projected.data, expected_data_type):
                 raise TypeError(
                     f"{section_code.value} 分支返回了不匹配的草稿数据类型"
                 )
-            first_draft = aggregate.draft is None
-            if first_draft:
+            if aggregate.draft is None:
                 aggregate.draft = MutableDraft(
                     revision=0,
                     page_count=context.prepared_pdf.page_count,
-                    file_size_bytes=context.prepared_pdf.file_size_bytes,
+                    processed_file_size_bytes=(
+                        context.prepared_pdf.processed_file_size_bytes
+                    ),
                     classification=project_classification(context.classification),
                     updated_at=_utcnow(),
                 )
             draft = aggregate.draft
             assert draft is not None
+            had_public_result = any(
+                code in draft.sections for code in _PUBLIC_SECTION_ORDER
+            )
             previous = draft.sections.get(section_code)
             section_revision = 1 if previous is None else previous.revision + 1
             now = _utcnow()
-            draft.revision += 1
-            draft.updated_at = now
             draft.sections[section_code] = MutableDraftSection(
                 code=section_code,
                 revision=section_revision,
@@ -511,6 +1088,10 @@ class ContractExtractionService:
                 data=projected.data,
                 internal_result=internal_result,
             )
+            is_public_section = section_code in _PUBLIC_SECTION_ORDER
+            if is_public_section:
+                draft.revision += 1
+                draft.updated_at = now
             self._complete_stage_locked(
                 aggregate,
                 stage_code,
@@ -518,13 +1099,15 @@ class ContractExtractionService:
                 result_status=projected.result_status,
                 result_revision=section_revision,
             )
+            if not is_public_section:
+                return
             self._publish_locked(
                 aggregate,
                 EventType.DRAFT_UPDATED,
                 f"{_STAGE_NAMES[stage_code]}结果已更新。",
                 stage_code=stage_code,
             )
-            if first_draft:
+            if not had_public_result:
                 self._publish_locked(
                     aggregate,
                     EventType.RUN_REVIEW_READY,
@@ -579,6 +1162,7 @@ class ContractExtractionService:
         *,
         progress: StageProgress | None = None,
         result: Any | None = None,
+        classification: ContractClassificationView | None = None,
     ) -> None:
         async with aggregate.lock:
             stage = aggregate.stages[stage_code]
@@ -589,6 +1173,7 @@ class ContractExtractionService:
                 stage_code,
                 progress=progress,
                 result=result,
+                classification=classification,
             )
 
     def _complete_stage_locked(
@@ -600,19 +1185,20 @@ class ContractExtractionService:
         progress: StageProgress | None = None,
         result_status: ResultStatus | None = None,
         result_revision: int | None = None,
+        classification: ContractClassificationView | None = None,
     ) -> None:
         stage = aggregate.stages[stage_code]
         now = _utcnow()
         stage.status = StageStatus.SUCCEEDED
         stage.message = _COMPLETED_MESSAGES[stage_code]
         stage.updated_at = now
-        stage.progress = progress
+        # 逐项进度在成功后仍应保留为 m / m，供完成事件与后续快照展示。
+        if progress is not None:
+            stage.progress = progress
         stage.result_status = result_status
         stage.result_revision = result_revision
-        stage.retryable = (
-            stage_code in _BRANCH_STAGES
-            and stage.attempt < self._max_stage_attempts
-        )
+        # 一旦阶段成功，即便结果完整程度为 partial，也禁止再次执行。
+        stage.retryable = False
         if stage.attempts:
             attempt = stage.attempts[-1]
             attempt.status = StageStatus.SUCCEEDED
@@ -623,6 +1209,7 @@ class ContractExtractionService:
             EventType.STAGE_COMPLETED,
             stage.message,
             stage_code=stage_code,
+            classification=classification,
         )
 
     async def _report_stage_progress(
@@ -630,6 +1217,8 @@ class ContractExtractionService:
         aggregate: RunAggregate,
         stage_code: StageCode,
         message: str,
+        *,
+        progress: StageProgress | None = None,
     ) -> None:
         async with aggregate.lock:
             stage = aggregate.stages[stage_code]
@@ -637,12 +1226,47 @@ class ContractExtractionService:
                 return
             stage.message = message
             stage.updated_at = _utcnow()
+            stage.progress = progress
             self._publish_locked(
                 aggregate,
                 EventType.STAGE_PROGRESS,
                 message,
                 stage_code=stage_code,
             )
+
+    async def _report_parallel_progress(
+        self,
+        aggregate: RunAggregate,
+        stage_code: StageCode,
+        update: ParallelProgressUpdate,
+    ) -> None:
+        """把 Agent 内部计数投影为稳定的用户消息和 SSE 离散进度。"""
+        if update.phase is ParallelProgressPhase.COUNTING:
+            message = _COUNTING_MESSAGES[stage_code]
+            progress = None
+        elif update.phase is ParallelProgressPhase.COUNTED:
+            assert update.total is not None
+            message = _COUNTED_MESSAGE_TEMPLATES[stage_code].format(
+                total=update.total,
+            )
+            progress = StageProgress(completed=0, total=update.total)
+        else:
+            assert update.completed is not None
+            assert update.total is not None
+            message = _EXTRACTING_MESSAGE_TEMPLATES[stage_code].format(
+                completed=update.completed,
+                total=update.total,
+            )
+            progress = StageProgress(
+                completed=update.completed,
+                total=update.total,
+            )
+        await self._report_stage_progress(
+            aggregate,
+            stage_code,
+            message,
+            progress=progress,
+        )
 
     async def _fail_stage(
         self,
@@ -654,17 +1278,12 @@ class ContractExtractionService:
             stage = aggregate.stages[stage_code]
             now = _utcnow()
             stage.status = StageStatus.FAILED
-            stage.retryable = (
-                stage_code in _BRANCH_STAGES
-                and aggregate.prerequisites is not None
-                and stage.attempt < self._max_stage_attempts
+            stage.retryable = stage.attempt < self._max_stage_attempts
+            stage.message = (
+                f"{_FAILED_MESSAGES[stage_code]}，可以从该阶段重试。"
+                if stage.retryable
+                else f"{_FAILED_MESSAGES[stage_code]}，且已达到最大尝试次数。"
             )
-            stage.message = _FAILED_MESSAGES[stage_code]
-            if stage_code in _BRANCH_STAGES and not stage.retryable:
-                stage.message = stage.message.replace(
-                    "，可以单独重试。",
-                    "，且已达到当前自动尝试上限。",
-                )
             stage.updated_at = now
             stage.progress = None
             if stage.attempts:
@@ -679,63 +1298,70 @@ class ContractExtractionService:
                 stage_code=stage_code,
             )
 
-    async def _fail_active_prerequisite_stage(
-        self,
+    @staticmethod
+    def _document_detection_view_locked(
         aggregate: RunAggregate,
-        error: Exception,
-    ) -> None:
-        async with aggregate.lock:
-            active = next(
-                (
-                    code
-                    for code in (
-                        StageCode.DOCUMENT_READING,
-                        StageCode.DOCUMENT_UNDERSTANDING,
-                    )
-                    if aggregate.stages[code].status
-                    in {StageStatus.RUNNING, StageStatus.RETRYING}
-                ),
-                StageCode.DOCUMENT_READING,
-            )
-        await self._fail_stage(aggregate, active, error)
+    ) -> ContractDocumentDetectionView | None:
+        """隐藏模型运行轨迹，只投影可靠二分类、证据和简洁理由。"""
+        result = aggregate.document_detection_result
+        if result is None or result.status == "failed":
+            return None
+        assert result.is_contract is not None
+        assert result.reasoning_summary is not None
+        return ContractDocumentDetectionView(
+            is_contract=result.is_contract,
+            evidence=tuple(
+                ContractDocumentEvidenceView(
+                    page_number=item.page_number,
+                    observation=item.observation,
+                )
+                for item in result.evidence
+            ),
+            reasoning_summary=result.reasoning_summary,
+        )
 
-    async def _ensure_preprocessing_stages_completed(
+    def _deduplication_view_locked(
         self,
         aggregate: RunAggregate,
-        preprocessing: PreprocessingOutput,
-    ) -> None:
-        """兼容测试执行器或未来不逐节点回调的预处理实现。"""
-        async with aggregate.lock:
-            reading = aggregate.stages[StageCode.DOCUMENT_READING]
-            if reading.status is StageStatus.RUNNING:
-                self._complete_stage_locked(
-                    aggregate,
-                    StageCode.DOCUMENT_READING,
-                    result=preprocessing.prepared_pdf,
+    ) -> DeduplicationReviewView | None:
+        """从私有向量、工具审计和错误中投影最小前端查重结果。"""
+        result = aggregate.deduplication_result
+        review_expires_at = aggregate.deduplication_review_expires_at
+        if result is None or review_expires_at is None:
+            return None
+
+        judgments = {
+            judgment.candidate_document_id: judgment
+            for judgment in result.judgments
+        }
+        candidates: list[DeduplicationCandidateView] = []
+        for candidate in result.candidate_set.candidates:
+            judgment = judgments[candidate.document_id]
+            # 不同合同和失败判断仍保留在内部结果与审计中；前端只需要
+            # 处理确认为重复或相似的合同，不公开无操作价值的候选。
+            if judgment.status not in {"duplicate", "similar"}:
+                continue
+            # cosine dense_vector 的 ES _score 为 (1 + cosine) / 2；公共契约
+            # 返回原始 cosine，避免把两种分数口径都称为“相似度”。
+            cosine_similarity = max(-1.0, min(1.0, 2 * candidate.score - 1))
+            candidates.append(
+                DeduplicationCandidateView(
+                    rank=candidate.rank,
+                    cosine_similarity=cosine_similarity,
+                    relation=judgment.status,
+                    document_id=candidate.document_id,
+                    file_name=candidate.file_name,
+                    file_uri=candidate.file_uri,
+                    page_count=candidate.page_count,
+                    reasoning_summary=judgment.reasoning_summary,
                 )
-            elif reading.attempts:
-                reading.attempts[-1].result = preprocessing.prepared_pdf
-            understanding = aggregate.stages[StageCode.DOCUMENT_UNDERSTANDING]
-            if understanding.status is StageStatus.PENDING:
-                self._begin_stage_locked(
-                    aggregate,
-                    StageCode.DOCUMENT_UNDERSTANDING,
-                    retry=False,
-                )
-            if understanding.status is StageStatus.RUNNING:
-                self._complete_stage_locked(
-                    aggregate,
-                    StageCode.DOCUMENT_UNDERSTANDING,
-                    result={
-                        "document_structure": preprocessing.document_structure,
-                        "unit_discovery_audit": (
-                            preprocessing.unit_discovery_audit
-                        ),
-                        "unit_grounding_audit": (
-                            preprocessing.unit_grounding_audit
-                        ),
-                    },
-                )
+            )
+        return DeduplicationReviewView(
+            status=result.status,
+            candidates=tuple(candidates),
+            review_expires_at=review_expires_at,
+            continued_at=aggregate.continued_at,
+        )
 
     def _publish_locked(
         self,
@@ -744,6 +1370,9 @@ class ContractExtractionService:
         message: str,
         *,
         stage_code: StageCode | None = None,
+        document_detection: ContractDocumentDetectionView | None = None,
+        deduplication: DeduplicationReviewView | None = None,
+        classification: ContractClassificationView | None = None,
         touch: bool = True,
     ) -> ContractExtractionEvent:
         now = _utcnow()
@@ -762,9 +1391,15 @@ class ContractExtractionService:
                 else None
             ),
             draft_revision=(
-                aggregate.draft.revision if aggregate.draft is not None else None
+                aggregate.draft.revision
+                if aggregate.draft is not None
+                and aggregate.draft.revision > 0
+                else None
             ),
             available_sections=self._available_sections_locked(aggregate),
+            document_detection=document_detection,
+            deduplication=deduplication,
+            classification=classification,
             occurred_at=now,
         )
         aggregate.next_sequence += 1
@@ -796,71 +1431,74 @@ class ContractExtractionService:
             created_at=aggregate.created_at,
             updated_at=aggregate.updated_at,
             expires_at=aggregate.expires_at,
+            document=self._processed_pdf_metadata_locked(aggregate),
             stages={
                 code: self._stage_snapshot(aggregate.stages[code])
                 for code in _STAGE_ORDER
             },
             available_sections=available_sections,
+            document_detection=self._document_detection_view_locked(aggregate),
+            deduplication=self._deduplication_view_locked(aggregate),
+            classification=aggregate.classification_view,
         )
         if aggregate.draft is None:
             return ContractExtractionSnapshot(run=run, draft=None)
 
         draft = aggregate.draft
-        core = draft.sections.get(DraftSectionCode.CORE)
-        clause = draft.sections.get(DraftSectionCode.CLAUSE)
-        retrieval_view = draft.sections.get(DraftSectionCode.RETRIEVAL_VIEW)
+        core = draft.sections.get(InternalDraftSectionCode.CORE)
+        clause = draft.sections.get(InternalDraftSectionCode.CLAUSE)
+        if core is None and clause is None:
+            return ContractExtractionSnapshot(run=run, draft=None)
         return ContractExtractionSnapshot(
             run=run,
             draft=ContractExtractionDraft(
-                revision=draft.revision,
-                document=ContractDocumentView(
-                    document_id=aggregate.source.document_id,
-                    file_name=aggregate.source.file_name,
-                    file_size_bytes=draft.file_size_bytes,
-                    page_count=draft.page_count,
-                ),
-                classification=draft.classification,
                 core=(
-                    DraftSection[CoreDraftData](
-                        revision=core.revision,
-                        result_status=core.result_status,
-                        updated_at=core.updated_at,
-                        data=CoreDraftData.model_validate(core.data),
-                    )
+                    CoreDraftData.model_validate(core.data)
                     if core is not None
                     else None
                 ),
-                clause=(
-                    DraftSection[ClauseDraftData](
-                        revision=clause.revision,
-                        result_status=clause.result_status,
-                        updated_at=clause.updated_at,
-                        data=ClauseDraftData.model_validate(clause.data),
-                    )
+                clauses=(
+                    ClauseDraftData.model_validate(clause.data)
                     if clause is not None
                     else None
                 ),
-                retrieval_view=(
-                    DraftSection[RetrievalViewDraftData](
-                        revision=retrieval_view.revision,
-                        result_status=retrieval_view.result_status,
-                        updated_at=retrieval_view.updated_at,
-                        data=RetrievalViewDraftData.model_validate(
-                            retrieval_view.data
-                        ),
-                    )
-                    if retrieval_view is not None
-                    else None
-                ),
-                updated_at=draft.updated_at,
             ),
         )
 
+    @staticmethod
+    def _processed_pdf_metadata_locked(
+        aggregate: RunAggregate,
+    ) -> ProcessedPDFMetadataView:
+        """从处理版 PDF 投影文件大小、页数和压缩后封面像素尺寸。"""
+        try:
+            cover = aggregate.prepared_pdf.pages[0]
+        except IndexError as exc:
+            raise RuntimeError("处理版 PDF 缺少封面页面") from exc
+        return ProcessedPDFMetadataView(
+            file_name=aggregate.source.file_name,
+            processed_file_size_bytes=(
+                aggregate.prepared_pdf.processed_file_size_bytes
+            ),
+            page_count=aggregate.prepared_pdf.page_count,
+            cover_width_pixels=cover.width_pixels,
+            cover_height_pixels=cover.height_pixels,
+        )
+
     def _run_status_locked(self, aggregate: RunAggregate) -> RunStatus:
+        if aggregate.cancelled:
+            return RunStatus.CANCELLED
         if aggregate.expired:
             return RunStatus.EXPIRED
+        detection = aggregate.document_detection_result
+        if detection is not None and detection.status == "not_contract":
+            return RunStatus.NOT_A_CONTRACT
+        if aggregate.awaiting_deduplication_review:
+            return RunStatus.AWAITING_DEDUPLICATION_REVIEW
         branch_stages = [aggregate.stages[code] for code in _BRANCH_STAGES]
-        if aggregate.draft is not None:
+        if aggregate.draft is not None and any(
+            code in aggregate.draft.sections
+            for code in _PUBLIC_SECTION_ORDER
+        ):
             if all(
                 stage.status is StageStatus.SUCCEEDED for stage in branch_stages
             ):
@@ -868,7 +1506,7 @@ class ContractExtractionService:
             return RunStatus.PARTIAL_READY
         prerequisite_failed = any(
             aggregate.stages[code].status is StageStatus.FAILED
-            for code in _STAGE_ORDER[:3]
+            for code in _STAGE_ORDER[:4]
         )
         all_branches_finished = all(
             stage.status in {StageStatus.SUCCEEDED, StageStatus.FAILED}
@@ -890,6 +1528,10 @@ class ContractExtractionService:
             progress=stage.progress,
             result_status=stage.result_status,
             result_revision=stage.result_revision,
+            # 公共阶段以当前尝试为准；重试会开启新的计时，未开始则为空。
+            started_at=(
+                stage.attempts[-1].started_at if stage.attempts else None
+            ),
             updated_at=stage.updated_at,
         )
 
@@ -900,14 +1542,22 @@ class ContractExtractionService:
         if aggregate.draft is None:
             return ()
         return tuple(
-            code for code in _SECTION_ORDER if code in aggregate.draft.sections
+            _INTERNAL_TO_PUBLIC_SECTION[code]
+            for code in _PUBLIC_SECTION_ORDER
+            if code in aggregate.draft.sections
         )
 
     def _spawn(
         self,
-        run_id: str,
+        aggregate: RunAggregate,
         coroutine: Coroutine[Any, Any, None],
     ) -> None:
+        if aggregate.cancelled or aggregate.expired:
+            # continue/retry 与取消并发时，操作协程可能已经构造但不再
+            # 允许调度；显式关闭可避免未等待协程告警。
+            coroutine.close()
+            return
+        run_id = aggregate.run_id
         task = asyncio.create_task(
             coroutine,
             name=f"contract-extraction:{run_id}",

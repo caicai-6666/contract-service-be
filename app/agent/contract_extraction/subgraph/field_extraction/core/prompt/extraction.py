@@ -59,8 +59,14 @@ CORE_FIELD_TASK = """当前唯一提取对象定义如下。定义是对象语�
 
 def serialize_field_definition(definition: FieldDefinition) -> str:
     """按模型提取对象定义顺序生成稳定 YAML。"""
+    # code 与 tokenize 仅决定 Elasticsearch mapping，不能污染模型提取任务。
+    model_definition = definition.model_dump(mode="json")
+    model_definition.pop("code", None)
+    for property_definition in model_definition["properties"]:
+        property_definition.pop("code", None)
+        property_definition.pop("tokenize", None)
     return yaml.safe_dump(
-        definition.model_dump(mode="json"),
+        model_definition,
         allow_unicode=True,
         sort_keys=False,
         default_flow_style=False,

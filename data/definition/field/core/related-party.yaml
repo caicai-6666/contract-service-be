@@ -1,0 +1,34 @@
+name: 相关方
+code: related_parties
+aliases:
+  - 合同主体
+  - 签约方
+  - 当事人
+  - 交易参与方
+meaning: |
+  在当前合同中被明确列为签约主体，并被赋予一个或多个合同原文角色的自然人、法人或非法人组织。每个相关方作为一个独立扁平对象提取，不建立“我方”与“相对方”的主观对立视角。
+excludes: |
+  不包括仅作为联系人、法定代表人、委托代理人、开户银行、收款账户、承运人、制造商或关联公司出现，但没有成为当前合同签约主体的对象。不得将多个相关方合并成一个对象。
+cardinality: multiple
+properties:
+  - name: 名称
+    code: name
+    aliases:
+      - 主体名称
+      - 当事人名称
+      - 公司名称
+    type: string
+    tokenize: true
+    required: true
+    meaning: 相关方在合同中展示的完整签约名称，应保留原文中必要的组织形式。
+    excludes: 不包括角色名称、人员姓名、部门名称、品牌名或简称，除非合同只以该名称识别签约主体。
+  - name: 角色
+    code: role
+    aliases:
+      - 主体角色
+      - 签约角色
+      - 当事人角色
+    type: string
+    required: true
+    meaning: 合同原文明确赋予该相关方的角色，例如甲方、乙方、买方、卖方、供方、需方、发包方或承包方。
+    excludes: 不包括法定代表人、联系人、代理人等人员身份，也不得把多个相关方的角色合并成一个值。

@@ -65,7 +65,7 @@ Clause 与 Retrieval View 不消费 Core 结果，不得为了统一模板而注
 
 ### 2.4 工具模板位置
 
-函数工具定义属于模型实际 token 序列的一部分。默认 Qwen3.6 模板把工具放在 system 内容之前，会使不同工具请求在 PDF 之前分叉；项目统一使用[vLLM 自定义聊天模板](../capability/vllm-chat-template.md)控制工具位置，不允许节点复制或临时改写模板。
+函数工具定义属于模型实际 token 序列的一部分。默认 Qwen3.6 模板把工具放在 system 内容之前，会使不同工具请求在 PDF 之前分叉；项目统一使用[vLLM 自定义聊天模板](../capability/infrastructure/vllm-chat-template.md)控制工具位置，不允许节点复制或临时改写模板。
 
 - 并行任务共享完全相同工具时，使用 `before_task`，顺序为“公共前缀 → 工具 → 当前任务变量 → 短期历史”。
 - 工具根据当前定义动态生成时，使用 `after_task`，顺序为“公共前缀 → 当前任务变量 → 工具 → 短期历史”。

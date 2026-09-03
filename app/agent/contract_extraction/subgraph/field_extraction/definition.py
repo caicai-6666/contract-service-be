@@ -1,12 +1,13 @@
-"""模型可读动态提取对象的机器契约。"""
+"""Core 动态提取对象及索引元数据的机器契约。"""
 
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     field_validator,
     model_validator,
 )
@@ -38,11 +39,22 @@ class FieldPropertyDefinition(FieldDefinitionModel):
     """提取对象中的一个扁平基本类型属性。"""
 
     name: str
+    code: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     aliases: tuple[str, ...]
     type: FieldValueType
+    tokenize: bool | None = None
     required: bool
     meaning: str
     excludes: str
+
+    @model_validator(mode="after")
+    def validate_tokenize(self) -> Self:
+        """ES 分词开关只能用于字符串属性。"""
+        if self.tokenize is not None and self.type is not FieldValueType.STRING:
+            raise ValueError(
+                f"属性“{self.name}”仅在 type=string 时允许配置 tokenize"
+            )
+        return self
 
     @field_validator("name", "meaning", "excludes")
     @classmethod
@@ -69,6 +81,7 @@ class FieldDefinition(FieldDefinitionModel):
     """一个 YAML 文件对应一种可单次或多次提取的扁平对象。"""
 
     name: str
+    code: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     aliases: tuple[str, ...]
     meaning: str
     excludes: str
@@ -101,18 +114,24 @@ class FieldDefinition(FieldDefinitionModel):
         cls,
         value: tuple[FieldPropertyDefinition, ...],
     ) -> tuple[FieldPropertyDefinition, ...]:
-        """对象至少有一个属性，且属性名称不得重复。"""
+        """对象至少有一个属性，且属性名称和索引代码不得重复。"""
         if not value:
             raise ValueError("提取对象至少需要一个属性")
         names = [property_definition.name for property_definition in value]
         if len(names) != len(set(names)):
             raise ValueError("对象属性名称不能重复")
+        codes = [property_definition.code for property_definition in value]
+        if len(codes) != len(set(codes)):
+            raise ValueError("对象属性 code 不能重复")
         return value
 
     @model_validator(mode="after")
     def validate_required_property(self) -> "FieldDefinition":
         """防止定义出没有任何必填事实的空对象。"""
-        if not any(property_definition.required for property_definition in self.properties):
+        if not any(
+            property_definition.required
+            for property_definition in self.properties
+        ):
             raise ValueError("提取对象至少需要一个必填属性")
         return self
 
@@ -136,10 +155,13 @@ class FieldDefinitionCollection(FieldDefinitionModel):
 
     @model_validator(mode="after")
     def validate_unique_names(self) -> "FieldDefinitionCollection":
-        """同一职责目录内的对象名称必须唯一。"""
+        """同一职责目录内的对象名称与索引代码必须唯一。"""
         names = [definition.name for definition in self.definitions]
         if len(names) != len(set(names)):
             raise ValueError(f"{self.kind} 字段定义名称不能重复")
+        codes = [definition.code for definition in self.definitions]
+        if len(codes) != len(set(codes)):
+            raise ValueError(f"{self.kind} 字段定义 code 不能重复")
         return self
 
     def get(self, name: str) -> FieldDefinition:

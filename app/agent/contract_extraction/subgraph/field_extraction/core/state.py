@@ -61,8 +61,10 @@ class FieldOutcomeBase(CoreModel):
     """三种对象定义终态共享的运行信息。"""
 
     name: str
+    code: str
     cardinality: FieldCardinality
     property_names: tuple[str, ...]
+    property_codes: dict[str, str]
     rounds: int
     elapsed_ms: float
     prompt_tokens: int | None

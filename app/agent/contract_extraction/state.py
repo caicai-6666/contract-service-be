@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from typing import Any, Literal
+from uuid import UUID, uuid4
 
 from pydantic import (
     BaseModel,
@@ -15,7 +16,7 @@ from typing_extensions import TypedDict
 
 
 class ContractExtractionRequest(BaseModel):
-    """工作流的 PDF 输入；文件路径和内存字节必须二选一。"""
+    """PDF 准备服务的输入；文件路径和内存字节必须二选一。"""
 
     model_config = ConfigDict(frozen=True)
 
@@ -63,7 +64,7 @@ class ContractExtractionRequest(BaseModel):
 
     @property
     def pdf_source(self) -> Path | bytes:
-        """返回预处理工具能够直接读取的实际来源。"""
+        """返回 PDF 准备服务能够直接读取的实际来源。"""
         if self.pdf_path is not None:
             return self.pdf_path
         assert self.pdf_bytes is not None
@@ -89,7 +90,7 @@ class FieldExtractionResult(BaseModel):
 
 
 class PreparedPDFPage(BaseModel):
-    """PDF 预处理节点生成的确定性页面图像。"""
+    """异步 PDF 准备服务生成的确定性页面图像。"""
 
     model_config = ConfigDict(frozen=True)
 
@@ -100,17 +101,29 @@ class PreparedPDFPage(BaseModel):
     render_scale: float
     visual_tokens: int
     content_sha256: str
+    media_uuid: str = Field(default_factory=lambda: str(uuid4()))
     was_scaled: bool
+
+    @field_validator("media_uuid")
+    @classmethod
+    def validate_media_uuid(cls, value: str) -> str:
+        """媒体引用使用不可预测 UUIDv4，避免共享 vLLM 的缓存身份冲突。"""
+        parsed = UUID(value)
+        if parsed.version != 4 or str(parsed) != value:
+            raise ValueError("media_uuid 必须是规范格式的 UUIDv4")
+        return value
 
 
 class PreparedPDF(BaseModel):
-    """经过检查、渲染和动态预算缩放后的完整 PDF。"""
+    """经过检查、动态预算缩放并重新封装后的处理版 PDF。"""
 
     model_config = ConfigDict(frozen=True)
 
     document_id: str
     source_path: Path
-    file_size_bytes: int
+    processed_pdf_bytes: bytes = Field(repr=False, exclude=True)
+    source_file_size_bytes: int
+    processed_file_size_bytes: int
     page_count: int
     total_visual_tokens: int
     visual_tokens_per_page_budget: int
@@ -176,9 +189,8 @@ class ContractExtractionResult(BaseModel):
 
 
 class ContractExtractionState(TypedDict, total=False):
-    """在预处理、并行子图和合并节点之间传递的共享状态。"""
+    """在文档理解、并行子图和合并节点之间传递的共享状态。"""
 
-    request: ContractExtractionRequest
     category_catalog: BaseModel
     field_definition_catalog: BaseModel
     retrieval_view_guide_catalog: BaseModel

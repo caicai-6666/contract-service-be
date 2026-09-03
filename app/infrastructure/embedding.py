@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from time import perf_counter
 from typing import Self
 
 from openai import (
@@ -11,8 +13,13 @@ from openai import (
     APITimeoutError,
     AsyncOpenAI,
 )
+from openai.types import CreateEmbeddingResponse
 
 from app.core.config import EmbeddingSettings
+from app.infrastructure.inference_metrics import (
+    build_inference_request_metrics,
+    observe_inference_request,
+)
 
 
 class EmbeddingRequestError(RuntimeError):
@@ -64,6 +71,8 @@ class EmbeddingClient:
         if not inputs:
             raise ValueError("Embedding 批量请求至少需要一个输入")
 
+        started_at = datetime.now(UTC)
+        request_started_at = perf_counter()
         try:
             response = await self._client.embeddings.create(
                 model=self._settings.model,
@@ -71,8 +80,29 @@ class EmbeddingClient:
                 encoding_format="float",
             )
         except (APITimeoutError, APIConnectionError) as exc:
+            observe_inference_request(
+                build_inference_request_metrics(
+                    provider="embedding",
+                    endpoint=self._settings.endpoint,
+                    model=self._settings.model,
+                    started_at=started_at,
+                    elapsed_ms=(perf_counter() - request_started_at) * 1000,
+                    error=exc,
+                )
+            )
             raise EmbeddingUnavailableError(f"Embedding 连接失败：{exc}") from exc
         except APIStatusError as exc:
+            observe_inference_request(
+                build_inference_request_metrics(
+                    provider="embedding",
+                    endpoint=self._settings.endpoint,
+                    model=self._settings.model,
+                    started_at=started_at,
+                    elapsed_ms=(perf_counter() - request_started_at) * 1000,
+                    error=exc,
+                    status_code=exc.status_code,
+                )
+            )
             if exc.status_code >= 500 or exc.status_code in {408, 409, 429}:
                 raise EmbeddingUnavailableError(
                     f"Embedding 服务暂时不可用：HTTP {exc.status_code}"
@@ -81,6 +111,18 @@ class EmbeddingClient:
             raise EmbeddingRequestError(
                 f"Embedding 请求被拒绝：HTTP {exc.status_code}，{detail}"
             ) from exc
+
+        observe_inference_request(
+            build_inference_request_metrics(
+                provider="embedding",
+                endpoint=self._settings.endpoint,
+                model=self._settings.model,
+                started_at=started_at,
+                elapsed_ms=(perf_counter() - request_started_at) * 1000,
+                response=response,
+                status_code=200,
+            )
+        )
 
         ordered = sorted(response.data, key=lambda item: item.index)
         if len(ordered) != len(inputs):
@@ -96,6 +138,86 @@ class EmbeddingClient:
         return EmbeddingCompletion(
             model=response.model,
             vectors=tuple(tuple(item.embedding) for item in ordered),
+            prompt_tokens=usage.prompt_tokens if usage is not None else None,
+        )
+
+    async def create_multimodal_embedding(
+        self,
+        *,
+        messages: list[dict[str, object]],
+    ) -> EmbeddingCompletion:
+        """调用 vLLM 多模态 Embedding 扩展，一次只编码一组页面消息。"""
+        if self._settings.endpoint != "embeddings":
+            raise EmbeddingRequestError(
+                f"不支持的 Embedding endpoint：{self._settings.endpoint}"
+            )
+        started_at = datetime.now(UTC)
+        request_started_at = perf_counter()
+        try:
+            response = await self._client.post(
+                "/embeddings",
+                cast_to=CreateEmbeddingResponse,
+                body={
+                    "messages": messages,
+                    "model": self._settings.model,
+                    "encoding_format": "float",
+                    "continue_final_message": True,
+                    "add_special_tokens": True,
+                },
+            )
+        except (APITimeoutError, APIConnectionError) as exc:
+            observe_inference_request(
+                build_inference_request_metrics(
+                    provider="embedding",
+                    endpoint=self._settings.endpoint,
+                    model=self._settings.model,
+                    started_at=started_at,
+                    elapsed_ms=(perf_counter() - request_started_at) * 1000,
+                    error=exc,
+                )
+            )
+            raise EmbeddingUnavailableError(f"Embedding 连接失败：{exc}") from exc
+        except APIStatusError as exc:
+            observe_inference_request(
+                build_inference_request_metrics(
+                    provider="embedding",
+                    endpoint=self._settings.endpoint,
+                    model=self._settings.model,
+                    started_at=started_at,
+                    elapsed_ms=(perf_counter() - request_started_at) * 1000,
+                    error=exc,
+                    status_code=exc.status_code,
+                )
+            )
+            if exc.status_code >= 500 or exc.status_code in {408, 409, 429}:
+                raise EmbeddingUnavailableError(
+                    f"Embedding 服务暂时不可用：HTTP {exc.status_code}"
+                ) from exc
+            raise EmbeddingRequestError(
+                f"Embedding 请求被拒绝：HTTP {exc.status_code}，"
+                f"{exc.response.text[:500]}"
+            ) from exc
+
+        observe_inference_request(
+            build_inference_request_metrics(
+                provider="embedding",
+                endpoint=self._settings.endpoint,
+                model=self._settings.model,
+                started_at=started_at,
+                elapsed_ms=(perf_counter() - request_started_at) * 1000,
+                response=response,
+                status_code=200,
+            )
+        )
+        if len(response.data) != 1:
+            raise EmbeddingRequestError(
+                "单页多模态 Embedding 必须返回一个向量："
+                f"actual={len(response.data)}"
+            )
+        usage = response.usage
+        return EmbeddingCompletion(
+            model=response.model,
+            vectors=(tuple(response.data[0].embedding),),
             prompt_tokens=usage.prompt_tokens if usage is not None else None,
         )
 

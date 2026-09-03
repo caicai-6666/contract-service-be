@@ -1,4 +1,4 @@
-"""PDF 页面按视觉 token 预算进行等比渲染与分组。"""
+"""PDF 页面按视觉 token 预算渲染，并重新封装处理版 PDF。"""
 
 from __future__ import annotations
 
@@ -37,6 +37,14 @@ class CompressedPDFPage:
     height_pixels: int
     render_scale: float
     visual_tokens: int
+
+
+@dataclass(frozen=True, slots=True)
+class CompressedPDF:
+    """按视觉预算栅格化后的 PDF 及其工作流页面缓存。"""
+
+    pdf_bytes: bytes
+    pages: tuple[CompressedPDFPage, ...]
 
 
 PDFSource = Path | str | bytes
@@ -169,3 +177,45 @@ def compress_pdf_pages(
             )
             for page_number in ordered_page_numbers
         )
+
+
+def compress_pdf(
+    pdf_source: PDFSource,
+    *,
+    config: PDFPageRenderConfig = _DEFAULT_RENDER_CONFIG,
+) -> CompressedPDF:
+    """按视觉预算渲染整份 PDF，并重新封装为唯一的处理版 PDF。"""
+    with _open_pdf(pdf_source) as source_document:
+        output_document = pymupdf.open()
+        try:
+            pages: list[CompressedPDFPage] = []
+            for page_index, source_page in enumerate(source_document):
+                compressed_page = _compress_open_pdf_page(
+                    source_page,
+                    page_index + 1,
+                    config,
+                )
+                pages.append(compressed_page)
+
+                # 使用旋转生效后的可见页面尺寸，处理版只保留模型实际读取的栅格内容。
+                output_page = output_document.new_page(
+                    width=source_page.rect.width,
+                    height=source_page.rect.height,
+                )
+                output_page.insert_image(
+                    output_page.rect,
+                    stream=compressed_page.png_bytes,
+                    keep_proportion=False,
+                )
+
+            pdf_bytes = output_document.tobytes(
+                garbage=4,
+                deflate=True,
+                no_new_id=True,
+                preserve_metadata=False,
+                reproducible=True,
+            )
+        finally:
+            output_document.close()
+
+    return CompressedPDF(pdf_bytes=pdf_bytes, pages=tuple(pages))

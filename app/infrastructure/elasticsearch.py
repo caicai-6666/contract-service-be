@@ -1,7 +1,7 @@
 """Elasticsearch 异步客户端的创建与注入。"""
 
 from collections.abc import AsyncIterator
-from typing import Any, cast
+from typing import cast
 
 from elasticsearch import AsyncElasticsearch
 from fastapi import Request
@@ -10,17 +10,8 @@ from app.core.config import Settings
 
 
 def create_elasticsearch_client(settings: Settings) -> AsyncElasticsearch:
-    """按当前配置创建共享客户端，不在启动阶段执行网络探测。"""
-    options: dict[str, Any] = {
-        "ca_certs": str(settings.elasticsearch_ca_cert_path),
-        "verify_certs": settings.elasticsearch_verify_certs,
-    }
-    if settings.elasticsearch_username and settings.elasticsearch_password:
-        options["basic_auth"] = (
-            settings.elasticsearch_username,
-            settings.elasticsearch_password,
-        )
-    return AsyncElasticsearch(settings.elasticsearch_hosts, **options)
+    """为无认证 HTTP 节点创建供启动探测与运行期复用的共享客户端。"""
+    return AsyncElasticsearch(settings.elasticsearch_hosts)
 
 
 async def get_elasticsearch_client(request: Request) -> AsyncIterator[AsyncElasticsearch]:

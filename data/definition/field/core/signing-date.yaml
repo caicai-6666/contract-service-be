@@ -1,0 +1,21 @@
+name: 签订日期
+code: signing_date
+aliases:
+  - 合同日期
+  - 签约日期
+  - 签署日期
+  - 合同时间
+  - 签订时间
+meaning: |
+  合同正文明确标注的合同签订或签约日期，保留原文能够确定的完整年月日。
+excludes: |
+  不包括生效日期、交货日期、付款日期、报价日期、打印日期、附件日期、文件名日期或单方签章日期；正文未填写时不得根据文件名推测。
+cardinality: single
+properties:
+  - name: 签订日期
+    code: date
+    aliases: []
+    type: string
+    required: true
+    meaning: 合同正文明确标注的完整签订或签约日期。
+    excludes: 不包括生效、交货、付款、报价、打印、附件或单方签章日期。

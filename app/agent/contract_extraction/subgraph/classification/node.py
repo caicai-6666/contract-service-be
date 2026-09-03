@@ -9,6 +9,7 @@ from time import perf_counter
 from pydantic import ValidationError
 
 from app.agent.contract_extraction.context import context_sha256
+from app.agent.contract_extraction.progress import ParallelProgressTracker
 from app.agent.contract_extraction.subgraph.classification.definition import (
     ContractCategory,
 )
@@ -534,6 +535,8 @@ async def classify_contract(
 
     settings = get_settings().mllm
     semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
+    progress = ParallelProgressTracker(len(catalog.categories))
+    await progress.report_counted()
     unmapped_description: UnmappedTypeDescription | None = None
     unmapped_description_error: str | None = None
     unmapped_description_audits: tuple[ClassificationToolCallAudit, ...] = ()
@@ -541,12 +544,14 @@ async def classify_contract(
         outcomes = tuple(
             await asyncio.gather(
                 *(
-                    _judge_one_category(
-                        category,
-                        context=context,
-                        page_count=page_count,
-                        client=client,
-                        semaphore=semaphore,
+                    progress.track(
+                        _judge_one_category(
+                            category,
+                            context=context,
+                            page_count=page_count,
+                            client=client,
+                            semaphore=semaphore,
+                        )
                     )
                     for category in catalog.categories
                 )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from typing import Any, Final, TypeAlias
 
 from pydantic import (
@@ -26,7 +27,7 @@ class StrictClauseToolModel(BaseModel):
 
 CLAUSE_DISCOVERY_TOOL_VERSION: Final = "clause-discovery-tool-v9"
 CLAUSE_DISCOVERY_TOOL_CHOICE: Final = TOOL_CHOICE_AUTO
-CLAUSE_CONTENT_TOOL_VERSION: Final = "clause-content-tool-v8"
+CLAUSE_CONTENT_TOOL_VERSION: Final = "clause-content-tool-v9"
 # 条款正文是长文本并发任务。保持 auto，配合非 strict 工具，避开 vLLM
 # XGrammar 的逐 token Schema 约束；程序仍在调用后严格解析并校验正文边界。
 CLAUSE_CONTENT_TOOL_CHOICE: Final = TOOL_CHOICE_AUTO
@@ -981,9 +982,57 @@ def _normalized_clause_text(value: str) -> str:
 
 
 def _normalized_anchor_coverage_text(value: str) -> str:
-    """比较边界锚点时忽略可能由表单填写线产生的下划线字形。"""
+    """为位置匹配移除不影响条款定位的空白、填写线和标点。"""
     normalized = _normalized_clause_text(value)
-    return normalized.translate(str.maketrans("", "", "_＿﹍﹎﹏"))
+    without_fill_lines = normalized.translate(str.maketrans("", "", "_＿﹍﹎﹏"))
+    without_punctuation = "".join(
+        character
+        for character in without_fill_lines
+        if not unicodedata.category(character).startswith("P")
+    )
+    # 极短锚点可能只包含项目符号。此时保留旧表示，避免空串天然匹配任何正文。
+    return without_punctuation or without_fill_lines or normalized
+
+
+_MINIMUM_ANCHOR_LOCATION_SIMILARITY: Final = 0.85
+
+
+def _minimum_substring_edit_distance(pattern: str, text: str) -> int:
+    """计算模式串与正文任意连续片段之间的最小 Levenshtein 距离。"""
+    if not pattern:
+        return 0
+    if not text:
+        return len(pattern)
+
+    # 首行全为零，表示匹配可以从正文任意位置开始；最终行最小值即最佳结束位置。
+    previous = [0] * (len(text) + 1)
+    for pattern_index, pattern_character in enumerate(pattern, start=1):
+        current = [pattern_index]
+        for text_index, text_character in enumerate(text, start=1):
+            substitution_cost = int(pattern_character != text_character)
+            current.append(
+                min(
+                    previous[text_index] + 1,
+                    current[text_index - 1] + 1,
+                    previous[text_index - 1] + substitution_cost,
+                )
+            )
+        previous = current
+    return min(previous)
+
+
+def _anchor_is_located(anchor: str, content: str) -> bool:
+    """判断边界锚点是否足以在正文中定位，不承担原文字符保真校验。"""
+    normalized_anchor = _normalized_anchor_coverage_text(anchor)
+    normalized_content = _normalized_anchor_coverage_text(content)
+    if normalized_anchor in normalized_content:
+        return True
+    distance = _minimum_substring_edit_distance(
+        normalized_anchor,
+        normalized_content,
+    )
+    similarity = 1 - distance / len(normalized_anchor)
+    return similarity >= _MINIMUM_ANCHOR_LOCATION_SIMILARITY
 
 
 _CURRENCY_FILL_LINE_PATTERN: Final = re.compile(
@@ -1039,9 +1088,8 @@ def extract_clause_content(
     # 下划线保持原样，避免破坏合同编号、账号或技术标识。
     content = _normalize_visual_fill_lines(arguments.content)
     normalized_content = _normalized_clause_text(content)
-    normalized_anchor_content = _normalized_anchor_coverage_text(content)
     start_anchor = candidate.evidence.start.anchor
-    if _normalized_anchor_coverage_text(start_anchor) not in normalized_anchor_content:
+    if not _anchor_is_located(start_anchor, content):
         raise ClauseContentToolError(
             "content",
             "最终 content 未覆盖程序指定的候选起始锚点",
@@ -1049,8 +1097,7 @@ def extract_clause_content(
         )
 
     end_anchor = candidate.evidence.end.anchor
-    normalized_end_anchor = _normalized_anchor_coverage_text(end_anchor)
-    if normalized_end_anchor not in normalized_anchor_content:
+    if not _anchor_is_located(end_anchor, content):
         raise ClauseContentToolError(
             "content",
             "最终 content 未覆盖程序指定的候选结束锚点",

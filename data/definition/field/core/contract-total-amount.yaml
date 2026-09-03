@@ -1,0 +1,21 @@
+name: 合同总金额
+code: contract_total_amount
+aliases:
+  - 合同总价
+  - 合同价款
+  - 总金额
+  - 含税合计金额
+  - 价税合计
+meaning: |
+  当前合同明确约定的整体交易总金额数值，不包含币种字符；同时出现大小写金额时以语义一致的最终合同总价为准。
+excludes: |
+  不包括单价、小计、未税金额、税额、分期付款金额、保证金、违约金、报价参考值或附件中与正文最终总价不一致的中间合计；无法确定唯一总价时不得强行选择。
+cardinality: single
+properties:
+  - name: 合同总金额
+    code: amount
+    aliases: []
+    type: number
+    required: true
+    meaning: 合同明确约定的整体交易总金额数值。
+    excludes: 不包括币种、单价、小计、税额或阶段付款金额。

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from time import perf_counter
 from typing import Any, Literal, Self
 
 from openai import (
@@ -13,6 +15,15 @@ from openai import (
 )
 
 from app.core.config import MLLMSettings
+from app.infrastructure.inference_metrics import (
+    build_inference_request_metrics,
+    observe_inference_request,
+)
+from app.infrastructure.vllm_media_reference import (
+    get_vllm_media_reference_coordinator,
+    is_vllm_media_cache_miss,
+    strip_media_reference_metadata,
+)
 
 
 class MLLMRequestError(RuntimeError):
@@ -109,8 +120,10 @@ class MLLMClient:
         if self._cache_salt is not None:
             extra_body["cache_salt"] = self._cache_salt
 
+        started_at = datetime.now(UTC)
+        request_started_at = perf_counter()
         try:
-            response = await self._client.chat.completions.create(
+            response = await self._create_completion_with_media_references(
                 model=self._settings.model,
                 messages=messages,
                 max_completion_tokens=max_completion_tokens,
@@ -119,8 +132,19 @@ class MLLMClient:
                 extra_body=extra_body,
             )
         except (APITimeoutError, APIConnectionError) as exc:
+            self._observe_failed_request(
+                started_at=started_at,
+                request_started_at=request_started_at,
+                error=exc,
+            )
             raise MLLMUnavailableError(f"MLLM 连接失败：{exc}") from exc
         except APIStatusError as exc:
+            self._observe_failed_request(
+                started_at=started_at,
+                request_started_at=request_started_at,
+                error=exc,
+                status_code=exc.status_code,
+            )
             if exc.status_code >= 500 or exc.status_code in {408, 409, 429}:
                 raise MLLMUnavailableError(
                     f"MLLM 服务暂时不可用：HTTP {exc.status_code}"
@@ -129,6 +153,12 @@ class MLLMClient:
             raise MLLMRequestError(
                 f"MLLM 请求被拒绝：HTTP {exc.status_code}，{detail}"
             ) from exc
+
+        self._observe_successful_request(
+            started_at=started_at,
+            request_started_at=request_started_at,
+            response=response,
+        )
 
         usage = response.usage
         prompt_details = (
@@ -192,8 +222,10 @@ class MLLMClient:
         if self._cache_salt is not None:
             extra_body["cache_salt"] = self._cache_salt
 
+        started_at = datetime.now(UTC)
+        request_started_at = perf_counter()
         try:
-            response = await self._client.chat.completions.create(
+            response = await self._create_completion_with_media_references(
                 model=self._settings.model,
                 messages=messages,
                 tools=tools,
@@ -208,8 +240,19 @@ class MLLMClient:
                 extra_body=extra_body,
             )
         except (APITimeoutError, APIConnectionError) as exc:
+            self._observe_failed_request(
+                started_at=started_at,
+                request_started_at=request_started_at,
+                error=exc,
+            )
             raise MLLMUnavailableError(f"MLLM 连接失败：{exc}") from exc
         except APIStatusError as exc:
+            self._observe_failed_request(
+                started_at=started_at,
+                request_started_at=request_started_at,
+                error=exc,
+                status_code=exc.status_code,
+            )
             if exc.status_code >= 500 or exc.status_code in {408, 409, 429}:
                 raise MLLMUnavailableError(
                     f"MLLM 服务暂时不可用：HTTP {exc.status_code}"
@@ -218,6 +261,12 @@ class MLLMClient:
             raise MLLMRequestError(
                 f"MLLM 请求被拒绝：HTTP {exc.status_code}，{detail}"
             ) from exc
+
+        self._observe_successful_request(
+            started_at=started_at,
+            request_started_at=request_started_at,
+            response=response,
+        )
 
         if not response.choices:
             raise MLLMRequestError("MLLM 工具调用响应不包含 choices")
@@ -276,4 +325,98 @@ class MLLMClient:
             ),
             assistant_message=assistant_message,
             tool_calls=tuple(tool_calls),
+        )
+
+    async def _create_completion_with_media_references(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        **request: Any,
+    ) -> Any:
+        """首次发送完整媒体，后续只传 UUID；cache miss 时自动重填一次。"""
+        if not self._settings.use_media_references:
+            return await self._client.chat.completions.create(
+                messages=strip_media_reference_metadata(messages),
+                **request,
+            )
+
+        coordinator = get_vllm_media_reference_coordinator(
+            base_url=self._settings.base_url,
+            model=self._settings.model,
+        )
+        prepared = await coordinator.prepare(messages)
+        try:
+            response = await self._client.chat.completions.create(
+                messages=prepared.messages,
+                **request,
+            )
+        except APIStatusError as exc:
+            await coordinator.finish(prepared, succeeded=False)
+            if (
+                not prepared.referenced_media_uuids
+                or not is_vllm_media_cache_miss(exc)
+            ):
+                raise
+
+            # vLLM 重启、负载均衡到另一 API worker 或 LRU 淘汰都会令
+            # 本地 ready 状态过期。只对明确 cache miss 透明重填一次，
+            # 其他 400 仍交给节点按原错误边界处理。
+            await coordinator.invalidate(prepared.media_uuids)
+            retry = await coordinator.prepare(messages)
+            try:
+                response = await self._client.chat.completions.create(
+                    messages=retry.messages,
+                    **request,
+                )
+            except BaseException:
+                await coordinator.finish(retry, succeeded=False)
+                raise
+            await coordinator.finish(retry, succeeded=True)
+            return response
+        except BaseException:
+            await coordinator.finish(prepared, succeeded=False)
+            raise
+
+        await coordinator.finish(prepared, succeeded=True)
+        return response
+
+    def _observe_successful_request(
+        self,
+        *,
+        started_at: datetime,
+        request_started_at: float,
+        response: object,
+    ) -> None:
+        """把成功响应中的逐请求指标发送给任务局部观察器。"""
+        observe_inference_request(
+            build_inference_request_metrics(
+                provider="mllm",
+                endpoint=self._settings.endpoint,
+                model=self._settings.model,
+                started_at=started_at,
+                elapsed_ms=(perf_counter() - request_started_at) * 1000,
+                response=response,
+                status_code=200,
+            )
+        )
+
+    def _observe_failed_request(
+        self,
+        *,
+        started_at: datetime,
+        request_started_at: float,
+        error: Exception,
+        status_code: int | None = None,
+    ) -> None:
+        """记录不包含响应正文的失败请求观测。"""
+        observe_inference_request(
+            build_inference_request_metrics(
+                provider="mllm",
+                endpoint=self._settings.endpoint,
+                model=self._settings.model,
+                started_at=started_at,
+                elapsed_ms=(perf_counter() - request_started_at) * 1000,
+                error=error,
+                status_code=status_code,
+            )
         )

@@ -74,10 +74,10 @@ def merge_extraction_results(
     state: ContractExtractionState,
 ) -> ContractExtractionState:
     """合并结构理解与三个业务子图的结果，形成后续 OCR 结果包络。"""
-    request = state["request"]
+    prepared_pdf = state["prepared_pdf"]
     return {
         "result": ContractExtractionResult(
-            pdf_path=request.source_path,
+            pdf_path=prepared_pdf.source_path,
             classification=state["classification"],
             document_structure=state["document_structure"],
             field_extraction=state["field_extraction"],

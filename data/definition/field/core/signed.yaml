@@ -1,0 +1,19 @@
+name: 是否已签章
+code: signed
+aliases:
+  - 签署状态
+  - 盖章状态
+  - 签字状态
+meaning: |
+  合同要求签署的各主要签约方均在签署区域留下可见签字或印章时为 true；签署区域清晰存在且各方均未签字盖章时为 false。
+excludes: |
+  不因文件名包含“已签”或正文提到签字盖章就判定为 true；骑缝章、页眉印章或非签约方印章不能代替签署区域证据。仅部分签约方完成签署时不得强行输出 true 或 false。
+cardinality: single
+properties:
+  - name: 是否已签章
+    code: signed
+    aliases: []
+    type: boolean
+    required: true
+    meaning: 合同要求的各主要签约方是否均已完成可见签字或盖章。
+    excludes: 不使用文件名、签章条款、骑缝章或非签约方印章代替签署区证据。

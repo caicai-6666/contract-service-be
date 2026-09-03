@@ -6,19 +6,32 @@ import asyncio
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel
 
+from app.agent.contract_document_detection.state import (
+    ContractDocumentDetectionResult,
+)
+from app.agent.contract_extraction.state import PreparedPDF
+from app.agent.pdf_deduplication.state import PDFDeduplicationResult
 from app.service.contract_extraction.model import (
     ContractClassificationView,
     ContractExtractionEvent,
-    DraftSectionCode,
     ResultStatus,
     StageCode,
     StageProgress,
     StageStatus,
 )
+
+
+class InternalDraftSectionCode(StrEnum):
+    """仅用于内存聚合的分区；检索结果不进入 HTTP 提取结果。"""
+
+    CORE = "core"
+    CLAUSE = "clause"
+    RETRIEVAL_VIEW = "retrieval_view"
 
 
 class RunNotFoundError(KeyError):
@@ -27,10 +40,9 @@ class RunNotFoundError(KeyError):
 
 @dataclass(frozen=True, slots=True)
 class SourceDocument:
-    """一次运行唯一持有的原始内存 PDF。"""
+    """一次运行持有的处理版身份；原始上传字节不进入后台工作流。"""
 
     file_name: str
-    pdf_bytes: bytes
     document_id: str
 
 
@@ -67,7 +79,7 @@ class MutableStage:
 class MutableDraftSection:
     """草稿中当前生效的分区及其完整内部结果。"""
 
-    code: DraftSectionCode
+    code: InternalDraftSectionCode
     revision: int
     result_status: ResultStatus
     updated_at: datetime
@@ -81,10 +93,10 @@ class MutableDraft:
 
     revision: int
     page_count: int
-    file_size_bytes: int
+    processed_file_size_bytes: int
     classification: ContractClassificationView
     updated_at: datetime
-    sections: dict[DraftSectionCode, MutableDraftSection] = field(
+    sections: dict[InternalDraftSectionCode, MutableDraftSection] = field(
         default_factory=dict
     )
 
@@ -94,14 +106,24 @@ class RunAggregate:
     """一次处理的状态、结果、事件和并发控制聚合。"""
 
     run_id: str
+    reviewer_user_name: str
     source: SourceDocument
+    prepared_pdf: PreparedPDF
     created_at: datetime
     updated_at: datetime
     expires_at: datetime
     stages: dict[StageCode, MutableStage]
     event_buffer_size: int
     draft: MutableDraft | None = None
+    document_detection_result: ContractDocumentDetectionResult | None = None
+    structure_result: Any | None = None
+    deduplication_result: PDFDeduplicationResult | None = None
+    classification_view: ContractClassificationView | None = None
     prerequisites: Any | None = None
+    awaiting_deduplication_review: bool = False
+    deduplication_review_expires_at: datetime | None = None
+    continued_at: datetime | None = None
+    cancelled: bool = False
     expired: bool = False
     next_sequence: int = 1
     events: deque[ContractExtractionEvent] = field(init=False)
@@ -148,6 +170,7 @@ class MemoryRunRegistry:
 
 
 __all__ = [
+    "InternalDraftSectionCode",
     "MemoryRunRegistry",
     "MutableDraft",
     "MutableDraftSection",

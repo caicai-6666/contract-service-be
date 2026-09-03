@@ -1,0 +1,20 @@
+name: 税率
+code: tax_rate
+aliases:
+  - 增值税率
+  - 税点
+  - VAT 税率
+  - 开票税率
+meaning: |
+  适用于合同整体总金额的明确税率，输出百分数中的数值，例如原文“13%”提取为 13。只有存在单一统一税率时才提取。
+excludes: |
+  不包括税额、未税金额、含税金额或仅适用于局部明细的税率；合同同时存在多个不同税率且无统一主税率时不得任选一个。
+cardinality: single
+properties:
+  - name: 税率
+    code: rate
+    aliases: []
+    type: number
+    required: true
+    meaning: 适用于合同整体总金额的单一明确税率数值。
+    excludes: 不包括税额、金额或仅适用于局部明细的税率。

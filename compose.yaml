@@ -1,0 +1,49 @@
+name: contract-service-development
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTICSEARCH_VERSION:-9.4.5}
+    container_name: contract-service-elasticsearch
+    environment:
+      discovery.type: single-node
+      cluster.name: contract-service-development
+      node.name: contract-service-elasticsearch
+      bootstrap.memory_lock: "true"
+      xpack.security.enabled: "false"
+      xpack.security.enrollment.enabled: "false"
+      ES_JAVA_OPTS: ${ELASTICSEARCH_JAVA_OPTS:--Xms1g -Xmx1g}
+    ports:
+      - "127.0.0.1:${ELASTICSEARCH_PORT:-9200}:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+      - elasticsearch-plugins:/usr/share/elasticsearch/plugins
+    command:
+      - /bin/bash
+      - -lc
+      - |
+          if [ ! -d /usr/share/elasticsearch/plugins/analysis-smartcn ]; then
+            /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch analysis-smartcn;
+          fi
+          exec /usr/local/bin/docker-entrypoint.sh elasticsearch
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl --fail --silent
+          'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s'
+          > /dev/null
+      interval: 10s
+      timeout: 6s
+      retries: 12
+      start_period: 30s
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    restart: unless-stopped
+
+volumes:
+  elasticsearch-data:
+    name: contract-service-elasticsearch-data
+  elasticsearch-plugins:
+    name: contract-service-elasticsearch-plugins

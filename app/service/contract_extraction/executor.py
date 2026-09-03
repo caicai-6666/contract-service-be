@@ -12,9 +12,14 @@ from app.agent.contract_extraction.node import (
     assemble_base_context,
     assemble_prefill_context,
 )
+from app.agent.contract_extraction.progress import (
+    ParallelProgressCallback,
+    ParallelProgressUpdate,
+    bind_parallel_progress_callback,
+    report_parallel_progress,
+)
 from app.agent.contract_extraction.state import (
     ContractBaseContext,
-    ContractExtractionRequest,
     ContractPrefillContext,
     FieldExtractionResult,
     PDFPromptContext,
@@ -23,8 +28,8 @@ from app.agent.contract_extraction.state import (
 from app.agent.contract_extraction.subgraph import (
     build_classification_subgraph,
     build_clause_extraction_subgraph,
+    build_document_understanding_subgraph,
     build_field_extraction_subgraph,
-    build_preprocessing_subgraph,
     build_retrieval_view_generation_subgraph,
 )
 from app.agent.contract_extraction.subgraph.classification.definition import (
@@ -48,12 +53,14 @@ from app.agent.contract_extraction.subgraph.retrieval_view_generation.question_g
     RetrievalQuestionGenerationResult,
 )
 
-PreprocessingUpdateCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
+DocumentUnderstandingUpdateCallback = Callable[
+    [str, dict[str, Any]], Awaitable[None]
+]
 
 
 @dataclass(frozen=True, slots=True)
-class PreprocessingOutput:
-    """预处理完成后可被分类和全部业务分支复用的权威结果。"""
+class DocumentUnderstandingOutput:
+    """文档结构理解完成后可被分类和业务分支复用的权威结果。"""
 
     prepared_pdf: PreparedPDF
     prompt_context: PDFPromptContext
@@ -89,25 +96,38 @@ class RetrievalViewOutput:
 class ContractExtractionExecutor(Protocol):
     """供内存任务服务依赖的最小异步执行端口。"""
 
-    async def preprocess(
+    async def understand_document(
         self,
-        request: ContractExtractionRequest,
-        on_update: PreprocessingUpdateCallback,
-    ) -> PreprocessingOutput:
-        """预处理内存 PDF，并在节点完成时报告内部节点名。"""
+        prepared_pdf: PreparedPDF,
+        on_update: DocumentUnderstandingUpdateCallback,
+    ) -> DocumentUnderstandingOutput:
+        """理解已准备的 PDF，并在节点完成时报告内部节点名。"""
 
-    async def classify(self, output: PreprocessingOutput) -> ExtractionContext:
+    async def classify(
+        self,
+        output: DocumentUnderstandingOutput,
+        on_progress: ParallelProgressCallback | None = None,
+    ) -> ExtractionContext:
         """分类合同并构造下游公共上下文。"""
 
-    async def extract_core(self, context: ExtractionContext) -> BaseModel:
+    async def extract_core(
+        self,
+        context: ExtractionContext,
+        on_progress: ParallelProgressCallback | None = None,
+    ) -> BaseModel:
         """独立提取 Core。"""
 
-    async def extract_clause(self, context: ExtractionContext) -> ClauseExtractionResult:
+    async def extract_clause(
+        self,
+        context: ExtractionContext,
+        on_progress: ParallelProgressCallback | None = None,
+    ) -> ClauseExtractionResult:
         """独立提取条款。"""
 
     async def prepare_retrieval_view(
         self,
         context: ExtractionContext,
+        on_progress: ParallelProgressCallback | None = None,
     ) -> RetrievalViewOutput:
         """独立生成问题并形成合同检索向量。"""
 
@@ -125,20 +145,22 @@ class AgentContractExtractionExecutor:
         self._category_catalog = category_catalog
         self._field_catalog = field_catalog
         self._retrieval_guide_catalog = retrieval_guide_catalog
-        self._preprocessing_graph = build_preprocessing_subgraph()
+        self._document_understanding_graph = (
+            build_document_understanding_subgraph()
+        )
         self._classification_graph = build_classification_subgraph()
         self._field_graph = build_field_extraction_subgraph()
         self._clause_graph = build_clause_extraction_subgraph()
         self._retrieval_graph = build_retrieval_view_generation_subgraph()
 
-    async def preprocess(
+    async def understand_document(
         self,
-        request: ContractExtractionRequest,
-        on_update: PreprocessingUpdateCallback,
-    ) -> PreprocessingOutput:
-        """流式执行预处理，以便把阅读和结构理解映射为两个用户阶段。"""
-        state: dict[str, Any] = {"request": request}
-        async for update in self._preprocessing_graph.astream(
+        prepared_pdf: PreparedPDF,
+        on_update: DocumentUnderstandingUpdateCallback,
+    ) -> DocumentUnderstandingOutput:
+        """流式执行结构理解，向任务服务报告内部节点进度。"""
+        state: dict[str, Any] = {"prepared_pdf": prepared_pdf}
+        async for update in self._document_understanding_graph.astream(
             state,
             stream_mode="updates",
         ):
@@ -147,7 +169,7 @@ class AgentContractExtractionExecutor:
                     state.update(values)
                 await on_update(node_name, values or {})
 
-        return PreprocessingOutput(
+        return DocumentUnderstandingOutput(
             prepared_pdf=state["prepared_pdf"],
             prompt_context=state["prompt_context"],
             document_structure=state["document_structure"],
@@ -155,7 +177,11 @@ class AgentContractExtractionExecutor:
             unit_grounding_audit=state.get("unit_grounding"),
         )
 
-    async def classify(self, output: PreprocessingOutput) -> ExtractionContext:
+    async def classify(
+        self,
+        output: DocumentUnderstandingOutput,
+        on_progress: ParallelProgressCallback | None = None,
+    ) -> ExtractionContext:
         """执行分类并组装业务分支共享的最终前缀。"""
         base_state = {
             "prepared_pdf": output.prepared_pdf,
@@ -163,13 +189,15 @@ class AgentContractExtractionExecutor:
             "document_structure": output.document_structure,
         }
         base_context = assemble_base_context(base_state)["base_context"]
-        result = await self._classification_graph.ainvoke(
-            {
-                "base_context": base_context,
-                "category_catalog": self._category_catalog,
-                "page_count": output.prepared_pdf.page_count,
-            }
-        )
+        with bind_parallel_progress_callback(on_progress):
+            await report_parallel_progress(ParallelProgressUpdate.counting())
+            result = await self._classification_graph.ainvoke(
+                {
+                    "base_context": base_context,
+                    "category_catalog": self._category_catalog,
+                    "page_count": output.prepared_pdf.page_count,
+                }
+            )
         classification = result["classification"]
         if classification.status == "failed":
             raise RuntimeError("合同分类没有形成可供后续使用的结果")
@@ -192,46 +220,58 @@ class AgentContractExtractionExecutor:
             unit_grounding_audit=output.unit_grounding_audit,
         )
 
-    async def extract_core(self, context: ExtractionContext) -> BaseModel:
+    async def extract_core(
+        self,
+        context: ExtractionContext,
+        on_progress: ParallelProgressCallback | None = None,
+    ) -> BaseModel:
         """运行 Core 字段子图并返回其正式结果。"""
-        result = await self._field_graph.ainvoke(
-            {
-                "prepared_pdf": context.prepared_pdf,
-                "document_structure": context.document_structure,
-                "prefill_context": context.prefill_context,
-                "field_definition_catalog": self._field_catalog,
-            }
-        )
+        with bind_parallel_progress_callback(on_progress):
+            await report_parallel_progress(ParallelProgressUpdate.counting())
+            result = await self._field_graph.ainvoke(
+                {
+                    "prepared_pdf": context.prepared_pdf,
+                    "document_structure": context.document_structure,
+                    "prefill_context": context.prefill_context,
+                    "field_definition_catalog": self._field_catalog,
+                }
+            )
         field_extraction: FieldExtractionResult = result["field_extraction"]
         return field_extraction.core
 
     async def extract_clause(
         self,
         context: ExtractionContext,
+        on_progress: ParallelProgressCallback | None = None,
     ) -> ClauseExtractionResult:
         """运行条款发现与正文提取子图。"""
-        result = await self._clause_graph.ainvoke(
-            {
-                "prepared_pdf": context.prepared_pdf,
-                "document_structure": context.document_structure,
-                "prefill_context": context.prefill_context,
-            }
-        )
+        with bind_parallel_progress_callback(on_progress):
+            await report_parallel_progress(ParallelProgressUpdate.counting())
+            result = await self._clause_graph.ainvoke(
+                {
+                    "prepared_pdf": context.prepared_pdf,
+                    "document_structure": context.document_structure,
+                    "prefill_context": context.prefill_context,
+                }
+            )
         return result["clause_extraction"]
 
     async def prepare_retrieval_view(
         self,
         context: ExtractionContext,
+        on_progress: ParallelProgressCallback | None = None,
     ) -> RetrievalViewOutput:
         """运行检索问题生成、向量化与融合子图。"""
-        result = await self._retrieval_graph.ainvoke(
-            {
-                "prepared_pdf": context.prepared_pdf,
-                "document_structure": context.document_structure,
-                "prefill_context": context.prefill_context,
-                "retrieval_view_guide_catalog": self._retrieval_guide_catalog,
-            }
-        )
+        with bind_parallel_progress_callback(on_progress):
+            await report_parallel_progress(ParallelProgressUpdate.counting())
+            result = await self._retrieval_graph.ainvoke(
+                {
+                    "prepared_pdf": context.prepared_pdf,
+                    "document_structure": context.document_structure,
+                    "prefill_context": context.prefill_context,
+                    "retrieval_view_guide_catalog": self._retrieval_guide_catalog,
+                }
+            )
         return RetrievalViewOutput(
             questions=result["retrieval_questions"],
             embeddings=result["retrieval_question_embeddings"],
@@ -243,7 +283,8 @@ __all__ = [
     "AgentContractExtractionExecutor",
     "ContractExtractionExecutor",
     "ExtractionContext",
-    "PreprocessingOutput",
-    "PreprocessingUpdateCallback",
+    "ParallelProgressCallback",
+    "DocumentUnderstandingOutput",
+    "DocumentUnderstandingUpdateCallback",
     "RetrievalViewOutput",
 ]

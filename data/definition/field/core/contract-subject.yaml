@@ -1,0 +1,95 @@
+name: 合同标的
+code: contract_subjects
+aliases:
+  - 交易标的
+  - 交易内容
+  - 项目名称
+  - 服务内容
+  - 货物名称
+  - 产品名称
+  - 采购内容
+meaning: |
+  当前合同直接约定交易、交付、实施或提供的具体货物、设备、材料、服务、工程、权利或其他履行对象。一个能够独立识别、交付或验收的标的形成一个扁平对象；同一合同存在多个并列标的时逐个提取。
+excludes: |
+  不包括合同标题、附件名称、仅作为成套配置且不能独立交付的内部零部件、付款安排、合同总价、单项小计、税额、违约金或条款摘要。不得把多个独立标的合并为一个对象，也不得把同一成套标的的配置清单错误拆成多个标的。
+cardinality: multiple
+properties:
+  - name: 标的类型
+    code: type
+    aliases:
+      - 内容类型
+      - 交易类型
+    type: string
+    required: true
+    meaning: 使用简短稳定的名称说明当前标的属于何种履行对象，例如货物、设备、材料、加工服务、检测服务、工程或软件许可。
+    excludes: 不包括买卖、承揽等整份合同类别，不使用甲方、乙方等主体角色，也不把品牌或型号作为类型。
+  - name: 标的名称
+    code: name
+    aliases:
+      - 产品名称
+      - 货物名称
+      - 服务名称
+      - 项目名称
+    type: string
+    tokenize: true
+    required: true
+    meaning: 当前标的在合同中能够独立识别的具体名称；服务或工程应包含足以说明实际工作对象的简短内容。
+    excludes: 不包括合同标题、宽泛合同类别、品牌、纯型号、价格或对全部履行条款的摘要。
+  - name: 品牌
+    code: brand
+    aliases:
+      - 厂牌
+      - 制造商品牌
+    type: string
+    required: false
+    meaning: 合同对当前标的明确列示的产品品牌或厂牌名称。
+    excludes: 不包括供应商、制造商或签约主体名称，除非合同明确将其作为当前产品品牌；没有明确品牌时直接省略。
+  - name: 规格型号
+    code: model
+    aliases:
+      - 型号
+      - 规格
+      - 产品规格
+    type: string
+    required: false
+    meaning: 合同用于识别当前标的的型号、规格代码或简短关键尺寸，保留能够区分该标的的必要原文信息。
+    excludes: 不堆叠完整技术参数、附件全文、价格、数量、品牌或交付条件；没有明确规格型号时直接省略。
+  - name: 数量
+    code: quantity
+    aliases:
+      - 订购数量
+      - 服务数量
+    type: number
+    required: false
+    meaning: 合同明确约定的当前标的数量数值，与同一对象的单位共同理解。
+    excludes: 不包括金额、编号、型号中的数字或其他标的数量；数量不明确或无法转换为数值时直接省略。
+  - name: 单位
+    code: unit
+    aliases:
+      - 计量单位
+    type: string
+    required: false
+    meaning: 合同明确用于计量当前标的数量的单位，例如台、套、件、批、项或次。
+    excludes: 不包括币种、价格单位、期限单位或包装说明；没有明确计量单位时直接省略。
+  - name: 单价
+    code: unit_price
+    aliases:
+      - 产品单价
+      - 服务单价
+      - 含税单价
+      - 未税单价
+    type: number
+    required: false
+    meaning: 合同明确列示的当前标的每一计量单位价格数值，不包含币种字符；同时存在未税与含税单价时提取实际应付的含税单价。
+    excludes: 不包括合同总价、单项小计、合计金额、税额、折扣、分期付款金额或其他标的价格；只写服务总费用但没有单位计价关系时直接省略。
+  - name: 范围说明
+    code: scope
+    aliases:
+      - 内容说明
+      - 配置说明
+      - 服务范围
+    type: string
+    tokenize: true
+    required: false
+    meaning: 为准确界定当前标的所必需的简短包含项、排除项、产品构成或服务范围说明。
+    excludes: 不包括付款、交付、验收、质保、违约、争议解决等履行条款，不复制完整配置清单、技术附件或长篇正文。

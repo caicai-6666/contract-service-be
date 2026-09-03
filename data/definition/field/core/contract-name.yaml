@@ -1,0 +1,20 @@
+name: 合同名称
+code: contract_name
+aliases:
+  - 合同标题
+  - 协议名称
+  - 合约名称
+meaning: |
+  当前合同正文展示的正式名称或标题，通常位于合同首页顶部，例如“买卖合同”或“制造服务合同”。
+excludes: |
+  不包括项目名称、产品名称、附件标题、报价单标题、PDF 文件名或根据合同内容自行归纳的合同类型。
+cardinality: single
+properties:
+  - name: 合同名称
+    code: name
+    aliases: []
+    type: string
+    tokenize: true
+    required: true
+    meaning: 合同正文展示的正式名称或标题。
+    excludes: 不包括项目、产品、附件、报价单或文件名。
