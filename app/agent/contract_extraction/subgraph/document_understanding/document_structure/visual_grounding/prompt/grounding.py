@@ -16,7 +16,7 @@ from app.agent.contract_extraction.subgraph.document_understanding.prompt import
 )
 from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
 
-UNIT_VISUAL_GROUNDING_PROMPT_VERSION = "unit-visual-grounding-v3"
+UNIT_VISUAL_GROUNDING_PROMPT_VERSION = "unit-visual-grounding-v4"
 
 UNIT_VISUAL_GROUNDING_COMMON_TASK = f"""你负责把一个已经确认的合同语义单元定位到页面图像区域。
 

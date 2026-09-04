@@ -26,8 +26,15 @@ from app.agent.contract_extraction.subgraph.field_extraction.definition import (
 )
 from app.router.dependency import ReviewerUserDependency
 from app.schema.contract import (
+    ContractIngestionAuditResponse,
+    ContractIngestionRequest,
+    ContractIngestionResponse,
     CoreDefinitionCatalogResponse,
     project_core_definition_catalog,
+)
+from app.service.contract_ingestion import (
+    ContractPersistenceError,
+    ContractReviewValidationError,
 )
 from app.service.contract_extraction.model import (
     ContractExtractionEvent,
@@ -141,14 +148,14 @@ async def list_contract_extraction_runs(
 @router.get(
     "/extraction-runs/{run_id}",
     response_model=ContractExtractionSnapshot,
-    summary="获取合同处理状态与 Core/Clause 提取结果",
+    summary="获取合同状态、建议名称与 Core/Clause 结果",
 )
 async def get_contract_extraction_run(
     run_id: str,
     service: ContractExtractionServiceDependency,
     reviewer_user_name: ReviewerUserDependency,
 ) -> ContractExtractionSnapshot:
-    """获取当前状态与 Core/Clause；SSE 事件不承担完整结果传输。"""
+    """获取当前状态、可恢复建议名称与 Core/Clause 结果。"""
     try:
         return await service.get_snapshot(
             run_id,
@@ -255,6 +262,7 @@ async def stream_contract_extraction_events(
                 if event.event_type in {
                     EventType.RUN_CANCELLED,
                     EventType.RUN_EXPIRED,
+                    EventType.RUN_INGESTED,
                 }:
                     return
             while not await request.is_disconnected():
@@ -272,6 +280,7 @@ async def stream_contract_extraction_events(
                 if event.event_type in {
                     EventType.RUN_CANCELLED,
                     EventType.RUN_EXPIRED,
+                    EventType.RUN_INGESTED,
                 }:
                     return
         finally:
@@ -317,6 +326,66 @@ async def retry_contract_extraction_stage(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
         ) from exc
+
+
+@router.post(
+    "/extraction-runs/{run_id}/ingestion",
+    response_model=ContractIngestionResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="提交最终审核值并正式入库合同",
+    responses={
+        404: {"description": "任务不存在、已经过期、已经入库或不属于当前用户。"},
+        409: {"description": "运行阶段或内部结果尚未满足正式入库条件。"},
+        422: {"description": "最终文件名、Core 或 Clause 不符合入库契约。"},
+        502: {"description": "SQLite、处理版 PDF 或 Elasticsearch 持久化失败。"},
+    },
+)
+async def ingest_contract_extraction_run(
+    run_id: str,
+    payload: ContractIngestionRequest,
+    service: ContractExtractionServiceDependency,
+    reviewer_user_name: ReviewerUserDependency,
+) -> ContractIngestionResponse:
+    """按运行身份补齐分类、向量、PDF 和最终入库责任信息。"""
+    try:
+        result = await service.ingest_run(
+            run_id,
+            reviewer_user_name=reviewer_user_name,
+            file_name=payload.file_name,
+            core=payload.core,
+            clauses=payload.clauses,
+        )
+    except RunNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="任务不存在、已经过期或已经入库",
+        ) from exc
+    except RunConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except ContractReviewValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    except ContractPersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+    return ContractIngestionResponse(
+        status="ingested",
+        document_id=result.document_id,
+        file_name=result.file_name,
+        file_uri=result.file_uri,
+        page_count=result.page_count,
+        ingestion=ContractIngestionAuditResponse(
+            reviewer=result.reviewer,
+            ingested_at=result.ingested_at,
+        ),
+    )
 
 
 def _parse_last_event_id(value: str | None) -> int | None:

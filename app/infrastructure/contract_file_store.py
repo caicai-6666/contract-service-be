@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
+import re
+import tempfile
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlsplit
 
@@ -29,6 +33,43 @@ class LocalContractFileStore:
     def root(self) -> Path:
         """返回固定的合同 PDF 根目录。"""
         return self._root
+
+    def store_processed_pdf(self, *, document_id: str, pdf_bytes: bytes) -> str:
+        """按内容哈希幂等保存处理版 PDF，并返回稳定的根相对地址。"""
+        if re.fullmatch(r"[0-9a-f]{64}", document_id) is None:
+            raise ValueError("document_id 必须是 64 位小写 SHA-256")
+        if not pdf_bytes:
+            raise ValueError("处理版 PDF 字节不能为空")
+        actual_document_id = hashlib.sha256(pdf_bytes).hexdigest()
+        if actual_document_id != document_id:
+            raise ValueError("处理版 PDF 字节与 document_id 不一致")
+
+        target = self._root / f"{document_id}.pdf"
+        if target.exists():
+            if target.is_symlink() or not target.is_file():
+                raise ValueError("合同文件目标已存在但不是普通文件")
+            if hashlib.sha256(target.read_bytes()).hexdigest() != document_id:
+                raise ValueError("合同文件目标已存在但内容身份不一致")
+            return f"/{target.name}"
+
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=self._root,
+                prefix=f".{document_id}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary:
+                temporary.write(pdf_bytes)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+                temporary_path = Path(temporary.name)
+            os.replace(temporary_path, target)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+        return f"/{target.name}"
 
     def resolve(self, file_uri: str) -> Path:
         """校验文件地址，并返回根目录内实际存在的 PDF 路径。"""

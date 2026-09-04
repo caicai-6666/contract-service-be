@@ -26,8 +26,8 @@ if __name__ == "__main__":
     # IDE 开发入口：需要调整监听地址、端口或热重载时直接修改此处。
     uvicorn.run(
         "app.main:app",
-        host="127.0.0.1",
-        port=10000,
+        host="0.0.0.0",
+        port=20000,
         log_level="info",
         reload=True,
     )

@@ -11,6 +11,7 @@
 项目将合同 PDF 转换为具有原文证据、稳定身份和运行审计的结构化草稿，使调用方能够逐步查看并核对以下结果：
 
 - 合同与权威交易类别目录的逐类别匹配结果。
+- 结合页面事实、文档结构与分类结果生成的可修改建议文件名。
 - 按启动期固定 Core 目录提取的结构化字段对象。
 - 按原合同阅读顺序保留的规范性条款及其层级路径。
 - 根据权威提问指南动态生成的自然语言检索问题。
@@ -29,6 +30,7 @@
 - 创建请求接收 PDF 字节，校验文件、计算 SHA-256，按视觉 token 预算逐页渲染并保存重新封装的处理版 PDF。
 - 发现合同内容单元，为单元建立页码、文字锚点、摘要和视觉位置。
 - 读取启动期不可变类别目录，为每个合同类别并发执行独立判定。
+- 在分类后根据页面、文档结构和分类摘要生成带页面证据的友好建议文件名。
 - 将分类结果稳定追加到公共模型前缀，供三个下游分支复用。
 - 按固定 Core 定义并发提取字段，校验证据、基数和动态对象 Schema。
 - 顺序发现条款候选，再按候选并发提取完整直接正文。
@@ -42,20 +44,23 @@
 - 合同任务在创建时绑定当前审核人名称；运行列表、快照、SSE、继续和重试只允许任务所有者访问，跨用户请求按任务不存在处理。
 - 支持按正式合同文档的 `file_uri` 安全读取 `data/contract` 中的 PDF。
 - 支持读取启动期固定的 Core 表单定义，使前端能够识别字段属性、数据类型、必填规则和单项/多项基数。
-- 支持列出当前进程内正在处理、等待人工操作或已经形成提取结果但尚未入库的运行；列表以 `processing | blocked` 区分自动推进与人工介入，供前端选择 `run_id` 后恢复快照、SSE，以及处理版 PDF 的文件名、字节数、页数和封面像素尺寸。
+- 支持列出当前进程内正在处理、等待人工操作或已经形成提取结果但尚未入库的运行；列表以 `processing | blocked` 区分自动推进与人工介入，并在可用时提供建议文件名摘要，供前端选择 `run_id` 后恢复快照、SSE 和处理版 PDF 元数据。
 - 通过 HTTP 上传单份 PDF，并创建进程内合同处理任务。
-- 通过快照接口返回七个用户阶段、合同文档判断、查重审核结果，以及用户必须复核的 Core 与 Clause；请求内 PDF 技术处理不作为用户阶段暴露。
+- 通过快照接口返回八个用户阶段、合同文档判断、查重审核结果、建议文件名，以及用户必须复核的 Core 与 Clause；请求内 PDF 技术处理不作为用户阶段暴露。
 - 通过 SSE 返回阶段开始、真实离散进度、查重暂停、继续、完成、失败、重试和草稿更新事件。
 - 查重完成后只返回 ES Top-3 中判定为重复或相似的合同及其原始 cosine、友好 `file_name` 和 `file_uri`，暂停最长 10 分钟；不同合同和失败判断只留在内部，PDF 由独立资源接口按 `file_uri` 获取，前端提交继续请求后才执行合同结构识别、分类和提取。
-- 分类完成后并行运行 Core、Clause 和 Retrieval 三个业务分支；Core 或 Clause 成功后独立更新用户可见提取结果，Retrieval 结果只在内存中供后续入库使用。
+- 分类完成后先生成建议文件名，再并行运行 Core、Clause 和 Retrieval 三个业务分支；Core 或 Clause 成功后独立更新用户可见提取结果，Retrieval 结果只在内存中供后续入库使用。
 - 合同分类成功事件通过 SSE 及时返回类别 `code`、名称和当前合同场景；同一精简结果持续保存在单任务 GET 快照中供恢复，但不进入可编辑的 Core/Clause 草稿。
-- 七个用户业务阶段失败后均可从失败点重试并复用成功前置结果；任一阶段一旦成功便不允许重跑。
+- 建议名称成功事件通过 SSE 返回 `file_name`、命名理由和页面证据；同一结果保存在单任务快照中，运行历史列表保留名称摘要，供断线和重新进入任务时恢复。
+- 八个用户业务阶段失败后均可从失败点重试并复用成功前置结果；任一阶段一旦成功便不允许重跑。
 - 支持审核用户主动取消自己的内存任务，终止后台协程与 SSE，并立即释放处理版 PDF、草稿和中间结果。
+- 支持任务所有者提交最终展示文件名、完整 Core 和 Clause；服务端补齐分类、两个合同级向量、处理版 PDF 身份和审核信息后，以 SQLite 状态机协调文件与正式 Elasticsearch 写入，并释放对应运行。
 - 支持有界事件回放、心跳、任务 TTL 和慢订阅者隔离。
 
 ### 基础设施
 
-- 应用启动时探测正式 Elasticsearch 索引，不存在时按当前契约创建，存在时增量补齐新增 Core mapping；当前合同草稿仍不写入 Elasticsearch。
+- 应用启动时探测正式 Elasticsearch 索引，不存在时按当前契约创建，存在时增量补齐新增 Core mapping；自动草稿不写入 Elasticsearch，只有用户提交的最终审核值进入正式索引。
+- 正式合同的轻量文件目录保存在 `data/abstract/contracts.db`；普通文件管理只读取 `ready`，应用启动时对非就绪记录核验处理版 PDF 与 ES 文档。
 - 根目录提供单节点 Elasticsearch 9.4.5 Docker Compose 开发环境。
 - 多模态生成和 Embedding 均通过环境变量连接本地 OpenAI 兼容服务。
 - MLLM 页面首次发送完整视觉内容，后续并发与多轮请求通过 vLLM 媒体 UUID 引用同一页面，并在缓存失效时自动重填一次。
@@ -70,7 +75,7 @@
 - 系统只支持固定 Core 提取，不包含候选字段生成、归并、统计或治理流程。
 - Core 只能来自启动期通过严格校验的固定字段目录；运行时不得创建目录外字段。
 - 原始 PDF 只在创建请求期间存在；任务只保存栅格化处理版 PDF，处理版、同源页面缓存、自动草稿和中间状态只驻留当前 API 进程内存。
-- 当前没有专家编辑、最终确认或正式 Elasticsearch 入库接口。
+- 当前没有独立的专家编辑版本、审核历史或角色权限；正式入库接口直接接收任务所有者提交的最终文件名、Core 和 Clause。
 - 当前注册表不跨进程共享，开发热更新会清空任务；合同处理服务必须使用单 worker。
 - 免登校验确认审核人身份并用于合同任务所有权隔离，但尚未实现角色权限；免登码缓存和任务注册表均不跨进程共享，重启即清空。
 - 系统不替代合同审阅、法律意见或合同效力判断。
@@ -121,6 +126,7 @@ flowchart TD
     understanding["合同结构识别与视觉定位"]
     base_context["组装基础公共前缀"]
     classification["按权威类别目录<br/>并发分类"]
+    file_name["生成证据化建议文件名"]
     prefill_context["追加分类结果<br/>形成最终公共前缀"]
 
     subgraph parallel_branches["三个并行业务分支"]
@@ -133,11 +139,11 @@ flowchart TD
     internal_result["内存聚合<br/>分类、PDF 身份与两个向量"]
     review_result["用户审核结果<br/>仅 Core 与 Clause"]
     snapshot["HTTP 快照"]
-    ingestion["后续入库接口<br/>尚未实现"]
+    ingestion["最终审核值校验<br/>保存 PDF 并正式入库"]
     sse["SSE 阶段状态、进度<br/>与结果更新通知"]
 
     pdf --> preparation --> detection
-    detection -->|是合同| dedup --> pause --> continue --> understanding --> base_context --> classification --> prefill_context
+    detection -->|是合同| dedup --> pause --> continue --> understanding --> base_context --> classification --> file_name --> prefill_context
     detection -->|不是合同| rejected
     prefill_context --> core
     prefill_context --> clause
@@ -147,20 +153,21 @@ flowchart TD
     retrieval --> internal_result
     prefill_context --> internal_result
     review_result --> snapshot
-    review_result -.-> ingestion
-    internal_result -.->|按 run_id 补齐数据| ingestion
+    review_result --> ingestion
+    internal_result -->|按 run_id 补齐数据| ingestion
     understanding -.-> sse
     detection -.-> sse
     dedup -.-> sse
     pause -.-> sse
     classification -.-> sse
+    file_name -.-> sse
     core -.-> sse
     clause -.-> sse
     retrieval -.-> sse
     review_result -.-> sse
 ```
 
-分类是三个业务分支的公共前置阶段。Core、Clause 和 Retrieval 分支只读同一份最终公共前缀，彼此不消费对方结果，也不共享可变模型上下文。应用服务按分支独立提交结果；Core 或 Clause 完成后即可供调用方查看，Retrieval 结果只留在内存中供后续入库使用。
+分类与建议名称生成是三个业务分支的串行公共前置阶段；建议名称不进入三个分支的模型上下文。Core、Clause 和 Retrieval 分支只读同一份最终公共前缀，彼此不消费对方结果，也不共享可变模型上下文。应用服务按分支独立提交结果；Core 或 Clause 完成后即可供调用方查看，Retrieval 结果只留在内存中供后续入库使用。
 
 ---
 

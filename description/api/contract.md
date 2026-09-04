@@ -1,6 +1,6 @@
 # 合同 API
 
-> **用途：** 本文是前端接入 Core 表单定义、合同上传、合同文档识别、查重暂停与继续、结构识别、处理进度、Core/Clause 提取结果和失败阶段断点重试的 HTTP/SSE 参考。全局接口约定见[API 参考](readme.md)，内部状态机见[合同提取应用运行时](../architecture/system/contract-extraction-runtime.md)。
+> **用途：** 本文是前端接入 Core 表单定义、合同上传、合同文档识别、查重暂停与继续、结构识别、建议名称、处理进度、Core/Clause 提取结果、失败阶段断点重试和正式入库的 HTTP/SSE 参考。全局接口约定见[API 参考](readme.md)，内部状态机见[合同提取应用运行时](../architecture/system/contract-extraction-runtime.md)。
 
 ---
 
@@ -11,7 +11,7 @@
 - 创建任务时，服务端会把免登码解析出的审核人名称写为任务所有者；客户端不提交、也不能覆盖该名称。
 - 运行列表以及所有携带 `run_id` 的查询、SSE 和状态变更接口只允许任务所有者访问。其他审核用户访问时与任务不存在一样返回 `404`，不会泄露 `run_id` 是否真实存在。
 - `document_id` 是任务实际保存并计划入库的处理版 PDF 字节 SHA-256。
-- SSE 及时传递状态事件、紧凑的合同文档判断、查重审核结果和分类结果；单任务快照持续保存精简分类结果，Core 与 Clause 提取值也只能通过快照接口获取。
+- SSE 及时传递状态事件、紧凑的合同文档判断、查重审核结果、分类结果和建议文件名；单任务快照持续保存分类与建议名称，Core 与 Clause 提取值也只能通过快照接口获取。
 - 原始 PDF 只在创建请求期间保留；任务保存按视觉预算栅格化的处理版 PDF、同源页面缓存、处理状态和草稿。
 
 ---
@@ -90,6 +90,7 @@ GET /contract/api/contract/extraction-runs
       "cover_width_pixels": 1240,
       "cover_height_pixels": 1754
     },
+    "suggested_file_name": "工业机械臂采购合同",
     "status": "blocked",
     "created_at": "2026-09-02T10:00:00Z",
     "updated_at": "2026-09-02T10:05:00Z",
@@ -105,7 +106,7 @@ GET /contract/api/contract/extraction-runs
 
 合同结构识别、合同分类等公共前置阶段失败时，任务会继续出现在列表中并标记为 `blocked`，避免因为没有形成草稿而从恢复入口消失。某个业务分支失败、但其他分支仍在执行时暂时保持 `processing`；所有自动执行停止后转为 `blocked`。非合同和已过期运行不返回。读取列表不会刷新任务 TTL；列表为空时直接返回 `[]`。
 
-列表状态是面向恢复入口的粗粒度投影，不替代单任务快照中的 `run.status` 和七个阶段状态。前端选择一项后，应以其 `run_id` 查询快照来判断具体阻塞位置、可重试阶段和已有结果，并建立 SSE 连接同步后续事件。
+列表状态是面向恢复入口的粗粒度投影，不替代单任务快照中的 `run.status` 和八个阶段状态。`suggested_file_name` 在命名成功前为 `null`，成功后返回不带扩展名的名称摘要；完整理由和证据仍需查询单任务快照。前端选择一项后，应以其 `run_id` 查询快照来判断具体阻塞位置、可重试阶段和已有结果，并建立 SSE 连接同步后续事件。
 
 `document` 是任务实际持有的处理版 PDF 元数据，在创建响应、列表项和单任务快照中使用同一结构：
 
@@ -117,9 +118,9 @@ GET /contract/api/contract/extraction-runs
 | `cover_width_pixels` | 处理后第 1 页图像的像素宽度。 |
 | `cover_height_pixels` | 处理后第 1 页图像的像素高度。 |
 
-这些字段只服务运行恢复和前端展示，不属于最终 `draft`，未来也不写入 Elasticsearch 合同文档。
+这个运行期 `document` 对象只服务恢复和前端展示，不会被整体复制到 Elasticsearch。正式入库会从中使用处理版页数，并以用户最终提交的 `file_name` 替代创建任务时的原始文件名。
 
-> **未来入库约定：** 正式入库成功后，入库服务必须从内存注册表删除对应 `run_id`；该任务随后自然不再出现在本列表中。正式入库接口目前尚未实现。
+> **入库后释放：** 正式入库成功后，入库服务会从内存注册表删除对应 `run_id`；该任务随后不再出现在本列表中。
 
 ---
 
@@ -190,13 +191,14 @@ curl --request POST \
     "available_sections": [],
     "document_detection": null,
     "deduplication": null,
-    "classification": null
+    "classification": null,
+    "suggested_file_name": null
   },
   "draft": null
 }
 ```
 
-实际 `stages` 始终包含七个阶段：`contract_document_detection`、`pdf_deduplication`、`contract_structure_recognition`、`contract_classification`、`core_extraction`、`clause_extraction` 和 `retrieval_preparation`。示例只展开其中一个以说明结构。
+实际 `stages` 始终包含八个阶段：`contract_document_detection`、`pdf_deduplication`、`contract_structure_recognition`、`contract_classification`、`file_name_generation`、`core_extraction`、`clause_extraction` 和 `retrieval_preparation`。示例只展开其中一个以说明结构。
 
 ### 无法处理的 PDF
 
@@ -216,7 +218,7 @@ GET /contract/api/contract/extraction-runs/{run_id}
 
 状态码：`200 OK`
 
-响应在同一聚合锁下生成，`run` 与 `draft` 属于同一时刻。`run.classification` 在分类成功前为 `null`，成功后持续返回精简分类结果。`draft` 在 Core 或 Clause 首次形成可用结果前为 `null`；之后只包含当前可用的 `core` 和 `clauses`，不公开检索问题、向量、证据、推理或内部状态。
+响应在同一聚合锁下生成，`run` 与 `draft` 属于同一时刻。`run.classification` 在分类成功前为 `null`，成功后持续返回精简分类结果；`run.suggested_file_name` 在命名成功前为 `null`，成功后持续返回名称、理由和页面证据。`draft` 在 Core 或 Clause 首次形成可用结果前为 `null`；之后只包含当前可用的 `core` 和 `clauses`，不公开检索问题、向量或内部工具状态。
 
 ```yaml
 run:
@@ -231,7 +233,7 @@ run:
     page_count: 12
     cover_width_pixels: 1240
     cover_height_pixels: 1754
-  stages: {}                     # 七个 StageSnapshot，以 code 为键
+  stages: {}                     # 八个 StageSnapshot，以 code 为键
   available_sections: [core]
   document_detection: {}         # 合同文档判断完成后保留；完成前为 null
   deduplication: {}              # 查重完成后保留；完成前为 null
@@ -242,6 +244,12 @@ run:
         name: 买卖合同
         scenario: 甲方向乙方采购设备
     unmapped_type_description: null
+  suggested_file_name:          # 建议命名完成后保留；完成前为 null
+    file_name: 工业机械臂采购合同
+    reasoning: 原标题仅表示通用文种，页面明确标的是工业机械臂。
+    evidence:
+      - page_number: 1
+        content: 产品名称：六轴工业机械臂
 draft:
   core:
     contract_name: 设备采购合同
@@ -250,7 +258,7 @@ draft:
   clauses: null
 ```
 
-`core` 和 `clauses` 独立就绪，因此其中一个可以暂时为 `null`；`run.available_sections` 也只会出现 `core`、`clause`。`run.classification` 与 SSE 分类事件使用同一个精简结构，但不进入可编辑的 `draft`。后续入库请求以 `run_id` 引用当前内存聚合，只需由用户提交自定义文件名及修改后的 Core、Clause，服务端再补齐处理版 PDF 身份、页数、完整分类、两个融合向量、审核人与入库时间。该入库接口目前尚未实现。
+`core` 和 `clauses` 独立就绪，因此其中一个可以暂时为 `null`；`run.available_sections` 也只会出现 `core`、`clause`。`run.classification` 和 `run.suggested_file_name` 分别与对应 SSE 完成事件使用同一个公共投影，但不进入 Core/Clause `draft`。前端可以用建议名称初始化可编辑文件名；正式入库请求仍以用户提交值为准，服务端不会强制其等于建议名称。
 
 ### 运行状态
 
@@ -260,10 +268,11 @@ draft:
 | `not_a_contract` | 上传内容已被可靠判定为非合同，后续处理已停止。 |
 | `awaiting_deduplication_review` | 查重结果已返回，结构识别尚未启动，正在等待前端处理候选并调用继续接口。 |
 | `partial_ready` | 至少一个分区可查看，其他分支仍在处理或失败。 |
-| `ready` | 三个业务分支均已形成当前结果。 |
-| `failed` | 公共处理失败，或三个业务分支均未形成结果。 |
+| `ready` | 建议名称成功，且三个业务分支均已形成当前结果。 |
+| `failed` | 串行公共处理或建议名称失败，或三个业务分支均未形成结果。 |
 | `cancelled` | 只会在现有连接的取消 SSE 事件中观察到；随后查询返回 `404`。 |
 | `expired` | 只会在到期 SSE 事件中观察到；随后查询返回 `404`。 |
+| `ingested` | 只会在现有连接的正式入库终态事件中观察到；随后查询返回 `404`。 |
 
 ### 合同文档识别结果
 
@@ -282,7 +291,7 @@ draft:
 }
 ```
 
-`is_contract=true` 时服务自动开始查重。`is_contract=false` 时运行进入 `not_a_contract`，查重、结构识别、分类及三个提取分支均不启动。页面不可读、模型请求失败或没有形成有效工具决定属于 `contract_document_detection` 阶段技术失败，不会返回伪造的 `false`。
+`is_contract=true` 时服务自动开始查重。`is_contract=false` 时运行进入 `not_a_contract`，查重、结构识别、分类、建议名称及三个提取分支均不启动。页面不可读、模型请求失败或没有形成有效工具决定属于 `contract_document_detection` 阶段技术失败，不会返回伪造的 `false`。
 
 ### 查重暂停结果
 
@@ -350,7 +359,7 @@ core:
   contract_total_amount: 1200000
 ```
 
-Core 使用字段定义中的稳定英文 `code`，值的标量、对象或数组形状与 Elasticsearch Core mapping 一致。只要 Core 分支形成 `completed` 或 `partial` 结果，全部配置字段都会出现；没有可靠值的字段使用 `null`，失败字段存在已校验部分对象时保留该部分值。`null` 只用于用户审核占位，未来正式入库投影必须过滤，不写入 Elasticsearch。
+Core 使用字段定义中的稳定英文 `code`，值的标量、对象或数组形状与 Elasticsearch Core mapping 一致。只要 Core 分支形成 `completed` 或 `partial` 结果，全部配置字段都会出现；没有可靠值的字段使用 `null`，失败字段存在已校验部分对象时保留该部分值。`null` 只用于用户审核占位，正式入库投影会将其过滤，不写入 Elasticsearch。
 
 ### Clause 分区
 
@@ -443,7 +452,7 @@ data: {"sequence":12,"run_id":"...","event_type":"stage.completed","overall_stat
 | `run.started` | 初始化任务时间线。 |
 | `stage.started` | 展示当前阶段正在处理。 |
 | `stage.progress` | 更新阶段消息或真实离散进度。 |
-| `stage.completed` | 标记阶段成功；分类阶段完成事件同时展示 `classification`。 |
+| `stage.completed` | 标记阶段成功；分类和建议名称阶段分别同时展示对应公共结果。 |
 | `stage.failed` | 展示失败消息，并依据 `retryable` 决定是否显示重试。 |
 | `stage.retrying` | 标记已接受重试。 |
 | `run.document_rejected` | 上传内容不是合同；展示 `document_detection` 的证据与理由并停止等待后续阶段。 |
@@ -453,6 +462,7 @@ data: {"sequence":12,"run_id":"...","event_type":"stage.completed","overall_stat
 | `run.review_ready` | 首份草稿已可查看。 |
 | `run.cancelled` | 当前任务已由用户取消；结束订阅并从界面移除该任务。 |
 | `run.expired` | 结束订阅并提示重新上传。 |
+| `run.ingested` | 合同已正式入库且 `run_id` 已释放；结束订阅并从界面移除该任务。 |
 
 非合同终态直接携带合同文档识别结果：
 
@@ -498,6 +508,30 @@ data: {"event_type":"run.deduplication_review_required","overall_status":"awaiti
 `classification.status` 可以是 `classified`、`unmapped` 或 `partial`。命中类别时 `categories` 可以包含一项或多项；未命中权威类别时数组为空，并通过 `unmapped_type_description` 提供简短类型说明。分类证据、失败类别和工具轨迹不公开。
 
 相同的精简负载也会在分类成功后持续出现在单任务 GET 快照的 `run.classification` 中，但不进入最终可编辑的 `draft`。因此 SSE 用于及时展示，断线恢复或事件缓冲被淘汰后仍可通过快照同步分类结果。
+
+建议名称成功时，`file_name_generation` 的 `stage.completed` 事件携带 `suggested_file_name`：
+
+```json
+{
+  "event_type": "stage.completed",
+  "stage": {
+    "code": "file_name_generation",
+    "status": "succeeded"
+  },
+  "suggested_file_name": {
+    "file_name": "工业机械臂采购合同",
+    "reasoning": "原标题只表达采购文种，页面明确记载了核心设备。",
+    "evidence": [
+      {
+        "page_number": 1,
+        "content": "产品名称：六轴工业机械臂"
+      }
+    ]
+  }
+}
+```
+
+`file_name` 只包含名称主体，不带扩展名；`reasoning` 是可供用户理解命名依据的简洁理由；`evidence` 使用从 1 开始的合同物理页码和短原文。相同对象持续保存在 GET 快照的 `run.suggested_file_name` 中；运行历史列表只返回名称字符串摘要。SSE 断线或事件超出缓冲后，前端必须以快照为准恢复该值。用户在最终入库前可以任意修改名称，入库接口不会比较建议值与最终值。
 
 ### 并行内容进度
 
@@ -558,17 +592,18 @@ X-Accel-Buffering: no
 POST /contract/api/contract/extraction-runs/{run_id}/stages/{stage_code}/retry
 ```
 
-`stage_code` 接受七个用户业务阶段：
+`stage_code` 接受八个用户业务阶段：
 
 - `contract_document_detection`；
 - `pdf_deduplication`；
 - `contract_structure_recognition`；
 - `contract_classification`；
+- `file_name_generation`；
 - `core_extraction`；
 - `clause_extraction`；
 - `retrieval_preparation`。
 
-只有状态为 `failed` 且尚未达到尝试上限的阶段可以重试。成功接受后返回 `202 Accepted` 和当前快照，目标阶段已经是 `retrying`；服务复用该阶段之前已经成功的权威结果，不回退或重跑更早阶段。重试阶段成功后自动恢复正常后续流程，例如分类重试成功后启动三个提取分支，结构识别重试成功后继续分类。
+只有状态为 `failed` 且尚未达到尝试上限的阶段可以重试。成功接受后返回 `202 Accepted` 和当前快照，目标阶段已经是 `retrying`；服务复用该阶段之前已经成功的权威结果，不回退或重跑更早阶段。重试阶段成功后自动恢复正常后续流程：结构识别重试成功后继续分类，分类重试成功后继续建议命名，建议命名重试成功后启动三个提取分支。
 
 > **一次成功即终止重跑：** 阶段只要有一次进入 `succeeded`，即使业务结果完整程度是 `partial`，也不再允许重跑。重试期间，其他已经成功的草稿分区继续可读；目标阶段只有成功后才会提交自己的结果。
 
@@ -578,7 +613,88 @@ POST /contract/api/contract/extraction-runs/{run_id}/stages/{stage_code}/retry
 | --- | --- |
 | `404` | `run_id` 不存在、已经过期，或不属于当前审核用户。 |
 | `409` | 阶段未失败、成功前置结果缺失，或已经达到最大尝试次数。 |
-| `422` | `stage_code` 不是七个用户业务阶段之一。 |
+| `422` | `stage_code` 不是八个用户业务阶段之一。 |
+
+---
+
+## 正式入库合同
+
+```http
+POST /contract/api/contract/extraction-runs/{run_id}/ingestion
+Content-Type: application/json
+```
+
+八个用户业务阶段全部为 `succeeded` 后，审核用户提交最终展示文件名以及完整 Core、Clause。请求体不接受建议名称、`document_id`、分类、向量、PDF 地址、审核人或入库时间，这些信息均由服务端根据当前运行和登录用户补齐。最终 `file_name` 可以沿用、修改或完全替换自动建议。
+
+```json
+{
+  "file_name": "设备采购合同",
+  "core": {
+    "contract_name": "设备采购合同",
+    "contract_number": null,
+    "contract_subjects": [
+      {
+        "type": "设备",
+        "name": "工业机械臂",
+        "quantity": 2,
+        "unit": "台"
+      }
+    ],
+    "contract_total_amount": 1200000,
+    "currency": "CNY",
+    "related_parties": null,
+    "signed": null,
+    "signing_date": null,
+    "tax_included": true,
+    "tax_rate": 13
+  },
+  "clauses": [
+    {
+      "clause_id": "clause-0001",
+      "order": 1,
+      "identifier": "第一条",
+      "title": "合同标的",
+      "path": ["第一条 合同标的"],
+      "parent_clause_id": null,
+      "level": 1,
+      "start_page": 1,
+      "end_page": 1,
+      "content": "第一条 合同标的……"
+    }
+  ]
+}
+```
+
+`core` 必须包含 Core 定义接口返回的全部顶层 `code`，未知或缺失字段都会被拒绝；没有最终值时提交 `null`。非空值必须符合目录中的基数、属性、必填项和基本类型。`clauses` 至少包含一条，按数组顺序使用从 1 连续增长的 `order`，父条款必须先出现，页码不能超过处理版 PDF 总页数。
+
+成功状态码：`201 Created`。
+
+```json
+{
+  "status": "ingested",
+  "document_id": "e7591f0d...64位哈希...",
+  "file_name": "设备采购合同",
+  "file_uri": "/e7591f0d...64位哈希....pdf",
+  "page_count": 12,
+  "ingestion": {
+    "reviewer": "张三",
+    "ingested_at": "2026-09-04T12:00:00+00:00"
+  }
+}
+```
+
+服务先在 `data/abstract/contracts.db` 中登记不可见的 `ingesting` 元数据，再幂等保存处理版 PDF，最后写入 `ELASTICSEARCH_INDEX_NAME` 指定的正式索引（默认 `contracts-v1`，不使用实验索引）。相同 `document_id` 会覆盖已有 ES 文档；只有 SQLite 转为 `ready`、文件和 ES 均核验成功后才删除运行并发布 `run.ingested`。持久化失败时 SQLite 记录失败原因并保留运行，调用方可以使用同一请求重试。
+
+### 错误响应
+
+| 状态码 | 条件 |
+| --- | --- |
+| `404` | `run_id` 不存在、已经过期、已经入库，或不属于当前审核用户。 |
+| `409` | 尚有阶段未成功，或分类、Core、Clause、检索向量、页面向量等前置结果缺失。 |
+| `422` | 文件名、完整 Core 或 Clause 不符合最终入库契约。 |
+| `502` | SQLite、处理版 PDF 或 Elasticsearch 写入失败；运行仍保留，可重试入库。 |
+
+更完整的校验、覆盖写入和失败边界见[复核后合同正式入库](../capability/application/contract-ingestion.md)。
 
 ---
 
@@ -592,9 +708,8 @@ POST /contract/api/contract/extraction-runs/{run_id}/stages/{stage_code}/retry
 6. 收到 `run.document_rejected` 后展示非合同证据并停止流程；若合同识别成功，则继续等待查重事件。
 7. 收到 `run.deduplication_review_required` 后渲染重复或相似候选；需要预览时将 `file_uri` 传给资源文件接口。
 8. 在 `review_expires_at` 前完成与提取流无关的候选处理，然后调用一次 `POST .../{run_id}/continue`。
-9. 继续消费合同结构识别、分类和三个并行提取阶段；收到 `draft.updated` 或 `run.review_ready` 后获取一次全量快照。
+9. 继续消费合同结构识别、分类、建议名称和三个并行提取阶段；收到建议名称完成事件时初始化可编辑文件名，收到 `draft.updated` 或 `run.review_ready` 后获取一次全量快照。
 10. 对 `retryable: true` 的失败阶段提供断点重试入口；阶段成功后继续消费后续 SSE，并在 `draft.updated` 后获取最新修订。
 11. 用户放弃当前任务时调用 `DELETE .../{run_id}`；收到 `run.cancelled` 后关闭 SSE 并从界面移除任务。仅关闭 SSE 不会取消后台任务。
-12. 收到 `run.expired` 或最终确认完成后关闭 SSE；未来正式入库成功后由服务端删除 `run_id`。
-
-> **当前边界：** 专家编辑、最终确认和 Elasticsearch 入库接口尚未实现，不应由前端自行拼接临时写入请求。
+12. 八个阶段全部成功后，提交用户确认的最终 `file_name`、完整 Core 和 Clause 到入库接口。
+13. 收到 `run.ingested` 或 `201 Created` 后关闭 SSE 并移除本地运行；服务端已经删除该 `run_id`。收到 `run.expired` 时关闭 SSE 并提示重新上传。

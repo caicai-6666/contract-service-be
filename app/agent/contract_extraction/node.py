@@ -21,7 +21,7 @@ from app.agent.contract_extraction.subgraph.classification.state import (
 def assemble_base_context(
     state: ContractExtractionState,
 ) -> ContractExtractionState:
-    """组装供分类读取的“PDF + 权威文档结构”稳定基础前缀。"""
+    """组装供分类读取的“页面图像 + 权威文档结构”稳定基础前缀。"""
     prepared_pdf = state["prepared_pdf"]
     structure = state["document_structure"]
     if structure.document_id != prepared_pdf.document_id:
@@ -79,6 +79,7 @@ def merge_extraction_results(
         "result": ContractExtractionResult(
             pdf_path=prepared_pdf.source_path,
             classification=state["classification"],
+            suggested_file_name=state["suggested_file_name"],
             document_structure=state["document_structure"],
             field_extraction=state["field_extraction"],
             clause_extraction=state["clause_extraction"],

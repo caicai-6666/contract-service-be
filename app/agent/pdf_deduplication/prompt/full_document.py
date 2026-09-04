@@ -21,24 +21,24 @@ from app.agent.pdf_deduplication.prompt.relation_standard import (
 )
 
 FullDocumentJudgmentPromptVersion = Literal[
-    "full-document-relation-judgment-v3"
+    "full-document-relation-judgment-v4"
 ]
 
 FULL_DOCUMENT_JUDGMENT_PROMPT_VERSION: Final[
     FullDocumentJudgmentPromptVersion
-] = "full-document-relation-judgment-v3"
+] = "full-document-relation-judgment-v4"
 
-# 工具必须紧随最后一条候选 PDF 任务消息，由 vLLM 的聊天模板渲染真实
+# 工具必须紧随最后一条候选页面任务消息，由 vLLM 的聊天模板渲染真实
 # Pydantic function schema；不能把 schema 手工复制进提示词。
 FULL_DOCUMENT_TOOL_PLACEMENT: Final[Literal["after_task"]] = "after_task"
 
-FULL_DOCUMENT_JUDGMENT_STRATEGY_PROMPT: Final = """本次比较严格使用共同标准已经定义的文档身份：“上传合同 A”是前面已经提供的第一组 PDF 页面，“候选合同 B”是本任务之后提供的第二组 PDF 页面。A、B 各自包含的全部可用页面均会提供，物理页码在两份 PDF 内分别从 1 开始；“全部可用页面”只表示当前文件包含的全部页面，不保证原合同没有缺页、遮挡、模糊或扫描不完整。
+FULL_DOCUMENT_JUDGMENT_STRATEGY_PROMPT: Final = """本次比较严格使用共同标准已经定义的文档身份：“上传合同 A”是前面已经提供的第一组页面图像，“候选合同 B”是本任务之后提供的第二组页面图像。A、B 各自包含的全部可用页面均会提供，物理页码在两份文档内分别从 1 开始；“全部可用页面”只表示当前文件包含的全部页面，不保证原合同没有缺页、遮挡、模糊或扫描不完整。
 
 当前任务：
-按照已经提供的合同关系共同判断标准，判断两份 PDF 的关系。两份 PDF 当前包含的页面会一次性全部提供，不存在可以继续请求的其他页面。
+按照已经提供的合同关系共同判断标准，判断两份文档的关系。两份文档当前包含的页面图像会一次性全部提供，不存在可以继续请求的其他页面。
 
 全量查看要求：
-1. 按各自物理页码顺序核对两份 PDF 的全部页面，先确认每份 PDF 实际代表的文件范围，再进行跨文档比较。
+1. 按各自物理页码顺序核对两份文档的全部页面图像，先确认每组页面实际代表的文件范围，再进行跨文档比较。
 2. 不得只根据首页、尾页、合同编号、签约主体、印章或视觉排版中的单一线索提前决定关系。
 3. 必须综合核对合同身份、交易事项、版本连续性、关键条款、签署信息、页面完整性和视觉结构。
 4. 发现金额、日期、条款、页面或签章差异时，必须继续判断该差异属于同一合同的修订或替换，还是应独立保留的关联文件或不同合同。
@@ -60,7 +60,7 @@ FULL_DOCUMENT_TOOL_INSTRUCTION_PROMPT: Final = f"""工具使用：
 def append_full_document_judgment_strategy(
     relation_standard_messages: Iterable[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """在上传 PDF 与共同标准之后追加稳定的全量查看任务。"""
+    """在上传文档页面与共同标准之后追加稳定的全量查看任务。"""
     messages = deepcopy(list(relation_standard_messages))
     if not messages:
         raise ValueError("合同关系共同判断消息不能为空")
@@ -83,7 +83,7 @@ def append_full_document_candidate_pdf(
     full_document_messages: Iterable[dict[str, Any]],
     candidate_pdf: PreparedPDF,
 ) -> list[dict[str, Any]]:
-    """追加候选 PDF，并以工具分隔线结束最后一个真实 user 任务。"""
+    """追加候选文档页面，并以工具分隔线结束最后一个真实 user 任务。"""
     messages = deepcopy(list(full_document_messages))
     if not messages:
         raise ValueError("全量判断消息不能为空")
@@ -121,7 +121,7 @@ def build_full_document_judgment_messages(
     uploaded_pdf: PreparedPDF,
     candidate_pdf: PreparedPDF,
 ) -> list[dict[str, Any]]:
-    """构建“上传 PDF → 判断任务 → 候选 PDF → 工具说明”的完整消息。"""
+    """构建“上传页面 → 判断任务 → 候选页面 → 工具说明”的完整消息。"""
     uploaded_prompt_pages = tuple(
         PDFPromptPage(
             page_number=page.page_number,

@@ -23,6 +23,7 @@ from app.service.contract_extraction.model import (
     StageCode,
     StageProgress,
     StageStatus,
+    SuggestedFileNameView,
 )
 
 
@@ -119,12 +120,14 @@ class RunAggregate:
     structure_result: Any | None = None
     deduplication_result: PDFDeduplicationResult | None = None
     classification_view: ContractClassificationView | None = None
+    suggested_file_name_view: SuggestedFileNameView | None = None
     prerequisites: Any | None = None
     awaiting_deduplication_review: bool = False
     deduplication_review_expires_at: datetime | None = None
     continued_at: datetime | None = None
     cancelled: bool = False
     expired: bool = False
+    ingested: bool = False
     next_sequence: int = 1
     events: deque[ContractExtractionEvent] = field(init=False)
     subscribers: set[asyncio.Queue[ContractExtractionEvent | None]] = field(

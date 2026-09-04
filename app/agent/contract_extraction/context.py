@@ -23,10 +23,10 @@ if TYPE_CHECKING:
         ContractClassificationResult,
     )
 
-CONTRACT_BASE_CONTEXT_VERSION = "contract-base-context-v3"
-CONTRACT_PREFILL_CONTEXT_VERSION = "contract-prefill-context-v5"
+CONTRACT_BASE_CONTEXT_VERSION = "contract-base-context-v4"
+CONTRACT_PREFILL_CONTEXT_VERSION = "contract-prefill-context-v6"
 
-DOCUMENT_STRUCTURE_COMMENTS = """# 权威文档导航结构；用于理解和定位，原始 PDF 仍是最终事实来源。
+DOCUMENT_STRUCTURE_COMMENTS = """# 权威文档导航结构；用于理解和定位，合同页面图像仍是最终事实来源。
 # 字段说明：
 # scope：整份合同的整体认识。
 # units：按原文顺序排列的宏观连续内容单元。
@@ -35,7 +35,7 @@ DOCUMENT_STRUCTURE_COMMENTS = """# 权威文档导航结构；用于理解和定
 # reasoning_summary：证据如何支持当前结构决定的简洁说明。
 # decision：整体主题或单元边界的最终决定。"""
 
-CLASSIFICATION_COMMENTS = """# 已确认的合同分类结果；用于理解交易场景和适用规则，原始 PDF 仍是最终事实来源。
+CLASSIFICATION_COMMENTS = """# 已确认的合同分类结果；用于理解交易场景和适用规则，合同页面图像仍是最终事实来源。
 # 字段说明：
 # status：classified 表示至少命中一类；unmapped 表示完整判别后未命中；partial/failed 表示判别不完整。
 # matches：全部命中类别；同一合同可以命中多个类别。
@@ -91,11 +91,11 @@ def build_contract_base_messages(
     prompt_pages: Iterable[PDFPromptPage],
     structure: DocumentStructureMetadata,
 ) -> list[dict[str, Any]]:
-    """复用 PDF 公共前缀，并在末尾稳定追加权威文档结构。"""
+    """复用页面图像公共前缀，并在末尾稳定追加权威文档结构。"""
     messages = build_pdf_common_messages(pages, prompt_pages)
     content = messages[-1]["content"]
     if not isinstance(content, list):
-        raise TypeError("PDF 公共 user 消息必须使用内容块列表")
+        raise TypeError("页面图像公共 user 消息必须使用内容块列表")
     structure_data = structure.model_dump(mode="json", exclude={"document_id"})
     content.append(
         {

@@ -1,4 +1,4 @@
-"""PDF 查重工作流的稳定模型输入入口。"""
+"""合同文档查重工作流的稳定模型输入入口。"""
 
 from app.agent.pdf_deduplication.prompt.full_document import (
     FULL_DOCUMENT_JUDGMENT_PROMPT_VERSION,

@@ -22,11 +22,15 @@ from app.agent.pdf_deduplication import build_pdf_deduplication_graph
 from app.core.config import get_settings
 from app.infrastructure.contract_index import synchronize_contract_index
 from app.infrastructure.contract_file_store import LocalContractFileStore
+from app.infrastructure.contract_metadata_store import (
+    SQLiteContractMetadataStore,
+)
 from app.infrastructure.elasticsearch import create_elasticsearch_client
 from app.infrastructure.pdf_candidate_loader import (
     LocalPDFDuplicateCandidateLoader,
 )
 from app.service.auth import AuthService, LoginCodeCache
+from app.service.contract_ingestion import ContractIngestionService
 from app.service.contract_extraction import (
     AgentContractDocumentDetectionExecutor,
     AgentContractExtractionExecutor,
@@ -103,9 +107,10 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 
         pdf_candidate_loader = LocalPDFDuplicateCandidateLoader(settings.mllm)
         application.state.pdf_duplicate_candidate_loader = pdf_candidate_loader
-        application.state.contract_file_store = LocalContractFileStore(
+        contract_file_store = LocalContractFileStore(
             root=pdf_candidate_loader.root
         )
+        application.state.contract_file_store = contract_file_store
         contract_document_detection_graph = (
             build_contract_document_detection_graph()
         )
@@ -130,6 +135,24 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
             retrieval_guide_catalog=retrieval_view_guide_catalog,
         )
         pdf_preparation_service = AsyncPDFPreparationService(settings.mllm)
+        contract_metadata_store = SQLiteContractMetadataStore(
+            settings.contract_metadata_database_path
+        )
+        contract_ingestion_service = ContractIngestionService(
+            elasticsearch=elasticsearch,
+            index_name=settings.elasticsearch_index_name,
+            file_store=contract_file_store,
+            metadata_store=contract_metadata_store,
+            field_catalog=field_definition_catalog,
+            vector_dimensions=settings.elasticsearch_vector_dimensions,
+        )
+        await contract_ingestion_service.initialize()
+        application.state.contract_metadata_store = contract_metadata_store
+        application.state.contract_ingestion_service = contract_ingestion_service
+        logger.info(
+            "SQLite 合同元数据目录初始化完成：database=%s",
+            contract_metadata_store.database_path,
+        )
         contract_extraction_service = ContractExtractionService(
             executor=executor,
             document_detection_executor=(
@@ -141,6 +164,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
                 pdf_deduplication_graph
             ),
             pdf_preparation_service=pdf_preparation_service,
+            ingestion_service=contract_ingestion_service,
             run_ttl_seconds=settings.contract_extraction_run_ttl_seconds,
             deduplication_review_ttl_seconds=(
                 settings.contract_deduplication_review_ttl_seconds

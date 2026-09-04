@@ -19,23 +19,23 @@
 | `app.user` | 定义审核用户对象，并加载启动期 YAML 内存快照。 |
 | `app.tool` | 存放无业务状态的通用技术工具，例如 PDF 页面渲染和压缩。 |
 
-路由层只负责协议转换和依赖装配；服务层负责业务用例、权限、幂等性和持久化边界；复杂的模型编排与状态流转位于 `agent`。`app.router.contract` 是合同事务的统一 HTTP/SSE 路由模块，当前承载合同上传、查重暂停与继续、提取状态、草稿和重试接口，并统一使用 `/contract/api/contract` 业务前缀。
+路由层只负责协议转换和依赖装配；服务层负责业务用例、权限、幂等性和持久化边界；复杂的模型编排与状态流转位于 `agent`。`app.router.contract` 是合同事务的统一 HTTP/SSE 路由模块，当前承载合同上传、查重暂停与继续、提取状态、草稿、重试和正式入库接口，并统一使用 `/contract/api/contract` 业务前缀。
 
-`app.bootstrap` 是框架入口与业务实现之间唯一的启动期组合根。`app.main` 只将其 `lifespan` 注册到 FastAPI；`core` 不依赖具体基础设施，`infrastructure` 也不负责组装业务服务。这样可以在不扩大领域层职责的前提下集中管理 Elasticsearch、内存任务服务和业务目录快照。
+`app.bootstrap` 是框架入口与业务实现之间唯一的启动期组合根。`app.main` 只将其 `lifespan` 注册到 FastAPI；`core` 不依赖具体基础设施，`infrastructure` 也不负责组装业务服务。这样可以在不扩大领域层职责的前提下集中管理 Elasticsearch、内存任务服务、正式入库服务和业务目录快照。
 
 `tool` 中的函数不应依赖 FastAPI 请求对象、工作流状态或业务字段定义；`agent` 与 `service` 可调用它们完成 PDF、图像、哈希和稳定序列化等通用处理。
 
 ---
 
-## Elasticsearch 边界
+## 正式持久化边界
 
-Elasticsearch 是当前唯一规划的正式持久化和检索后端。应用启动时按 `ELASTICSEARCH_HOSTS` 创建一个无认证 HTTP `AsyncElasticsearch` 客户端，随后探测 `ELASTICSEARCH_INDEX_NAME`：索引不存在时创建完整合同 mapping，存在时增量补齐配置新增的 Core mapping。Elasticsearch 不可达或 mapping 冲突会阻止 API 启动；客户端在应用关闭或启动失败时统一释放。
+SQLite 是正式合同文件管理的权威目录，Elasticsearch 是完整合同内容和检索后端。应用启动时按 `ELASTICSEARCH_HOSTS` 创建一个无认证 HTTP `AsyncElasticsearch` 客户端并探测 `ELASTICSEARCH_INDEX_NAME`：索引不存在时创建完整合同 mapping，存在时增量补齐配置新增的 Core mapping；随后初始化 `CONTRACT_METADATA_DATABASE_FILE` 指向的 SQLite 文件（默认 `data/abstract/contracts.db`），并对非就绪记录执行 PDF 与 ES 对账。Elasticsearch 不可达、mapping 冲突或启动对账无法完成都会阻止 API 启动；客户端在应用关闭或启动失败时统一释放。
 
 > **安全边界：** 当前客户端不配置身份认证和 TLS，只能连接本机回环地址或由网络层隔离的受信 Elasticsearch 节点，不得直接连接公网暴露的实例。
 
-自动合同处理的原始 PDF 只在创建请求期间存在，随后释放；按视觉预算重新封装的处理版 PDF、同源页面缓存、阶段状态和草稿不写入 Elasticsearch，只驻留当前 API 进程内存。只有未来由专家确认后的最终对象才允许进入正式索引；完整边界见[合同提取应用运行时](../../architecture/system/contract-extraction-runtime.md)。
+自动合同处理的原始 PDF 只在创建请求期间存在，随后释放；按视觉预算重新封装的处理版 PDF、同源页面缓存、阶段状态和草稿不写入 Elasticsearch，只驻留当前 API 进程内存。只有审核用户通过正式入库接口提交的最终对象才允许进入正式索引；完整边界见[合同提取应用运行时](../../architecture/system/contract-extraction-runtime.md)。
 
-需要访问 Elasticsearch 的路由或服务通过 `get_elasticsearch_client` 注入客户端。复核后合同的目标索引结构和启动同步边界见[合同 Elasticsearch 文档结构](../../architecture/data/contract-elasticsearch-document.md)；当前已经实现索引及 mapping 初始化，但尚未实现正式入库。
+需要访问 Elasticsearch 的路由或服务复用应用生命周期中的共享客户端。正式文件列表只读取 SQLite 中的 `ready` 记录，不依赖 ES。SQLite 目录见[合同 SQLite 元数据结构](../../architecture/data/contract-sqlite-metadata.md)，目标索引结构和启动同步边界见[合同 Elasticsearch 文档结构](../../architecture/data/contract-elasticsearch-document.md)；三处持久化流程见[复核后合同正式入库](contract-ingestion.md)。
 
 ---
 
@@ -90,13 +90,12 @@ python -m app.main
 
 ## 本地模型配置
 
-三个本地 vLLM 服务均通过环境变量配置，API 密钥分别从 `VLLM_MLLM_API_KEY`、`VLLM_EMBEDDING_API_KEY` 和 `VLLM_RERANKER_API_KEY` 读取。
+两个本地 vLLM 服务均通过环境变量配置，API 密钥分别从 `VLLM_MLLM_API_KEY` 和 `VLLM_EMBEDDING_API_KEY` 读取。
 
 | 模型 | 默认地址 | 端点 | 主要职责 |
 | --- | --- | --- | --- |
 | MLLM | `http://127.0.0.1:8000/v1` | `chat_completions` | 合同的 Core、Clause 与 Retrieval Question 生成。 |
 | Embedding | `http://127.0.0.1:8001/v1` | `embeddings` | 字段、合同与候选的向量化。 |
-| Reranker | `http://127.0.0.1:8002/v1` | `rerank` | 检索候选的重排。 |
 
 MLLM 的三条业务线路共享 `VLLM_MLLM_MAX_CONCURRENT_REQUESTS=20`。应用使用官方异步 `AsyncOpenAI` 客户端和自定义 `base_url` 对接 vLLM；本地服务没有配置 key 时，适配器仅为满足 SDK 初始化提供非敏感占位值。`VLLM_MLLM_USE_MEDIA_REFERENCES=true` 默认启用 vLLM 0.21+ 的媒体 UUID 协议，使同页首次上传后只传引用；服务版本、缓存失效和回退要求见[vLLM 多模态媒体引用](../infrastructure/vllm-media-reference.md)。严格 JSON 提取必须使用 `VLLM_MLLM_ENABLE_THINKING=false`，不能继承模型默认思考模式。
 

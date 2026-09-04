@@ -19,7 +19,7 @@ class StrictCandidateJudgmentToolModel(BaseModel):
 StrictFullDocumentToolModel = StrictCandidateJudgmentToolModel
 
 
-FULL_DOCUMENT_JUDGMENT_TOOL_VERSION: Final = "full-document-relation-tool-v2"
+FULL_DOCUMENT_JUDGMENT_TOOL_VERSION: Final = "full-document-relation-tool-v3"
 
 
 class ContractRelationEvidence(StrictCandidateJudgmentToolModel):
@@ -27,11 +27,11 @@ class ContractRelationEvidence(StrictCandidateJudgmentToolModel):
 
     uploaded_page_number: int = Field(
         ge=1,
-        description="该证据对应的上传合同 A 的 PDF 物理页码，从 1 开始。",
+        description="该证据所在上传合同 A 页面的物理页码，从 1 开始。",
     )
     candidate_page_number: int = Field(
         ge=1,
-        description="该证据对应的候选合同 B 的 PDF 物理页码，从 1 开始。",
+        description="该证据所在候选合同 B 页面的物理页码，从 1 开始。",
     )
     observation: str = Field(
         max_length=500,

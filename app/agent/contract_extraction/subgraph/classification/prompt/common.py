@@ -8,15 +8,15 @@ from typing import Any
 
 from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
 
-CLASSIFICATION_COMMON_PROMPT_VERSION = "classification-common-v7"
+CLASSIFICATION_COMMON_PROMPT_VERSION = "classification-common-v8"
 
-CLASSIFICATION_COMMON_HEADER = """你已获得当前合同的原始 PDF、文档导航结构和单类别判别通用规则。当前唯一目标类别的权威定义及专家正反例将在独立材料中给出；只有读到这些类别资料后才能作出判断。"""
+CLASSIFICATION_COMMON_HEADER = """你已获得当前合同按原始顺序排列的页面图像、文档导航结构和单类别判别通用规则。当前唯一目标类别的权威定义及专家正反例将在独立材料中给出；只有读到这些类别资料后才能作出判断。"""
 
 CLASSIFICATION_COMMON_TASK = f"""任务目标：
 判断当前合同是否具备目标类别定义要求的核心权利义务结构。当前任务只判断一个目标类别；一份合同可以同时命中多个类别，同一复合交易在分别完整满足多个类别的核心结构时也允许多标签。
 
 事实与规则优先级：
-1. 原始 PDF 是唯一事实来源，已提供的文档导航结构只用于定位，不得替代页面证据。
+1. 合同页面图像是唯一事实来源，已提供的文档导航结构只用于定位，不得替代页面证据。
 2. 只使用文档导航结构中的单元页码、文字锚点和摘要辅助导航；忽略 unit_locations 坐标，不按坐标裁剪页面，也不输出视觉位置。导航信息不足时必须核查完整相关页面，不能据此作出否定分类。
 3. 当前类别的 definition.yaml 是类别语义和边界的唯一权威定义。
 4. positive 与 negative 专家卡片只用于校准典型情形和相邻边界，不得覆盖、扩展或修改权威定义，也不得把示例事实复制到当前合同。

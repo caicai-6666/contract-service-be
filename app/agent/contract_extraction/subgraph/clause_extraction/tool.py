@@ -25,9 +25,9 @@ class StrictClauseToolModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
-CLAUSE_DISCOVERY_TOOL_VERSION: Final = "clause-discovery-tool-v9"
+CLAUSE_DISCOVERY_TOOL_VERSION: Final = "clause-discovery-tool-v10"
 CLAUSE_DISCOVERY_TOOL_CHOICE: Final = TOOL_CHOICE_AUTO
-CLAUSE_CONTENT_TOOL_VERSION: Final = "clause-content-tool-v9"
+CLAUSE_CONTENT_TOOL_VERSION: Final = "clause-content-tool-v10"
 # 条款正文是长文本并发任务。保持 auto，配合非 strict 工具，避开 vLLM
 # XGrammar 的逐 token Schema 约束；程序仍在调用后严格解析并校验正文边界。
 CLAUSE_CONTENT_TOOL_CHOICE: Final = TOOL_CHOICE_AUTO
@@ -38,7 +38,7 @@ class ClauseBoundaryAnchor(StrictClauseToolModel):
 
     page_number: int = Field(
         ge=1,
-        description="该边界锚点所在的 PDF 物理页码，从 1 开始；不是合同印刷页码。",
+        description="该边界锚点所在合同页面的物理页码，从 1 开始；不是页面中印刷的页码。",
     )
     anchor: str = Field(
         max_length=160,
@@ -84,7 +84,7 @@ class ClauseCompletionEvidence(StrictClauseToolModel):
 
     page_number: int = Field(
         ge=1,
-        description="结束检查证据所在的 PDF 物理页码，从 1 开始。",
+        description="结束检查证据所在合同页面的物理页码，从 1 开始。",
     )
     content: str = Field(
         max_length=200,
@@ -110,7 +110,7 @@ class ClauseHierarchyObservation(StrictClauseToolModel):
         min_length=1,
         max_length=20,
         description=(
-            "支持当前结构观察的 PDF 物理页码，按升序填写且不得重复；"
+            "支持当前结构观察的合同页面物理页码，按升序填写且不得重复；"
             "页码从 1 开始，不使用合同印刷页码。"
         ),
     )
@@ -242,14 +242,14 @@ class ClauseDocumentPathSegment(StrictClauseToolModel):
     identifier: str = Field(
         max_length=120,
         description=(
-            "该层在 PDF 中可见的原始编号或稳定标识；纯标题没有编号时使用其简短原文标题，"
+            "该层在合同页面中可见的原始编号或稳定标识；纯标题没有编号时使用其简短原文标题，"
             "不得改写成推测编号或复制正文。"
         ),
     )
     title_hint: str | None = Field(
         max_length=120,
         description=(
-            "该层在 PDF 中明确可见或可可靠概括的简短主题；无法确认时传 null。"
+            "该层在合同页面中明确可见或可可靠概括的简短主题；无法确认时传 null。"
             "纯结构标题即使不进入正文候选，也必须在路径中保留。"
         ),
     )
@@ -395,7 +395,7 @@ class ClauseDiscoveryCompletion(StrictClauseToolModel):
     last_checked_page: int = Field(
         ge=1,
         description=(
-            "实际完成条款候选检查的最后 PDF 物理页码，不得早于工作区最后一个候选的起始页。"
+            "实际完成条款候选检查的最后合同页面物理页码，不得早于工作区最后一个候选的起始页。"
         ),
     )
     last_checked_anchor: str = Field(

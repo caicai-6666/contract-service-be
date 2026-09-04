@@ -16,8 +16,8 @@ from app.agent.contract_extraction.subgraph.field_extraction.definition import (
 )
 from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
 
-CORE_COMMON_PROMPT_VERSION = "core-common-v4"
-CORE_EXTRACTION_PROMPT_VERSION = "core-extraction-v6"
+CORE_COMMON_PROMPT_VERSION = "core-common-v5"
+CORE_EXTRACTION_PROMPT_VERSION = "core-extraction-v7"
 
 FIELD_DEFINITION_GUIDE = """提取对象定义属性说明：
 - name：当前唯一处理的对象类别；不能改名或创造新类别。
@@ -28,9 +28,9 @@ FIELD_DEFINITION_GUIDE = """提取对象定义属性说明：
 - 属性 type 只允许 string、integer、number、boolean；属性值不能是对象或数组。
 - required 为 false 的属性没有可靠证据时直接省略，不使用 null 或伪造默认值。"""
 
-CORE_COMMON_TASK = """你已获得当前合同的原始 PDF、文档导航结构、分类结果和 Core 对象提取通用规则。当前唯一对象定义及与其匹配的工具将在独立材料中给出；只有读到对象定义和可用工具后才能执行提取。
+CORE_COMMON_TASK = """你已获得当前合同按原始顺序排列的页面图像、文档导航结构、分类结果和 Core 对象提取通用规则。当前唯一对象定义及与其匹配的工具将在独立材料中给出；只有读到对象定义和可用工具后才能执行提取。
 
-原始 PDF 是唯一事实来源，已提供的文档导航结构和合同分类只用于导航与规则选择，不能替代页面证据。
+合同页面图像是唯一事实来源，已提供的文档导航结构和合同分类只用于导航与规则选择，不能替代页面证据。
 
 执行要求：
 1. 每轮必须且只能调用本轮实际提供的一个工具，禁止输出普通文本。可用终止工具会根据已经成功提取的对象变化；只能调用当前确实可见的工具。

@@ -6,7 +6,7 @@
 
 ## 子图定位
 
-分类子图位于基础前缀组装节点与最终前缀组装节点之间。它读取已经稳定组装的 `ContractBaseContext`、启动期类别快照和 PDF 页数，对全部已知类别分别判断合同是否具备该类别的核心权利义务结构，并将紧凑分类结果交给最终前缀组装节点。
+分类子图位于基础前缀组装节点与最终前缀组装节点之间。它读取已经稳定组装的 `ContractBaseContext`、启动期类别快照和合同总页数，对全部已知类别分别判断合同是否具备该类别的核心权利义务结构，并将紧凑分类结果交给最终前缀组装节点。
 
 ```mermaid
 flowchart TD
@@ -24,9 +24,9 @@ flowchart TD
 
 ## 分类公共前缀节点
 
-`assemble_classification_context` 读取版本为 `contract-base-context-v3` 的不可变 `ContractBaseContext`，深复制其消息后，只在最后一个 user 内容块尾部追加分类公共规则，生成新的不可变 `ClassificationContext`。产物保留同一 `document_id`，独立记录 `classification-common-v7` 提示词版本和完整消息指纹，不修改或覆盖基础前缀。
+`assemble_classification_context` 读取版本为 `contract-base-context-v4` 的不可变 `ContractBaseContext`，深复制其消息后，只在最后一个 user 内容块尾部追加分类公共规则，生成新的不可变 `ClassificationContext`。产物保留同一 `document_id`，独立记录 `classification-common-v8` 提示词版本和完整消息指纹，不修改或覆盖基础前缀。
 
-公共规则统一说明单类别二元判断目标、原始 PDF 事实边界、权威定义与专家卡片优先级、多标签核心权利义务判断方法，以及三个工具的短期记忆和终止协议。同一复合交易分别完整满足多个类别的核心结构时允许多标签；相邻类别可能成立不能自动否定当前类别。分类只使用文档结构中的单元页码、文字锚点和摘要辅助导航，明确忽略 `unit_locations` 坐标，不裁剪页面，也不输出视觉位置；导航不足时回退完整相关页面。`think` 被明确约束为依次比较核心交换、成立条件、排除规则、相邻类别和证据强弱；输出顺序固定为证据、推理摘要、决定。
+公共规则统一说明单类别二元判断目标、合同页面图像事实边界、权威定义与专家卡片优先级、多标签核心权利义务判断方法，以及三个工具的短期记忆和终止协议。同一复合交易分别完整满足多个类别的核心结构时允许多标签；相邻类别可能成立不能自动否定当前类别。分类只使用文档结构中的单元页码、文字锚点和摘要辅助导航，明确忽略 `unit_locations` 坐标，不裁剪页面，也不输出视觉位置；导航不足时回退完整相关页面。`think` 被明确约束为依次比较核心交换、成立条件、排除规则、相邻类别和证据强弱；输出顺序固定为证据、推理摘要、决定。
 
 节点不读取或插入任何具体类别名称、`definition.yaml`、正反例、运行编号和工具历史。后续并行判别必须直接复用 `ClassificationContext`，再按稳定顺序追加当前类别定义、positive 卡片和 negative 卡片，使所有类别请求只从类别专属资料处开始分叉。
 
@@ -70,11 +70,11 @@ flowchart TD
 
 `category_code` 与 `category_name` 不属于模型参数。程序必须从当前请求对应的权威 `definition.yaml` 注入这两个身份，并与模型提交的证据、推理摘要和场景概括共同构造 `CategoryMatchCard`。这样可以避免模型改写目标类别，也能让最终前缀和下游节点获得稳定、可审计的分类卡片。
 
-工具成功反馈只保留是否接受和一句后续指引；错误反馈必须指出参数路径、具体问题和修正方向。参数缺失时要求补充，出现未定义参数时要求删除，类型或取值错误时要求按当前工具 Schema 修正。工具层只校验静态结构，页码是否超出当前 PDF 范围仍由后续节点结合文档状态校验。
+工具成功反馈只保留是否接受和一句后续指引；错误反馈必须指出参数路径、具体问题和修正方向。参数缺失时要求补充，出现未定义参数时要求删除，类型或取值错误时要求按当前工具 Schema 修正。工具层只校验静态结构，页码是否超出当前合同页面范围仍由后续节点结合文档状态校验。
 
 `classify_contract` 按 MLLM 共享并发配额并发处理全部类别，每个类别拥有隔离的 messages、工具反馈和最多八轮短期记忆。没有恰好一个工具调用时，程序保留有限原始文本到私有审计，追加不回显原文的 XML 纠正反馈并提供两次恢复机会；未知工具、参数错误、连续 `think` 超限和终止证据页码越界也进入同一临时纠错记忆。后续动作通过全部校验后删除整条错误轨迹，只保留正确动作和私有审计；连续第三次协议失败才把该类别标记为 `failed`。终止工具引用的页码必须位于 `1..page_count`，单个类别失败不会取消其他类别任务。
 
-当全部类别成功结束且没有任何 `matched` 时，节点额外发起一次 `unmapped-type-description-v3` 请求。该请求复用分类公共前缀，只提供一个 non-strict `describe_unmapped_type` 工具，并采用同一有界协议恢复，让模型按证据、推理摘要、最终描述生成一段简短中文交易类型说明。它不创建类别 code、不命名为 `other`、不写定义目录，也不触发第二套类别发现流程；`partial` 或 `failed` 不调用该兜底，因为此时不能确认正式目录确实没有覆盖合同。
+当全部类别成功结束且没有任何 `matched` 时，节点额外发起一次 `unmapped-type-description-v4` 请求。该请求复用分类公共前缀，只提供一个 non-strict `describe_unmapped_type` 工具，并采用同一有界协议恢复，让模型按证据、推理摘要、最终描述生成一段简短中文交易类型说明。它不创建类别 code、不命名为 `other`、不写定义目录，也不触发第二套类别发现流程；`partial` 或 `failed` 不调用该兜底，因为此时不能确认正式目录确实没有覆盖合同。
 
 兜底请求失败不改变 `unmapped` 状态，也不阻断下游：公开结果的 `unmapped_type_description` 保持 `null`，错误只记录在私有运行审计中。请求成功时，公开结果只携带最终描述字符串；证据和推理摘要留在 `classification_run`，避免继续放大下游前缀。
 
@@ -86,13 +86,13 @@ flowchart TD
 
 进度通过任务局部的观察回调传递，不写入 `ClassificationSubgraphState`、模型消息、工具审计或下游分类结果。一个类别的进度和上下文都不能进入其他并发类别或其他合同任务。
 
-分类阶段成功后，应用层保存紧凑分类投影，并将同一结果放入该阶段的 `stage.completed` SSE 事件，向前端及时提供分类状态、命中类别 `code`、名称和当前合同场景；未映射时提供简短类型描述。该投影也持续出现在单任务 GET 快照的 `run.classification` 中，以支持断线和任务恢复，但不进入可编辑的最终 Core/Clause `draft`。公共结果不携带分类证据、失败类别或工具轨迹。
+分类阶段成功后，应用层保存紧凑分类投影，并将同一结果放入该阶段的 `stage.completed` SSE 事件，向前端及时提供分类状态、命中类别 `code`、名称和当前合同场景；未映射时提供简短类型描述。该投影也持续出现在单任务 GET 快照的 `run.classification` 中，以支持断线和任务恢复，但不进入可编辑的最终 Core/Clause `draft`。公共结果不携带分类证据、失败类别或工具轨迹。应用随后执行建议文件名阶段，建议名称成功后才启动 Core、Clause 和 Retrieval 三个业务分支。
 
 ---
 
 ## 状态边界
 
-- 输入：不可变的 `contract-base-context-v3` `ContractBaseContext`、启动期 `ContractCategoryCatalog` 和物理 `page_count`。
+- 输入：不可变的 `contract-base-context-v4` `ContractBaseContext`、启动期 `ContractCategoryCatalog` 和物理 `page_count`。
 - 中间状态：不可变的 `ClassificationContext`，包含基础前缀与分类公共规则；只供分类子图内部使用。
 - 私有输出：`ContractClassificationRun` 保存全部类别的 `matched`、`not_matched` 或 `failed` 终态、工具审计、用量、耗时，以及可选的未映射描述证据、错误和兜底工具审计，只供运行观测与实验分析。
 - 下游输出：`ContractClassificationResult` 保存状态、目录与提示词版本、命中卡片、失败类别 code，以及 `unmapped` 时可选的一段类型描述，并追加到 `ContractPrefillContext`；未命中证据、工具历史和短期记忆不进入下游公共前缀。

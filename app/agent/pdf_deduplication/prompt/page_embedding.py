@@ -1,17 +1,17 @@
-"""Qwen3-VL-Embedding 合同 PDF 单页近重复检索输入契约。"""
+"""Qwen3-VL-Embedding 合同页面图像近重复检索输入契约。"""
 
 from __future__ import annotations
 
 from typing import Final, Literal
 
-PDFPageEmbeddingInputVersion = Literal["contract-near-duplicate-v1"]
+PDFPageEmbeddingInputVersion = Literal["contract-near-duplicate-v2"]
 
 PDF_PAGE_EMBEDDING_INPUT_VERSION: Final[PDFPageEmbeddingInputVersion] = (
-    "contract-near-duplicate-v1"
+    "contract-near-duplicate-v2"
 )
 
 PDF_PAGE_EMBEDDING_SYSTEM_INSTRUCTION: Final = (
-    "为合同 PDF 近重复检索表示此页面。重点保留可见文字、数字、表格、版式、"
+    "为合同页面图像近重复检索表示此页面。重点保留可见文字、数字、表格、版式、"
     "页面结构、页眉页脚、印章与签名；忽略压缩、缩放、渲染差异和轻微扫描"
     "噪声，但保留合同主体、金额、日期、条款、页码及签章等实质差异。"
 )
@@ -22,9 +22,9 @@ def build_pdf_page_embedding_messages(
 ) -> list[dict[str, object]]:
     """构造稳定的单页对称编码消息，不注入页面外文本或运行时元数据。"""
     if not image_data_url.startswith("data:image/png;base64,"):
-        raise ValueError("PDF 页面向量化只接受 PNG data URL")
+        raise ValueError("合同页面向量化只接受 PNG data URL")
     if image_data_url == "data:image/png;base64,":
-        raise ValueError("PDF 页面 PNG data URL 不能为空")
+        raise ValueError("合同页面 PNG data URL 不能为空")
     return [
         {
             "role": "system",

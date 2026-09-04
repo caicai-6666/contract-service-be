@@ -15,8 +15,8 @@ from app.agent.contract_extraction.subgraph.clause_extraction.tool import (
 )
 from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
 
-CLAUSE_CONTENT_COMMON_PROMPT_VERSION: Final = "clause-content-common-v10"
-CLAUSE_CONTENT_TARGET_PROMPT_VERSION: Final = "clause-content-target-v4"
+CLAUSE_CONTENT_COMMON_PROMPT_VERSION: Final = "clause-content-common-v11"
+CLAUSE_CONTENT_TARGET_PROMPT_VERSION: Final = "clause-content-target-v5"
 CLAUSE_CONTENT_TOOL_PLACEMENT: Final = "before_task"
 
 CATALOG_BEGIN: Final = "===== 条款候选目录：开始 ====="
@@ -26,31 +26,31 @@ TARGET_END: Final = "===== 当前唯一条款：结束 ====="
 
 CLAUSE_CATALOG_COMMENTS: Final = """# 程序已经校验并冻结的条款候选目录；这是正文边界和父子关系的权威输入。
 # 字段说明：
-# candidate_id：程序生成的稳定候选 ID；详情结果通过它关联本目录和 PDF 证据。
+# candidate_id：程序生成的稳定候选 ID；详情结果通过它关联本目录和页面证据。
 # order：候选在整份合同中的原始发现顺序。
 # identifier / title_hint：页面可见的原始编号和可空主题提示；不得据此补写正文。
 # document_path / level：原合同从最外层到当前候选的完整路径和绝对深度；包含未提取正文的纯标题。
 # parent_candidate_id：路径上最近的已记录正文祖先；null 不代表当前候选一定处于原合同顶层。
 # evidence.start：属于当前候选的包含式起始物理页码和原文 anchor。
 # evidence.end：属于当前候选自身末尾的包含式物理页码和原文 anchor；不得为空。
-# 目录只负责定位和排除重叠；原始 PDF 页面仍是正文内容的唯一事实来源。"""
+# 目录只负责定位和排除重叠；合同页面图像仍是正文内容的唯一事实来源。"""
 
 CLAUSE_TARGET_COMMENTS: Final = """# 当前任务只处理一个候选；不得提取、修正或合并其他候选。
 # 字段说明：
 # candidate：当前唯一候选的完整程序记录；必须同时包含其 start 和 end anchor。"""
 
-_CLAUSE_CONTENT_COMMON_TASK_BASE: Final = """你已获得当前合同的原始 PDF、文档导航结构、分类结果和程序冻结的完整条款候选目录。当前任务是在收到唯一候选后，从原始 PDF 提取该候选的完整直接原文；唯一候选会在独立材料中明确指定。
+_CLAUSE_CONTENT_COMMON_TASK_BASE: Final = """你已获得当前合同按原始顺序排列的页面图像、文档导航结构、分类结果和程序冻结的完整条款候选目录。当前任务是在收到唯一候选后，从合同页面提取该候选的完整直接原文；唯一候选会在独立材料中明确指定。
 
 事实与权限边界：
-1. 原始 PDF 页面是正文字符、标点、换行、项目符号和表格内容的唯一事实来源。
+1. 合同页面图像是正文字符、标点、换行、项目符号和表格内容的唯一事实来源。
 2. 条款候选目录是候选身份、层级、父子关系和起止边界的权威来源；不得新增、删除、合并、拆分、重排或修正候选。
-3. 文档结构和合同分类只用于导航与理解语境，不能覆盖 PDF 原文或候选边界。
+3. 文档结构和合同分类只用于导航与理解语境，不能覆盖页面原文或候选边界。
 4. 当前没有获得字段或检索视图结果，也不需要这些信息；不得使用文件名、模板、常识或法律知识补全文字。
 
 完整直接内容定义：
 1. 叶子候选：从 evidence.start 的包含式 anchor 开始，提取至 evidence.end 的包含式 anchor；start 和 end 都属于当前候选并必须出现在 content 中。
 2. 父候选：保留父候选自己的编号、标题、引导语以及不属于任何子孙候选的独立正文；排除目录中全部子孙候选的编号、标题和正文，避免父子结果重复。
-3. 父候选的直接正文可能分布在子条款之前或之后。按 PDF 原始阅读顺序保留这些直接片段，片段之间使用一个空行连接，不添加“已省略子条款”等非原文标记。
+3. 父候选的直接正文可能分布在子条款之前或之后。按合同页面的原始阅读顺序保留这些直接片段，片段之间使用一个空行连接，不添加“已省略子条款”等非原文标记。
 4. 候选目录只包含已经确认具有自身直接正文的候选；不要用子条款、相邻文字或常识填充当前候选，也不要把目录中的结构关系误当成正文。
 
 原文保真规则：
@@ -71,7 +71,7 @@ _CLAUSE_CONTENT_COMMON_TASK_BASE: Final = """你已获得当前合同的原始 P
 1. content 从当前候选起始 anchor 开始，且没有漏掉候选自己的直接正文。
 2. 当前候选自身的结束 anchor 已包含，且没有继续提取相邻候选或非条款区域。
 3. 父候选 content 不含任何 descendants 的起始 anchor 或正文；叶子候选没有擅自排除合法内容。
-4. 输出只含 PDF 可见原文和必要的局部“〔无法辨认〕”标记，没有摘要、解释、补全或其他候选内容。"""
+4. 输出只含页面可见原文和必要的局部“〔无法辨认〕”标记，没有摘要、解释、补全或其他候选内容。"""
 CLAUSE_CONTENT_COMMON_TASK: Final = (
     f"{_CLAUSE_CONTENT_COMMON_TASK_BASE}\n\n工具调用格式：\n"
     f"{TOOL_CALL_XML_INSTRUCTION}"
@@ -152,7 +152,7 @@ def render_clause_content_target(
         payload=payload,
     )
     instruction = (
-        f"只提取 {candidate.candidate_id} 的完整直接原文。读取原始 PDF 核对内容，"
+        f"只提取 {candidate.candidate_id} 的完整直接原文。读取合同页面核对内容，"
         "先在 reasoning_summary 中说明边界应用，再调用 extract_clause_content "
         "提交 content。"
     )

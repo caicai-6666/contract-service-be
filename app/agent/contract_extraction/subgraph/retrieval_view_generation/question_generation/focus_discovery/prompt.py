@@ -10,13 +10,13 @@ from app.agent.contract_extraction.subgraph.retrieval_view_generation.question_g
 )
 from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
 
-QUESTION_FOCUS_DISCOVERY_PROMPT_VERSION: Final = "retrieval-question-focus-v1"
+QUESTION_FOCUS_DISCOVERY_PROMPT_VERSION: Final = "retrieval-question-focus-v2"
 QUESTION_FOCUS_DISCOVERY_TOOL_PLACEMENT: Final = "before_task"
 
-_QUESTION_FOCUS_DISCOVERY_TASK_BASE = """你已获得当前合同的完整原始 PDF、权威文档导航结构、已确认分类结果和完整提问指南。当前任务是按真实用户检索价值从高到低，逐个发现值得用于生成正式问题的关注点要求；现在不生成正式问题或答案。
+_QUESTION_FOCUS_DISCOVERY_TASK_BASE = """你已获得当前合同按原始顺序排列的完整页面图像、权威文档导航结构、已确认分类结果和完整提问指南。当前任务是按真实用户检索价值从高到低，逐个发现值得用于生成正式问题的关注点要求；现在不生成正式问题或答案。
 
 事实与选择边界：
-1. 原始 PDF 是合同事实的唯一权威来源；文档导航结构和分类结果只帮助定位与理解，不能替代页面核查。
+1. 合同页面图像是合同事实的唯一权威来源；文档导航结构和分类结果只帮助定位与理解，不能替代页面核查。
 2. 提问指南是候选方向和判断规则，不证明当前合同已经具备相应事项；必须先核查合同证据与适用性。
 3. 合同已有明确约定，或者事项适用但合同可能存在会实质影响交易的重要缺失，都可以形成关注点；明显不适用、纯结构过滤或没有真实查询价值的事项不得提交。
 4. 每次优先提交尚未记录事项中，对合同目的、交易内容、履行完成、付款结算、交付验收、风险承担或责任救济影响最大的关注点；低价值事项后置。

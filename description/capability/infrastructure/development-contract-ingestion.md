@@ -8,7 +8,7 @@
 
 脚本位于 `scripts/ingest_development_contracts.py`，用于开发环境构造可检索合同数据，不是人工审核接口。合同分类、Core、条款和问题融合向量均来自正式提取流程；审核人和入库时间由脚本提供。
 
-页面视觉向量复用 `contract-near-duplicate-v1` 输入契约：每页并发向量化，尾页权重为 `1.5`，其余页面权重为 `1.0`，加权平均后再次执行 L2 归一化。处理版 PDF 保存为 `data/contract/<document_id>.pdf`，其中 `document_id` 是处理版字节的 SHA-256；ES 中的 `file_uri` 固定写为 `/<document_id>.pdf`，PDF 查重加载器将其直接拼接到 `data/contract` 文件根目录。
+页面视觉向量复用 `contract-near-duplicate-v2` 输入契约：每页并发向量化，尾页权重为 `1.5`，其余页面权重为 `1.0`，加权平均后再次执行 L2 归一化。处理版 PDF 保存为 `data/contract/<document_id>.pdf`，其中 `document_id` 是处理版字节的 SHA-256；ES 中的 `file_uri` 固定写为 `/<document_id>.pdf`，PDF 查重加载器将其直接拼接到 `data/contract` 文件根目录。
 
 脚本默认审核人为 `jason`，入库时间使用运行时的 `Asia/Shanghai` 当前时间。相同合同再次运行时默认跳过已存在的 ES `_id`，便于失败后续跑；传入 `--overwrite` 才会重新提取并更新测试文档。
 

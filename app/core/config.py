@@ -136,28 +136,6 @@ class EmbeddingSettings(BaseModel):
     normalize: bool = True
 
 
-class RerankerSettings(BaseModel):
-    """用于检索重排的本地 vLLM 服务。"""
-
-    model_config = ConfigDict(frozen=True)
-
-    provider: str = "vllm"
-    base_url: str = "http://127.0.0.1:8002/v1"
-    api_key: str | None = None
-    model: str = "qwen3-vl-reranker-8b"
-    endpoint: str = "rerank"
-    timeout_seconds: int = Field(default=60, gt=0)
-    candidate_limit: int = Field(default=20, gt=0)
-    top_n: int = Field(default=5, gt=0)
-
-    @model_validator(mode="after")
-    def validate_candidate_limit(self) -> Self:
-        """重排结果数不能超过候选数。"""
-        if self.top_n > self.candidate_limit:
-            raise ValueError("RERANKER_TOP_N 不能大于 RERANKER_CANDIDATE_LIMIT")
-        return self
-
-
 class PDFDeduplicationSettings(BaseModel):
     """PDF 查重候选召回与逐候选判定配置。"""
 
@@ -188,6 +166,9 @@ class Settings(BaseModel):
     field_definition_dir: Path = Path("data/definition/field")
     retrieval_view_guide_dir: Path = Path("data/definition/retrieval-view")
     reviewer_user_file: Path = Path("data/user/users.yaml")
+    contract_metadata_database_file: Path = Path(
+        "data/abstract/contracts.db"
+    )
     auth_login_code_ttl_seconds: int = Field(default=3600, gt=0)
     retrieval_view_max_questions: int = Field(default=8, gt=0)
     contract_extraction_run_ttl_seconds: int = Field(default=3600, gt=0)
@@ -215,7 +196,6 @@ class Settings(BaseModel):
     elasticsearch_number_of_replicas: int = Field(default=0, ge=0)
     mllm: MLLMSettings = MLLMSettings()
     embedding: EmbeddingSettings = EmbeddingSettings()
-    reranker: RerankerSettings = RerankerSettings()
     pdf_deduplication: PDFDeduplicationSettings = PDFDeduplicationSettings()
 
     @model_validator(mode="after")
@@ -252,6 +232,13 @@ class Settings(BaseModel):
         if self.reviewer_user_file.is_absolute():
             return self.reviewer_user_file
         return _PROJECT_ROOT / self.reviewer_user_file
+
+    @property
+    def contract_metadata_database_path(self) -> Path:
+        """将 SQLite 合同元数据文件固定解析到项目根目录。"""
+        if self.contract_metadata_database_file.is_absolute():
+            return self.contract_metadata_database_file
+        return _PROJECT_ROOT / self.contract_metadata_database_file
 
 
 def _optional_env(name: str) -> str | None:
@@ -301,6 +288,10 @@ def get_settings() -> Settings:
         reviewer_user_file=_env(
             "REVIEWER_USER_FILE",
             "data/user/users.yaml",
+        ),
+        contract_metadata_database_file=_env(
+            "CONTRACT_METADATA_DATABASE_FILE",
+            "data/abstract/contracts.db",
         ),
         auth_login_code_ttl_seconds=_env(
             "AUTH_LOGIN_CODE_TTL_SECONDS",
@@ -402,16 +393,6 @@ def get_settings() -> Settings:
             ),
             dimensions=_env("VLLM_EMBEDDING_DIMENSIONS", "4096"),
             normalize=_env("VLLM_EMBEDDING_NORMALIZE", "true"),
-        ),
-        reranker=RerankerSettings(
-            provider=_env("VLLM_RERANKER_PROVIDER", "vllm"),
-            base_url=_env("VLLM_RERANKER_BASE_URL", "http://127.0.0.1:8002/v1"),
-            api_key=_optional_env("VLLM_RERANKER_API_KEY"),
-            model=_env("VLLM_RERANKER_MODEL", "qwen3-vl-reranker-8b"),
-            endpoint=_env("VLLM_RERANKER_ENDPOINT", "rerank"),
-            timeout_seconds=_env("VLLM_RERANKER_TIMEOUT_SECONDS", "60"),
-            candidate_limit=_env("VLLM_RERANKER_CANDIDATE_LIMIT", "20"),
-            top_n=_env("VLLM_RERANKER_TOP_N", "5"),
         ),
         pdf_deduplication=PDFDeduplicationSettings(
             single_shot_visual_token_ratio=_env(

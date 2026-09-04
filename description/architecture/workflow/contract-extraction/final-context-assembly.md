@@ -6,17 +6,19 @@
 
 ## 节点定位
 
-`assemble_prefill_context` 是主工作流中的确定性节点，位于合同分类与字段、条款、检索问题三个并行分支之间。
+`assemble_prefill_context` 是主工作流中的确定性节点。建议文件名子图先独立消费分类结果，随后本节点组装三个业务分支需要的最终公共前缀；建议名称本身不进入该前缀。
 
 ```mermaid
 flowchart LR
     base["ContractBaseContext"]
     classification["ContractClassificationResult"]
+    file_name["建议文件名子图已完成"]
     assemble["assemble_prefill_context"]
     output["ContractPrefillContext"]
 
     base --> assemble
     classification --> assemble
+    file_name -.主图顺序关口.-> assemble
     assemble --> output
 ```
 
@@ -46,6 +48,6 @@ Core 与条款原有的专用单 token 预热也已删除；它们现在只保�
 
 - 消息构造由 `context.build_contract_prefill_messages` 负责。
 - 节点实现在 `app.agent.contract_extraction.node.assemble_prefill_context`。
-- 主图顺序固定为“分类 → 最终前缀组装 → 三个并行分支”。
+- 主图顺序固定为“分类 → 建议文件名生成 → 最终前缀组装 → 三个并行分支”；建议名称不改变最终公共前缀内容。
 - 相同输入必须产生相同消息和指纹，且不得修改 `ContractBaseContext`。
 - 工作流最终结果不再包含通用预热状态。

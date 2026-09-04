@@ -16,18 +16,18 @@ from app.agent.contract_extraction.subgraph.clause_extraction.tool import (
 )
 from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
 
-CLAUSE_DISCOVERY_PROMPT_VERSION: Final = "clause-discovery-v13"
+CLAUSE_DISCOVERY_PROMPT_VERSION: Final = "clause-discovery-v14"
 CLAUSE_DISCOVERY_TOOL_PLACEMENT: Final = "before_task"
 
-_CLAUSE_DISCOVERY_TASK_BASE = """你已获得当前合同的原始 PDF、文档导航结构和分类结果。当前任务是按合同原始阅读顺序发现全部待提取条款候选，只记录具有自身直接正文的主条款和各级子条款。你只需确定条款身份、层级和精简起止锚点，不提取完整正文；已确认锚点将用于逐条提取详细原文。
+_CLAUSE_DISCOVERY_TASK_BASE = """你已获得当前合同按原始顺序排列的页面图像、文档导航结构和分类结果。当前任务是按合同原始阅读顺序发现全部待提取条款候选，只记录具有自身直接正文的主条款和各级子条款。你只需确定条款身份、层级和精简起止锚点，不提取完整正文；已确认锚点将用于逐条提取详细原文。
 
 事实来源与已有资料：
-1. 原始 PDF 页面是条款事实和边界的唯一权威来源。
+1. 合同页面图像是条款事实和边界的唯一权威来源。
 2. 已提供的文档导航结构只用于定位宏观区域，合同分类只用于理解交易语境；两者都不能替代页面核查，也不能改变原文条款边界。
 3. 不读取 Core 或其他字段提取结果，不使用文件名、常识或模板补全条款。
 
 条款候选定义：
-1. 条款候选必须具有可识别边界，并且存在属于该候选自身、可从 PDF 直接对应的正文文字，用于表达权利、义务、条件、限制、程序、责任、效力或风险分配。
+1. 条款候选必须具有可识别边界，并且存在属于该候选自身、可从页面直接对应的正文文字，用于表达权利、义务、条件、限制、程序、责任、效力或风险分配。
 2. “自身直接正文”是移除全部下级条款正文后仍属于当前候选的文字。编号、标题、章节名、分组名、项目符号或“如下”等纯结构文字只能帮助导航，不能单独满足候选准入条件。
 3. 有独立规范内容的子层级条款必须单独记录，不因其属于同一主条款而合并；每个候选通过 document_path 保留原合同完整层级，通过 parent_candidate_id 关联最近的已记录正文祖先。
 4. 无编号条款只要具有独立规范内容和可核对边界，也必须记录；identifier 使用简短稳定描述，不得虚构原始编号。
@@ -44,7 +44,7 @@ _CLAUSE_DISCOVERY_TASK_BASE = """你已获得当前合同的原始 PDF、文档�
 
 边界证据规则：
 1. evidence.start 和 evidence.end 都是必填的包含式锚点：start 定位当前条款的编号、标题或首句，end 定位当前条款自身最后一段原文。
-2. 起止 anchor 必须保持 PDF 可核对原文，每个最多 160 个字符，只保留足以区分相邻边界的短片段，不复制完整条款。
+2. 起止 anchor 必须保持页面中可核对的原文，每个最多 160 个字符，只保留足以区分相邻边界的短片段，不复制完整条款。
 3. end 只能引用当前候选自身的末尾原文，固定属于当前候选；不得使用下一条款开头、签署区、附件标题或其他非当前条款文字，也不得提交 inclusion、边界类型或 null。
 4. 叶子候选的 end 使用该条款最后一句或最后一个可核对短片段；即使后面紧接下一候选，也不能把下一候选开头当作 end。
 5. 只有确有自身直接正文的父候选才可记录；其 end 应定位父候选自己的最后一段直接正文。子孙正文不属于父候选 end，即使父级视觉范围覆盖子孙条款。
@@ -53,7 +53,7 @@ _CLAUSE_DISCOVERY_TASK_BASE = """你已获得当前合同的原始 PDF、文档�
 权威层级定义与证据优先级：
 1. 合同条款层级是原文作者通过编号、标题、项目符号、排版和作用范围明确表达的结构包含关系；本任务只复原原文结构，不按法律重要性或语义主题重新组织合同。
 2. 层级证据按以下顺序判断：明确的复合编号前缀；局部编号体系及其重置；标题、缩进、对齐、字体、项目符号和间距；“如下”“包括”“具体为”等引导语及其范围；内容语义。语义只可确认已有结构证据，不能单独创建父子关系。
-3. 候选 C 的原合同父级 P 由 PDF 的编号、标题、版式和作用范围决定，与 P 是否具有直接正文、是否进入候选目录无关。P 即使是被跳过的纯结构标题，也必须出现在 C 的 document_path 中；parent_candidate_id 只引用该路径上最近的已记录正文祖先，不能替代原合同父级。
+3. 候选 C 的原合同父级 P 由页面中的编号、标题、版式和作用范围决定，与 P 是否具有直接正文、是否进入候选目录无关。P 即使是被跳过的纯结构标题，也必须出现在 C 的 document_path 中；parent_candidate_id 只引用该路径上最近的已记录正文祖先，不能替代原合同父级。
 4. 相同编号形式、相同缩进或对齐、相同排版样式且连续递增的一组候选，默认互为同级；如果它们前面没有独立可见的父标题或引导范围，不得把第一项改造成其余各项的父级。该同级证据优先于主题上的包含关系。
 5. 父标题和第一个子项可以位于同一行，但只有父标记后还存在不属于子项的独立规范正文时，父级才能单独记录；例如“四、甲方责任与义务：（1）提供图纸”若“四、甲方责任与义务”只是标题，则只记录“（1）提供图纸”。
 6. 编号体系按局部结构解释，不映射固定层数，也不限制最大层级。“3→3.1→1)”可以形成三级；标题“7”下重新出现缩进的“1.”“2.”也可成为其子级，但 identifier 必须保留页面原始标记，不得擅自改写为“7.1”“7.2”。
@@ -70,8 +70,8 @@ _CLAUSE_DISCOVERY_TASK_BASE = """你已获得当前合同的原始 PDF、文档�
 
 工具、记忆与工作区：
 1. 每轮必须且只能调用当前提供的一个工具，禁止输出普通文本。
-2. 首轮必须且只能调用 analyze_clause_hierarchy，先扫描整份 PDF，再按 evidence、reasoning_summary、decision 的顺序提交页面结构证据、详细层级分析和合同专属提取指导；本轮不逐条记录候选，也不复制完整正文。
-3. analyze_clause_hierarchy 成功后，程序将完整分析写入工作区、清空首轮短期记忆并永久移除该工具。此后每轮都必须读取这份层级分析；它是发现计划而不是新的合同事实，若局部页面证据与计划冲突，始终以原始 PDF 为准并调用 think 说明修正后的判断。
+2. 首轮必须且只能调用 analyze_clause_hierarchy，先扫描整份合同页面，再按 evidence、reasoning_summary、decision 的顺序提交页面结构证据、详细层级分析和合同专属提取指导；本轮不逐条记录候选，也不复制完整正文。
+3. analyze_clause_hierarchy 成功后，程序将完整分析写入工作区、清空首轮短期记忆并永久移除该工具。此后每轮都必须读取这份层级分析；它是发现计划而不是新的合同事实，若局部页面证据与计划冲突，始终以合同页面图像为准并调用 think 说明修正后的判断。
 4. 层级分析完成后，think 用于思考下一个尚未记录候选，不写入工作区；边界清楚时调用 record_clause_candidate，一次只提交一个候选，参数严格按照 evidence、reasoning_summary、decision 的顺序。
 5. 候选 reasoning_summary 先确认移除下级条款后仍存在当前候选自己的直接正文，再指出可见编号、排版或引导范围，最后说明边界、原合同绝对层级、完整 document_path 和最近的已记录正文祖先；不得把纯标题当作直接正文，不得重复完整正文或引入证据之外的新事实。
 6. 候选成功后，程序把精简候选追加到工作区并清空本轮短期记忆。更新后的工作区会继续提供层级分析、完整候选目录、candidate_id、顺序和锚点；下一次行动必须以它为准。
@@ -113,27 +113,27 @@ _WORKSPACE_COMMENTS = """# 工作区由程序维护，是已成功记录层级�
 # clause_discovery_workspace：当前条款发现任务的完整工作区根对象。
 # hierarchy_analysis：首轮工具生成的整份合同层级分析；null 表示尚未完成首轮分析，此时不能记录候选。
 # hierarchy_analysis.evidence：支持整份合同层级分析的页面结构观察，不是逐条候选证据。
-# hierarchy_analysis.evidence[].page_numbers：当前观察对应的 PDF 物理页码，按升序排列。
+# hierarchy_analysis.evidence[].page_numbers：当前观察对应的合同页面物理页码，按升序排列。
 # hierarchy_analysis.evidence[].observation：页面可见的编号、标题、缩进、项目符号及区域事实，不是完整正文。
 # hierarchy_analysis.reasoning_summary：从页面观察推导编号体系、同级序列、父子关系和特殊边界的详细分析。
 # hierarchy_analysis.decision：此后候选发现持续遵循的合同专属层级指导。
 # hierarchy_analysis.decision.structure_summary：整份合同条款组织方式、预计层级和跨页关系的摘要。
-# hierarchy_analysis.decision.extraction_guidance：按重要性排列的逐条发现指导；若与局部 PDF 证据冲突，以 PDF 为准。
+# hierarchy_analysis.decision.extraction_guidance：按重要性排列的逐条发现指导；若与局部页面证据冲突，以合同页面图像为准。
 # completed_candidates：按合同原始阅读顺序保存的全部成功候选；列表中的条目不得重复生成。
 # completed_candidates[].candidate_id：程序生成的稳定候选 ID；用于 parent_candidate_id 引用，模型不得自行创建或修改。
 # completed_candidates[].order：程序生成的全局发现顺序，从 1 连续递增；不是合同原始条款编号。
 # completed_candidates[].evidence：该候选已确认、供详细原文提取使用的起止边界证据，不是完整正文。
 # completed_candidates[].evidence.start：包含式起点；page_number 和 anchor 均属于当前候选开头。
-# completed_candidates[].evidence.start.page_number：起始锚点所在的 PDF 物理页码，从 1 开始；不是合同印刷页码。
+# completed_candidates[].evidence.start.page_number：起始锚点所在合同页面的物理页码，从 1 开始；不是页面中印刷的页码。
 # completed_candidates[].evidence.start.anchor：来自起始页的短原文锚点，用于定位当前候选开头。
 # completed_candidates[].evidence.end：当前候选自身最后一段原文的必填包含式锚点；不能引用下一候选或非条款区域。
-# completed_candidates[].evidence.end.page_number：结束锚点所在的 PDF 物理页码，不得早于起始页码。
+# completed_candidates[].evidence.end.page_number：结束锚点所在合同页面的物理页码，不得早于起始页码。
 # completed_candidates[].evidence.end.anchor：来自结束页且属于当前候选末尾的短原文锚点；详细原文提取必须包含它。
 # completed_candidates[].decision：已经接受的候选身份和层级决定，不包含完整正文或程序运行信息。
 # completed_candidates[].decision.identifier：候选的原始编号；无原始编号时为简短稳定描述，不等同于 candidate_id。
 # completed_candidates[].decision.title_hint：候选主题提示；null 表示没有可可靠确认的独立标题。
 # completed_candidates[].decision.document_path：原合同从最外层到当前候选的完整结构路径；包含未进入正文候选的纯标题。
-# completed_candidates[].decision.document_path[].identifier：该层在 PDF 中可见的原始编号或稳定标识。
+# completed_candidates[].decision.document_path[].identifier：该层在合同页面中可见的原始编号或稳定标识。
 # completed_candidates[].decision.document_path[].title_hint：该层可空的简短主题；null 表示无法可靠确认。
 # completed_candidates[].decision.parent_candidate_id：路径上最近的已记录正文祖先 candidate_id；null 也可能表示父级均为未记录纯标题。
 # completed_candidates[].decision.level：当前候选在原合同中的绝对深度，必须等于 document_path 项目数，不能因父标题未提取而改变。
@@ -185,7 +185,7 @@ def render_clause_discovery_workspace(
         )
     elif hierarchy_analysis is None:
         last_candidate_id = None
-        instruction = "首轮扫描整份 PDF 并完成合同层级分析；此时不要记录具体候选。"
+        instruction = "首轮扫描整份合同页面并完成合同层级分析；此时不要记录具体候选。"
     else:
         last_candidate_id = None
         instruction = "依据工作区层级分析，从合同条款区域的第一个候选开始逐条核对。"
@@ -224,12 +224,12 @@ def render_clause_discovery_direction(
     """在动态消息尾部给出短期记忆重置后的明确恢复方向。"""
     if hierarchy_analysis is None:
         instruction = (
-            "尚未完成合同层级分析。首轮必须调用 analyze_clause_hierarchy，扫描整份 PDF "
+            "尚未完成合同层级分析。首轮必须调用 analyze_clause_hierarchy，扫描整份合同页面 "
             "并提交页面证据、详细层级分析和持续提取指导；本轮不要记录具体条款候选。"
         )
     elif not workspace:
         instruction = (
-            "合同层级分析已写入工作区，尚未记录任何候选。请依据该分析回到原始 PDF "
+            "合同层级分析已写入工作区，尚未记录任何候选。请依据该分析回到合同页面 "
             "核对边界，跳过没有自身直接正文的纯编号或标题，并从原始阅读顺序中"
             "第一个具有直接正文的条款开始。"
         )

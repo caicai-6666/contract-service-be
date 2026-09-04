@@ -23,16 +23,16 @@ class StrictContractDocumentDetectionToolModel(BaseModel):
 
 
 CONTRACT_DOCUMENT_DETECTION_TOOL_VERSION: Final = (
-    "contract-document-detection-tool-v1"
+    "contract-document-detection-tool-v2"
 )
 
 
 class ContractDocumentEvidence(StrictContractDocumentDetectionToolModel):
-    """能够从上传 PDF 页面直接复核的一项合同属性证据。"""
+    """能够从上传文档页面直接复核的一项合同属性证据。"""
 
     page_number: int = Field(
         ge=1,
-        description="该证据对应的上传 PDF 物理页码，从 1 开始。",
+        description="该证据所在上传文档页面的物理页码，从 1 开始。",
     )
     observation: str = Field(
         max_length=500,
@@ -98,7 +98,7 @@ class SubmitContractDocumentJudgmentArguments(
     )
     is_contract: bool = Field(
         description=(
-            "最终二分类决定：true 表示上传 PDF 属于合同类文档，false 表示"
+            "最终二分类决定：true 表示上传文档属于合同类文档，false 表示"
             "它属于缺少相对方协议性权利义务结构的非合同文档。"
         ),
     )
@@ -237,7 +237,7 @@ def validation_error_feedback(
         elif error_type == "extra_forbidden":
             correction = "删除该未定义参数"
         elif "page_number" in path:
-            correction = "填写大于等于 1 的真实 PDF 物理页码"
+            correction = "填写大于等于 1 的真实文档页面物理页码"
         elif "evidence" in path:
             correction = "提供至少一条简短、可直接复核的页面证据"
         elif path == "is_contract":

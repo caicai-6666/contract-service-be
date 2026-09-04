@@ -13,14 +13,16 @@ from app.agent.contract_extraction.subgraph import (
     build_clause_extraction_subgraph,
     build_document_understanding_subgraph,
     build_field_extraction_subgraph,
+    build_file_name_generation_subgraph,
     build_retrieval_view_generation_subgraph,
 )
 
 
 def build_contract_extraction_graph():
-    """组装“文档理解 → 分类 → 并行业务任务 → 结果合并”。"""
+    """组装“文档理解 → 分类 → 建议命名 → 并行业务任务 → 合并”。"""
     document_understanding_subgraph = build_document_understanding_subgraph()
     classification_subgraph = build_classification_subgraph()
+    file_name_subgraph = build_file_name_generation_subgraph()
     field_subgraph = build_field_extraction_subgraph()
     clause_subgraph = build_clause_extraction_subgraph()
     retrieval_question_subgraph = build_retrieval_view_generation_subgraph()
@@ -65,6 +67,24 @@ def build_contract_extraction_graph():
         )
         return {"field_extraction": result["field_extraction"]}
 
+    async def run_file_name_subgraph(
+        state: ContractExtractionState,
+    ) -> ContractExtractionState:
+        """调用建议名称子图，并写回带证据的正式结果。"""
+        result = await file_name_subgraph.ainvoke(
+            {
+                "base_context": state["base_context"],
+                "classification": state["classification"],
+                "page_count": state["prepared_pdf"].page_count,
+            }
+        )
+        suggested_file_name = result["suggested_file_name"]
+        if suggested_file_name.status == "failed":
+            raise RuntimeError(
+                suggested_file_name.error or "建议名称没有形成可靠结果"
+            )
+        return {"suggested_file_name": suggested_file_name}
+
     async def run_clause_subgraph(
         state: ContractExtractionState,
     ) -> ContractExtractionState:
@@ -103,6 +123,7 @@ def build_contract_extraction_graph():
     )
     graph.add_node("assemble_base_context", assemble_base_context)
     graph.add_node("classification", run_classification_subgraph)
+    graph.add_node("file_name_generation", run_file_name_subgraph)
     graph.add_node("assemble_prefill_context", assemble_prefill_context)
     graph.add_node("field_extraction", run_field_subgraph)
     graph.add_node("clause_extraction", run_clause_subgraph)
@@ -115,7 +136,8 @@ def build_contract_extraction_graph():
     graph.add_edge(START, "document_understanding")
     graph.add_edge("document_understanding", "assemble_base_context")
     graph.add_edge("assemble_base_context", "classification")
-    graph.add_edge("classification", "assemble_prefill_context")
+    graph.add_edge("classification", "file_name_generation")
+    graph.add_edge("file_name_generation", "assemble_prefill_context")
     graph.add_edge("assemble_prefill_context", "field_extraction")
     graph.add_edge("assemble_prefill_context", "clause_extraction")
     graph.add_edge("assemble_prefill_context", "retrieval_question_generation")

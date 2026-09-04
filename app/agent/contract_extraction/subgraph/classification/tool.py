@@ -26,7 +26,7 @@ class ClassificationEvidence(StrictClassificationToolModel):
     """支持单类别判断的最小页码与文本证据。"""
 
     page_number: int = Field(
-        description="该证据所在的 PDF 物理页码，从 1 开始；不是合同印刷页码。"
+        description="该证据所在合同页面的物理页码，从 1 开始；不是页面中印刷的页码。"
     )
     content: str = Field(
         description=(

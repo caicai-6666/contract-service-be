@@ -19,7 +19,7 @@ from app.agent.pdf_deduplication.subgraph.candidate_judgment.tool import (
 )
 
 PAGE_NAVIGATION_JUDGMENT_TOOL_VERSION: Final = (
-    "candidate-page-navigation-tool-v1"
+    "candidate-page-navigation-tool-v2"
 )
 
 
@@ -30,7 +30,7 @@ class InspectCandidatePagesArguments(StrictCandidateJudgmentToolModel):
         min_length=1,
         max_length=3,
         description=(
-            "本轮要打开的候选合同 B 物理页码，页码从 1 开始；必须升序、"
+            "本轮要打开的候选合同 B 页面的物理页码，从 1 开始；必须升序、"
             "不能重复且不能超出当前候选指南给出的总页数，一次最多三页。"
         ),
     )

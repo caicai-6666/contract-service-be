@@ -47,10 +47,20 @@ def build_retrieval_view_generation_subgraph() -> Any:
 
     return build()
 
+
+def build_file_name_generation_subgraph() -> Any:
+    """延迟导入并装配建议文件名生成子图骨架。"""
+    from app.agent.contract_extraction.subgraph.file_name_generation import (
+        build_file_name_generation_subgraph as build,
+    )
+
+    return build()
+
 __all__ = [
     "build_classification_subgraph",
     "build_clause_extraction_subgraph",
     "build_field_extraction_subgraph",
+    "build_file_name_generation_subgraph",
     "build_document_understanding_subgraph",
     "build_retrieval_view_generation_subgraph",
 ]

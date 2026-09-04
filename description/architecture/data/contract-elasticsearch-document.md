@@ -4,7 +4,7 @@
 
 本文是合同正式入库数据的参考契约。合同自动提取流程、内存草稿与 SSE 状态见[合同提取应用运行时](../system/contract-extraction-runtime.md)；Elasticsearch 客户端、索引名称和连接配置见[FastAPI 后端应用骨架](../../capability/application/backend-application.md#elasticsearch-边界)。
 
-> **实现状态：** 应用启动时已经能够创建正式索引并增量同步 Core mapping，但尚未实现复核后合同的正式入库。问题融合向量已经生成；PDF 页面向量化及其融合尚未实现。
+> **实现状态：** 应用启动时能够创建正式索引并增量同步 Core mapping；复核后合同正式入库、问题融合向量和 PDF 页面融合向量均已接入应用运行时。
 
 ---
 
@@ -173,7 +173,7 @@ Core 标量 mapping 由[模型提取对象定义结构](field-definition.md#elas
 | 标的类型、品牌、规格型号、单位、相关方角色 | 否 | 值较短或具有枚举、代码、型号特征，优先精确匹配。 |
 | 金额、数量、单价、税率、签章与含税状态 | 不适用 | 使用数值或布尔 mapping，不属于字符串分词范围。 |
 
-`code` 与 `tokenize` 只参与 Core mapping 投影，不进入字段提取提示词、工具 Schema 或最终 Core 值。启动同步已经按上述规则消费通过校验的 Core 定义；正式入库投影仍未实现。
+`code` 与 `tokenize` 只参与 Core mapping 投影，不进入字段提取提示词、工具 Schema 或最终 Core 值。启动同步和正式入库已经按上述规则消费通过校验的 Core 定义；入库请求中的未知字段、缺失目录字段、错误基数、未知对象属性和错误基本类型都会被拒绝。
 
 ---
 
@@ -233,8 +233,8 @@ Core 标量 mapping 由[模型提取对象定义结构](field-definition.md#elas
 
 | 字段 | 当前状态 | 来源 |
 | --- | --- | --- |
-| `question_fusion` | 已生成，正式入库尚未实现 | 模拟问题分别向量化后形成的合同级融合向量；问题与单问题向量不入库。 |
-| `page_fusion` | 已实现 | 处理版 PDF 每页分别执行多模态向量化后形成的合同级融合向量；单页向量不入库。 |
+| `question_fusion` | 已生成并接入正式入库 | 模拟问题分别向量化后形成的合同级融合向量；问题与单问题向量不入库。 |
+| `page_fusion` | 已生成并接入正式入库 | 处理版 PDF 每页分别执行多模态向量化后形成的合同级融合向量；单页向量不入库。 |
 
 两个字段均使用以下 mapping，其中维度读取 `ELASTICSEARCH_VECTOR_DIMENSIONS`：
 
@@ -247,9 +247,9 @@ Core 标量 mapping 由[模型提取对象定义结构](field-definition.md#elas
 }
 ```
 
-索引可以提前声明 `page_fusion` mapping。该能力实现前，合同文档应直接省略 `page_fusion`，不得写入 `null` 或零向量，当前入库也不得等待该字段。实现后可为已有文档回填，并通过 `exists` 查询判断一份合同是否具有页面融合向量。
+正式入库要求两个融合向量同时存在、维度与 `ELASTICSEARCH_VECTOR_DIMENSIONS` 一致，并拒绝非有限数值或零向量。历史文档仍可通过 `exists` 查询判断是否具有页面融合向量。
 
-页面融合直接复用 PDF 准备服务已经生成的逐页 PNG。单页多模态 Embedding 使用 `contract-near-duplicate-v1` 对称输入契约，全部页面并发向量化后采用尾页 `1.5` 倍加权融合；具体规则见 [PDF 查重 Agent 工作流](../workflow/pdf-deduplication/readme.md)。
+页面融合直接复用 PDF 准备服务已经生成的逐页 PNG。单页多模态 Embedding 使用 `contract-near-duplicate-v2` 对称输入契约，全部页面并发向量化后采用尾页 `1.5` 倍加权融合；具体规则见 [PDF 查重 Agent 工作流](../workflow/pdf-deduplication/readme.md)。
 
 ---
 
@@ -262,17 +262,19 @@ flowchart LR
     extraction["自动提取结果"]
     review["人工复核并形成最终值"]
     question_vector["问题融合向量"]
-    page_vector["页面融合向量<br/>后续能力"]
+    page_vector["页面融合向量"]
     projection["正式入库投影"]
     elasticsearch["Elasticsearch 合同主文档"]
 
     extraction --> review --> projection
     question_vector --> projection
-    page_vector -.-> projection
+    page_vector --> projection
     projection --> elasticsearch
 ```
 
-投影器只接受已经复核的分类、Core 和 Clause 最终值，以及当时已经可用的合同级向量。写入时由服务端设置 `ingestion.ingested_at`，并要求调用方提供非空审核人。
+投影器接收运行中已经确认的分类与两个合同级向量，以及用户提交的最终 Core、Clause 和展示文件名。写入时由服务端设置 `ingestion.ingested_at`，并使用当前登录且通过运行所有权校验的审核人名称；请求体不能覆盖审核人。
+
+正式写入使用 `ELASTICSEARCH_INDEX_NAME`，并以 `document_id` 执行覆盖式 `index`。服务先在 SQLite 登记 `ingesting`，再按 `data/contract/<document_id>.pdf` 幂等保存处理版 PDF 并写入 ES；SQLite 最终转为 `ready` 后才释放内存运行，失败时保留运行供相同请求重试。轻量目录结构见[合同 SQLite 元数据结构](contract-sqlite-metadata.md)，完整应用边界见[复核后合同正式入库](../../capability/application/contract-ingestion.md)。
 
 ---
 

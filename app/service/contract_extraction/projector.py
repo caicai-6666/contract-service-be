@@ -19,6 +19,9 @@ from app.agent.contract_extraction.subgraph.field_extraction.core.state import (
 from app.agent.contract_extraction.subgraph.field_extraction.definition import (
     FieldCardinality,
 )
+from app.agent.contract_extraction.subgraph.file_name_generation.state import (
+    SuggestedFileNameResult,
+)
 from app.service.contract_extraction.executor import RetrievalViewOutput
 from app.service.contract_extraction.model import (
     ClauseDraftData,
@@ -27,6 +30,8 @@ from app.service.contract_extraction.model import (
     CoreDraftData,
     ResultStatus,
     RetrievalViewDraftData,
+    SuggestedFileNameEvidenceView,
+    SuggestedFileNameView,
 )
 
 
@@ -58,6 +63,27 @@ def project_classification(
         status=result.status,
         categories=categories,
         unmapped_type_description=result.unmapped_type_description,
+    )
+
+
+def project_suggested_file_name(
+    result: SuggestedFileNameResult,
+) -> SuggestedFileNameView:
+    """隐藏模型工具轨迹，只公开可核对的建议名称、理由和证据。"""
+    if result.status != "generated":
+        raise UnusableBranchResultError("建议名称没有形成可用结果")
+    assert result.file_name is not None
+    assert result.reasoning is not None
+    return SuggestedFileNameView(
+        file_name=result.file_name,
+        reasoning=result.reasoning,
+        evidence=tuple(
+            SuggestedFileNameEvidenceView(
+                page_number=item.page_number,
+                content=item.content,
+            )
+            for item in result.evidence
+        ),
     )
 
 
@@ -205,4 +231,5 @@ __all__ = [
     "project_clause",
     "project_core",
     "project_retrieval_view",
+    "project_suggested_file_name",
 ]

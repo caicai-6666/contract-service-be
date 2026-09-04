@@ -18,7 +18,8 @@
 | 新增或修改 `data/definition` 下的 YAML | 按用途阅读[模型提取对象定义结构](architecture/data/field-definition.md)、[合同交易类别定义结构](architecture/data/contract-category-definition.md)或[检索问题指南定义结构](architecture/data/retrieval-view-definition.md) |
 | 进行代码开发或功能扩展 | 先阅读项目根目录的 [`AGENTS.md`](../AGENTS.md)，再阅读[项目说明](project.md) |
 | 查找服务入口、全局约定或业务接口 | [API 参考](api/readme.md) |
-| 对接 Core 表单定义、未入库运行恢复、合同上传、查重暂停/继续、SSE 进度、Core/Clause 查询或失败阶段重试 | [合同 API](api/contract.md) |
+| 对接 Core 表单定义、未入库运行恢复、合同上传、查重暂停/继续、SSE 进度、Core/Clause 查询、失败阶段重试或正式入库 | [合同 API](api/contract.md) |
+| 了解最终审核值校验、PDF 保存和正式 ES 写入 | [复核后合同正式入库](capability/application/contract-ingestion.md) |
 | 修改内存任务、查重暂停 TTL、阶段状态、增量草稿或重试机制 | [合同提取应用运行时](architecture/system/contract-extraction-runtime.md) |
 | 设计或实现复核后合同的 Elasticsearch 入库 | [合同 Elasticsearch 文档结构](architecture/data/contract-elasticsearch-document.md) |
 | 配置审核用户名称与密钥 | [审核用户 YAML 定义](architecture/data/reviewer-user-definition.md) |
@@ -88,12 +89,14 @@ description/
 - [文档结构发现节点](architecture/workflow/contract-extraction/document-structure.md)：定义合同主题、宏观内容单元和精确边界表示。
 - [合同分类子图](architecture/workflow/contract-extraction/classification.md)：定义分类公共上下文、逐类别并发判定、结果和失败边界。
 - [最终公共前缀组装节点](architecture/workflow/contract-extraction/final-context-assembly.md)：定义分类结果的稳定追加和三个下游分支的统一上下文契约。
+- [合同建议文件名生成子图](architecture/workflow/contract-extraction/file-name-generation.md)：定义分类后的两节点命名流程、工具协议、SSE 投影与运行恢复边界。
 - [字段提取子图](architecture/workflow/contract-extraction/field-extraction.md)：定义 Core 目录选择、公共任务组装及逐定义并行提取边界。
 - [条款提取子图](architecture/workflow/contract-extraction/clause-extraction.md)：定义候选顺序发现、详情公共上下文确定性组装，以及逐候选并发内容提取。
 - [检索问题生成子图](architecture/workflow/contract-extraction/retrieval-view-generation.md)：定义动态问题规划、按规划并发生成、逐问题向量化和合同向量融合。
 
 ### 数据契约
 
+- [合同 SQLite 元数据结构](architecture/data/contract-sqlite-metadata.md)：定义文件管理目录、入库状态及 SQLite、PDF、ES 三处一致性边界。
 - [合同 Elasticsearch 文档结构](architecture/data/contract-elasticsearch-document.md)：定义复核后合同的正式索引结构、启动创建及 Core mapping 增量同步边界。
 - [模型提取对象定义结构](architecture/data/field-definition.md)：定义单值或多值扁平对象的 YAML 结构、稳定索引代码、分词策略、基本类型及禁止嵌套约束。
 - [合同交易类别定义结构](architecture/data/contract-category-definition.md)：定义一类一文件的交易类别 YAML、类别边界与后续加载约束。
@@ -106,8 +109,8 @@ description/
 
 - [API 参考](api/readme.md)：定义服务入口、全局媒体类型、错误格式、健康检查和业务接口导航。
 - [审核用户登录 API](api/auth.md)：定义仅凭审核用户密钥签发限时免登码的接口。
-- [资源文件 API](api/resource.md)：定义按 Elasticsearch `file_uri` 安全读取本地正式合同 PDF 的接口。
-- [合同 API](api/contract.md)：定义 Core 表单目录、PDF 上传、合同文档判断、查重结果、暂停继续、状态与 Core/Clause 查询、SSE 事件、断线续传、失败阶段重试、错误码和前端接入顺序。
+- [资源文件 API](api/resource.md)：定义按 SQLite 目录或 ES 候选中的 `file_uri` 安全读取本地正式合同 PDF 的接口。
+- [合同 API](api/contract.md)：定义 Core 表单目录、PDF 上传、合同文档判断、查重结果、暂停继续、状态与 Core/Clause 查询、SSE 事件、断线续传、失败阶段重试、正式入库、错误码和前端接入顺序。
 
 ---
 
@@ -117,6 +120,7 @@ description/
 
 - [FastAPI 后端应用骨架](capability/application/backend-application.md)：说明应用分层、启动生命周期、Elasticsearch 索引同步、运行方式和环境配置。
 - [Agent 工作流包](capability/application/agent-workflow.md)：说明 `app.agent` 与 API、服务层和基础设施的调用边界。
+- [复核后合同正式入库](capability/application/contract-ingestion.md)：说明最终审核值校验、处理版 PDF 保存、正式 ES 投影、失败重试和运行释放。
 
 ### 基础设施能力
 

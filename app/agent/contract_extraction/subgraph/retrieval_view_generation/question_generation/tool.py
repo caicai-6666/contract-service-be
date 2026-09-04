@@ -16,7 +16,7 @@ class StrictQuestionToolModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
-QUESTION_GENERATION_TOOL_VERSION: Final = "retrieval-question-tool-v2"
+QUESTION_GENERATION_TOOL_VERSION: Final = "retrieval-question-tool-v3"
 QUESTION_GENERATION_TOOL_CHOICE: Final = TOOL_CHOICE_AUTO
 
 
@@ -25,7 +25,7 @@ class QuestionEvidence(StrictQuestionToolModel):
 
     page_number: int = Field(
         ge=1,
-        description="证据所在的 PDF 物理页码，从 1 开始；不是合同印刷页码。",
+        description="证据所在合同页面的物理页码，从 1 开始；不是页面中印刷的页码。",
     )
     content: str = Field(
         max_length=300,
@@ -218,7 +218,7 @@ def validation_error_feedback(error: Exception) -> QuestionGenerationToolFeedbac
         elif error_type == "extra_forbidden":
             correction = "删除该未定义参数"
         elif "page_number" in path:
-            correction = "填写大于等于 1 的真实 PDF 物理页码"
+            correction = "填写大于等于 1 的真实合同页面物理页码"
         elif "evidence" in path:
             correction = "按物理页码升序提供至少一条简短、可核对的合同证据"
         elif path == "question":

@@ -24,7 +24,7 @@ class StrictVisualGroundingModel(BaseModel):
 
 
 NormalizedCoordinate = Annotated[int, Field(ge=0, le=1000)]
-VISUAL_GROUNDING_TOOL_VERSION: Final = "unit-visual-grounding-tool-v2"
+VISUAL_GROUNDING_TOOL_VERSION: Final = "unit-visual-grounding-tool-v3"
 
 
 class ThinkArguments(StrictVisualGroundingModel):
@@ -59,7 +59,7 @@ class DrawBoundingBoxArguments(StrictVisualGroundingModel):
     page_number: int = Field(
         ge=1,
         description=(
-            "本次定位框所在的 PDF 物理页码，必须与全部 anchor_ids 对应页面一致。"
+            "本次定位框所在合同页面的物理页码，必须与全部 anchor_ids 对应页面一致。"
         ),
     )
     bbox_2d: list[NormalizedCoordinate] = Field(

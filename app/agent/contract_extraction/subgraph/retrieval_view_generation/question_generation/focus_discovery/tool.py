@@ -17,7 +17,7 @@ class StrictQuestionFocusToolModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
-QUESTION_FOCUS_DISCOVERY_TOOL_VERSION: Final = "retrieval-question-focus-tool-v1"
+QUESTION_FOCUS_DISCOVERY_TOOL_VERSION: Final = "retrieval-question-focus-tool-v2"
 QUESTION_FOCUS_DISCOVERY_TOOL_CHOICE: Final = TOOL_CHOICE_AUTO
 
 _ATTENTION_CODE_PATTERN: Final = re.compile(r"^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*$")
@@ -28,7 +28,7 @@ class QuestionFocusEvidence(StrictQuestionFocusToolModel):
 
     page_number: int = Field(
         ge=1,
-        description="证据所在的 PDF 物理页码，从 1 开始；不是合同印刷页码。",
+        description="证据所在合同页面的物理页码，从 1 开始；不是页面中印刷的页码。",
     )
     content: str = Field(
         max_length=300,
@@ -76,7 +76,7 @@ class GenerateQuestionFocusArguments(StrictQuestionFocusToolModel):
         max_length=10,
         description=(
             "支持当前问题关注点适用于本合同或对应事项可能存在重要缺失的合同证据，"
-            "按 PDF 物理页码和页内阅读顺序排列；至少一条，不得使用合同外知识。"
+            "按合同页面物理页码和页内阅读顺序排列；至少一条，不得使用合同外知识。"
         ),
     )
     reasoning_summary: str = Field(
@@ -347,7 +347,7 @@ def question_focus_validation_error_feedback(
         elif error_type == "extra_forbidden":
             correction = "删除该未定义参数"
         elif "page_number" in path:
-            correction = "填写大于等于 1 的真实 PDF 物理页码"
+            correction = "填写大于等于 1 的真实合同页面物理页码"
         elif "evidence" in path:
             correction = "按物理页码升序提供至少一条简短、可核对的合同证据"
         elif "attention_codes" in path:

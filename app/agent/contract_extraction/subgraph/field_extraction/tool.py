@@ -43,7 +43,7 @@ class FieldEvidence(StrictFieldToolModel):
     """支持单个扁平对象的最小页面证据。"""
 
     page_number: int = Field(
-        description="该证据所在的 PDF 物理页码，从 1 开始；不是合同印刷页码。"
+        description="该证据所在合同页面的物理页码，从 1 开始；不是页面中印刷的页码。"
     )
     content: str = Field(
         description=(

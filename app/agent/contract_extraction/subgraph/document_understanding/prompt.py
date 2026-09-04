@@ -10,9 +10,9 @@ from typing import Any
 
 from app.agent.contract_extraction.state import PDFPromptPage, PreparedPDFPage
 
-PDF_READING_PROMPT_VERSION = "pdf-reading-v3"
+PDF_READING_PROMPT_VERSION = "contract-page-reading-v4"
 
-PDF_READING_SYSTEM_PROMPT = """你是合同 PDF 阅读基础层。输入页面图像是当前任务唯一的事实来源。
+PDF_READING_SYSTEM_PROMPT = """你是合同页面图像阅读基础层。输入页面图像是当前任务唯一的事实来源。
 
 阅读规范：
 1. 严格按照页码顺序阅读，不得跳页、重排或把不同页面的内容错误拼接。
@@ -22,7 +22,7 @@ PDF_READING_SYSTEM_PROMPT = """你是合同 PDF 阅读基础层。输入页面�
 5. 严格服从页面之后追加的任务与输出格式；任务后缀不得改变以上事实与证据规则。
 """
 
-PDF_INPUT_HEADER = """以下是同一份合同的连续 PDF 页面。每个页码标签后的图像只对应该页；请先完整阅读，再执行所有页面之后追加的任务。"""
+PDF_INPUT_HEADER = """以下是同一份合同按原始顺序排列的连续页面图像。每个物理页码标签后的图像只对应该页；请先完整阅读，再执行所有页面之后追加的任务。"""
 
 
 def build_pdf_page_descriptor(page: PreparedPDFPage) -> str:
@@ -47,21 +47,21 @@ def build_pdf_content_blocks(
     *,
     header: str = PDF_INPUT_HEADER,
 ) -> list[dict[str, Any]]:
-    """构建一份 PDF 的连续页面内容块，供公共前缀和附加 PDF 复用。"""
+    """构建一份文档的连续页面图像内容块，供公共前缀和附加页面复用。"""
     if not header.strip():
-        raise ValueError("PDF 输入标题不能为空")
+        raise ValueError("页面图像输入标题不能为空")
 
     ordered_pages = tuple(pages)
     ordered_prompt_pages = tuple(prompt_pages)
     if not ordered_pages:
-        raise ValueError("PDF 页面内容至少需要一页")
+        raise ValueError("页面图像内容至少需要一页")
     page_numbers = tuple(page.page_number for page in ordered_pages)
     if page_numbers != tuple(sorted(page_numbers)) or len(set(page_numbers)) != len(
         page_numbers
     ):
-        raise ValueError("PDF 页面必须按原始页码严格升序传入")
+        raise ValueError("页面图像必须按原始物理页码严格升序传入")
     if len(ordered_pages) != len(ordered_prompt_pages):
-        raise ValueError("PDF 页面与提示词页面数量不一致")
+        raise ValueError("页面图像与提示词页面数量不一致")
 
     for page, prompt_page in zip(ordered_pages, ordered_prompt_pages, strict=True):
         if (

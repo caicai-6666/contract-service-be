@@ -8,7 +8,7 @@
 
 [合同信息抽取 Agent 工作流](../workflow/contract-extraction/readme.md)定义模型节点、子图输入输出和共享前缀；应用运行时负责把这些能力组织成可供前端持续观察和独立重试的业务任务。
 
-主 Agent 图可以等待三个下游分支全部结束后统一合并，适合实验或批处理。HTTP 服务在创建任务后先判断上传内容是否属于合同；只有合同才执行查重并形成确认暂停点，只有前端继续后才运行合同结构识别，再复用相同的分类和三个业务子图：
+主 Agent 图可以等待三个下游分支全部结束后统一合并，适合实验或批处理。HTTP 服务在创建任务后先判断上传内容是否属于合同；只有合同才执行查重并形成确认暂停点，只有前端继续后才运行合同结构识别，再复用相同的分类、建议名称和三个业务子图：
 
 ```mermaid
 flowchart TD
@@ -22,9 +22,10 @@ flowchart TD
     external --> continue["POST continue"]
     continue --> structure["合同结构识别"]
     structure --> classification["合同分类"]
-    classification --> core["Core"]
-    classification --> clause["Clause"]
-    classification --> retrieval["Retrieval"]
+    classification --> file_name["建议文件名"]
+    file_name --> core["Core"]
+    file_name --> clause["Clause"]
+    file_name --> retrieval["Retrieval"]
     core --> commit["原子提交内部结果"]
     clause --> commit
     retrieval --> commit
@@ -34,12 +35,13 @@ flowchart TD
     failed --> deduplication
     failed --> structure
     failed --> classification
+    failed --> file_name
     failed --> core
     failed --> clause
     failed --> retrieval
 ```
 
-三个下游分支只读同一份 `ExtractionContext`，不共享可变状态。Core 或 Clause 任一分支首次成功即可形成用户可见提取结果，其他分支失败不会撤销已提交内容；Retrieval 成功结果只在内存聚合中供后续入库使用，不进入提取响应。
+建议名称阶段读取同一份 `ExtractionContext`，但不修改三个下游分支的公共上下文；成功后才启动三个分支。Core 或 Clause 任一分支首次成功即可形成用户可见提取结果，其他分支失败不会撤销已提交内容；Retrieval 成功结果只在内存聚合中供后续入库使用，不进入提取响应。
 
 ---
 
@@ -55,6 +57,7 @@ flowchart TD
 - `structure_result`：继续后形成并供分类复用的结构识别结果；
 - `deduplication_result`：页面融合向量、Top-3 候选、逐候选判断和私有工具审计；
 - `classification_view`：分类成功后固定保存的精简公共投影，供单任务快照恢复；
+- `suggested_file_name_view`：命名成功后固定保存的名称、理由与页面证据，供 SSE、快照和运行历史恢复；
 - 查重暂停状态、固定审核截止时间和实际继续时间；
 - `prerequisites`：已准备页面、文档结构、分类和下游公共上下文；
 - `draft`：分类、Core、Clause、检索向量等当前生效的内部结果；公共快照只投影 Core 与 Clause；
@@ -64,11 +67,11 @@ flowchart TD
 
 模型工具轨迹、用量、内部错误和高维向量只存在私有尝试记录或内部结果中。面向用户的快照由投影器重新构造，不能直接序列化 Agent 私有状态。
 
-运行列表接口读取同一个 `MemoryRunRegistry`，先按当前审核用户筛选任务所有者，再投影仍可恢复任务的 `run_id`、处理版 PDF 元数据、时间摘要和独立的粗粒度状态。列表状态只有 `processing` 与 `blocked`：后台拓扑仍会自动推进时为前者；查重等待确认、公共前置阶段失败、全部分支停止或结果等待复核入库时为后者。业务分支部分失败但其他分支仍在运行时保持 `processing`，全部自动执行停止后再变为 `blocked`。非合同和过期任务不进入列表；其他失败任务继续保留为 `blocked`，供前端恢复后定位并重试。PDF 元数据直接来自聚合中的 `PreparedPDF`：文件大小使用重新封装后的字节数，页数使用处理版物理页数，封面宽高使用第 1 页压缩图像的像素尺寸，不复制 PDF 或 PNG 字节。创建响应、列表项和单运行快照使用同一个 `document` 结构。
+运行列表接口读取同一个 `MemoryRunRegistry`，先按当前审核用户筛选任务所有者，再投影仍可恢复任务的 `run_id`、处理版 PDF 元数据、当前建议文件名摘要、时间摘要和独立的粗粒度状态。列表状态只有 `processing` 与 `blocked`：后台拓扑仍会自动推进时为前者；查重等待确认、公共前置阶段失败、全部分支停止或结果等待复核入库时为后者。业务分支部分失败但其他分支仍在运行时保持 `processing`，全部自动执行停止后再变为 `blocked`。非合同和过期任务不进入列表；其他失败任务继续保留为 `blocked`，供前端恢复后定位并重试。PDF 元数据直接来自聚合中的 `PreparedPDF`：文件大小使用重新封装后的字节数，页数使用处理版物理页数，封面宽高使用第 1 页压缩图像的像素尺寸，不复制 PDF 或 PNG 字节。创建响应、列表项和单运行快照使用同一个 `document` 结构；建议名称尚未生成时列表字段为 `null`。
 
-列表查询不触碰 `updated_at` 或 `expires_at`；前端选中后再通过单运行快照和 SSE 同步完整状态。未来正式入库成功必须从注册表删除对应聚合，使该 `run_id` 同时失效并从列表消失。`document` 只服务运行恢复，不进入最终 Core/Clause 或 Elasticsearch 合同文档。
+列表查询不触碰 `updated_at` 或 `expires_at`；前端选中后再通过单运行快照和 SSE 同步完整状态。正式入库成功会从注册表删除对应聚合，使该 `run_id` 同时失效并从列表消失。`document` 只服务运行恢复，不进入最终 Core/Clause 或 Elasticsearch 合同文档。
 
-> **持久化边界：** 原始 PDF 不落盘，创建请求结束后释放上传字节；任务聚合只保存栅格化处理版 PDF。处理版 PDF、同源 PNG 页面缓存、中间状态和自动草稿只在运行聚合生命周期内存中存在，也不写 Elasticsearch。只有未来经专家确认的最终对象才允许进入正式存储。
+> **持久化边界：** 原始 PDF 不落盘，创建请求结束后释放上传字节；任务聚合只保存栅格化处理版 PDF。处理版 PDF、同源 PNG 页面缓存、中间状态和自动草稿只在运行聚合生命周期内存中存在，也不写 Elasticsearch。只有审核用户通过正式入库接口提交的最终对象才进入正式存储。
 
 ---
 
@@ -83,13 +86,13 @@ flowchart TD
 - 所有者不一致时统一抛出与未知、过期任务相同的 `RunNotFoundError`，HTTP 层返回 `404`，避免通过错误差异枚举其他用户的 `run_id`；
 - 越权请求在读取状态或执行状态迁移前终止，不能续期、消费暂停点、启动重试或建立事件订阅。
 
-周期清理和查重暂停到期属于系统内部生命周期操作，不模拟某个用户访问，因此仍可回收所有用户的到期聚合。未来正式入库接口必须采用相同的所有权校验，并直接使用聚合中保存的审核人名称形成入库审核信息；入库成功后删除该用户的聚合。
+周期清理和查重暂停到期属于系统内部生命周期操作，不模拟某个用户访问，因此仍可回收所有用户的到期聚合。正式入库接口采用相同的所有权校验，并直接使用当前登录且与聚合所有者一致的审核人名称形成入库审核信息；入库成功后删除该用户的聚合。
 
 ---
 
 ## 用户业务阶段与暂停点
 
-内部 LangGraph 节点不会直接成为用户阶段。请求内 PDF 格式检查、渲染和处理版生成属于创建任务的技术前置条件，不再作为“合同预处理”或用户阶段暴露。应用只暴露七个稳定业务阶段：
+内部 LangGraph 节点不会直接成为用户阶段。请求内 PDF 格式检查、渲染和处理版生成属于创建任务的技术前置条件，不再作为“合同预处理”或用户阶段暴露。应用只暴露八个稳定业务阶段：
 
 | `code` | 展示名称 | 内部范围 |
 | --- | --- | --- |
@@ -97,6 +100,7 @@ flowchart TD
 | `pdf_deduplication` | 检查重复合同 | 页面向量融合、ES Top-3 召回与逐候选关系判断。 |
 | `contract_structure_recognition` | 识别合同结构 | 内容单元发现与视觉定位。 |
 | `contract_classification` | 识别合同类型 | 公共分类上下文及逐类别判定。 |
+| `file_name_generation` | 生成建议名称 | 组装页面、结构与分类上下文，生成名称、理由和证据。 |
 | `core_extraction` | 提取核心信息 | Core 公共任务和逐定义提取。 |
 | `clause_extraction` | 提取合同条款 | 条款发现、上下文组装与正文提取。 |
 | `retrieval_preparation` | 准备智能检索 | 问题规划、生成、向量化与融合。 |
@@ -107,7 +111,7 @@ flowchart TD
 
 `pdf_deduplication` 成功后不会自动开始合同结构识别。工作流内部仍完整保存 ES Top-3 召回及 `duplicate | similar | different | failed` 逐候选判断；应用层只向前端投影其中的 `duplicate | similar`，并返回原始 cosine、简洁理由，以及 Elasticsearch 原样提供的 `document_id`、友好 `file_name`、`file_uri` 和页数。随后服务发布 `run.deduplication_review_required`，把运行置为 `awaiting_deduplication_review`。过滤后候选可以少于三份，且原始排名可以不连续；没有重复或相似合同时数组为空，但仍形成同一个暂停点，确保前端调用顺序稳定。SSE 不提供 PDF 字节或运行级下载地址；前端通过独立资源接口按 `file_uri` 获取文件。
 
-暂停期限从结果事件形成时固定为最长 600 秒。GET 快照、SSE 建连、断线重连和心跳不会延长期限。前端可以在此期间通过与提取流独立的接口处理已入库候选；处理完成后调用一次继续接口。成功继续会记录时间、取消暂停到期任务、恢复普通运行 TTL 并启动合同结构识别；结构识别成功后自动开始分类，重复继续返回冲突。
+暂停期限从结果事件形成时固定为最长 600 秒。GET 快照、SSE 建连、断线重连和心跳不会延长期限。前端可以在此期间通过与提取流独立的接口处理已入库候选；处理完成后调用一次继续接口。成功继续会记录时间、取消暂停到期任务、恢复普通运行 TTL 并启动合同结构识别；结构识别成功后自动开始分类与建议名称生成，重复继续返回冲突。
 
 每次尝试在内部保留开始时间、结束时间、私有结果或内部错误。公共 `StageSnapshot` 额外投影当前尝试的 `started_at`：未开始阶段为 `null`，首次执行和每次重试开始时记录，成功或失败后继续保留。SSE 阶段事件和 GET 恢复快照共用该投影，因此前端可在运行期间以当前时间动态计时，并在终态以阶段 `updated_at` 固定耗时；此前尝试仍只保留在不可覆盖的内部历史中。
 
@@ -131,14 +135,17 @@ flowchart TD
 | `not_a_contract` | 文档识别可靠判定上传内容不是合同，后续处理已停止。 |
 | `awaiting_deduplication_review` | 查重结果已返回，结构识别、分类与提取尚未启动，正在等待前端继续请求。 |
 | `partial_ready` | Core 或 Clause 至少一个可供用户查看，但仍有分支运行、重试或失败。 |
-| `ready` | Core、Clause 和 Retrieval 三个分支均已形成当前结果。 |
-| `failed` | 公共前置阶段失败，或三个业务分支均未形成结果。 |
+| `ready` | 建议名称成功，且 Core、Clause 和 Retrieval 三个分支均已形成当前结果。 |
+| `failed` | 文档判断、查重、结构、分类或建议名称等串行阶段失败，或三个业务分支均未形成结果。 |
 | `cancelled` | 用户主动终止任务，仅在删除前发布的 SSE 事件中可见。 |
 | `expired` | 聚合已到期并从内存注册表移除。 |
+| `ingested` | 合同已经正式入库，仅在删除前发布的 SSE 事件中可见。 |
 
 分支内部的 `partial` 是可提交结果：例如部分字段或条款失败时，成功项仍可进入草稿，并在分区上保留 `result_status: partial`。
 
 分类阶段成功时，服务把精简 `classification` 固定保存到运行聚合，并同时附加到该阶段的 `stage.completed` 事件。它包含分类状态以及每个命中类别的 `code`、名称和实际交易场景；未映射时可以携带简短类型描述。SSE 用于即时展示，单任务 GET 快照的 `run.classification` 用于持续恢复；该结果不进入可编辑的 Core/Clause `draft`。完整分类结果仍留在内存聚合中供后续入库。
+
+建议名称阶段成功时采用同一恢复协议：`stage.completed` 携带 `suggested_file_name`，其中包含不带扩展名的名称主体、简洁理由和页面证据；单任务快照持续保存完整公共投影，运行历史列表只保存名称字符串摘要。完整模型工具审计仍只存在该阶段不可覆盖的内部尝试记录。前端可以用建议名称初始化最终文件名输入，但入库请求提交的用户值始终覆盖自动建议。
 
 ---
 
@@ -153,7 +160,7 @@ clauses: null
 
 Core 使用 Elasticsearch mapping 的稳定 code 和值形状，但为了允许用户补充，未提取字段暂时保留为 `null`；Clause 直接使用 Elasticsearch `clauses` 元素结构并排除失败候选。Core 和 Clause 独立就绪，其中任一成功才发布 `run.review_ready` 与 `draft.updated`。Retrieval 仍更新自身阶段状态，但不发布没有用户可见变化的草稿事件。
 
-后续入库请求计划只接收当前 `run_id`、用户自定义文件名以及修改后的 Core、Clause。服务端从内存聚合补齐文档身份、页数、分类、问题融合向量、页面融合向量、审核人与入库时间，并在正式投影时过滤 Core 的 `null` 和条款可选空值。该接口尚未实现。
+入库请求只接收当前 `run_id`、用户自定义文件名以及修改后的完整 Core、Clause。服务端从内存聚合补齐文档身份、页数、分类、问题融合向量、页面融合向量、审核人与入库时间，并在正式投影时过滤 Core 的 `null`、空多值数组和条款可选空值。八个阶段必须全部成功，分类与两个合同级向量也必须存在；用户提交的最终文件名无需等于自动建议。持久化成功后发布 `run.ingested` 并释放运行。
 
 Core 与 Clause 的精确前端对象、字段含义和状态负载见[合同 API 的快照响应](../../api/contract.md#获取当前状态与提取结果)。
 
@@ -161,7 +168,7 @@ Core 与 Clause 的精确前端对象、字段含义和状态负载见[合同 AP
 
 ## 失败阶段断点重试
 
-七个用户业务阶段都可以在执行失败后重试。服务从失败点继续，严格复用更早阶段已经成功且仍保存在聚合中的权威结果，不允许回退重跑成功阶段：合同文档判断重试后继续查重；查重重试后重新形成确认暂停点；结构识别重试后继续分类；分类重试直接复用结构结果并在成功后启动三个下游分支；三个下游阶段各自独立重试。
+八个用户业务阶段都可以在执行失败后重试。服务从失败点继续，严格复用更早阶段已经成功且仍保存在聚合中的权威结果，不允许回退重跑成功阶段：合同文档判断重试后继续查重；查重重试后重新形成确认暂停点；结构识别重试后继续分类；分类重试直接复用结构结果并在成功后生成建议名称；建议名称重试复用分类后的 `ExtractionContext`，成功后启动三个下游分支；三个下游阶段各自独立重试。
 
 创建请求内的 PDF 格式检查与渲染发生在任务建立前，不属于用户业务阶段，失败时不会产生 `run_id`，因此不能重试。业务阶段只有状态为 `failed` 且尝试次数未达上限时才令 `retryable=true`。
 
@@ -194,6 +201,8 @@ Core 与 Clause 的精确前端对象、字段含义和状态负载见[合同 AP
 
 用户取消是独立于 TTL 的即时终止路径。服务在聚合锁内标记取消并从注册表移除任务，使并发的继续或重试操作不能在取消后重新调度节点；随后取消该运行的后台协程和查重到期任务。已经连接的订阅者先收到 `run.cancelled`，其 `overall_status` 为 `cancelled`，然后连接结束。取消不保留可恢复墓碑，之后所有按 `run_id` 的操作均返回不存在。
 
+正式入库采用类似的终态释放协议。服务先用 SQLite 短事务登记 `ingesting`，再保存处理版 PDF、写入 Elasticsearch，最后用第二个短事务发布 `ready`；只有三处均完成后才在聚合锁内标记 `ingested`。服务先向既有订阅者发布 `run.ingested`，再移除注册表引用并关闭 SSE；任一持久化步骤失败都不会改变运行终态，允许用户使用同一 `run_id` 重试。普通文件管理只读取 SQLite `ready`，启动时会对非就绪记录核验 PDF 和 ES，详细边界见[合同 SQLite 元数据结构](../data/contract-sqlite-metadata.md)。
+
 TTL、清理周期、事件缓冲、SSE 心跳和分支尝试次数均由环境变量控制，具体配置项及默认值见[后端应用的合同处理内存配置](../../capability/application/backend-application.md#合同处理内存配置)。
 
 > **单进程限制：** 当前注册表不持久化且不跨进程共享。开发热更新会清空任务，多 worker 会让上传、SSE、查询和重试落到不同内存空间。采用当前方案时必须运行单 worker；未来如需横向扩展，应另行设计共享临时状态，不能借用 Elasticsearch 保存处理过程。
@@ -212,5 +221,7 @@ TTL、清理周期、事件缓冲、SSE 心跳和分支尝试次数均由环境�
 | `app.service.contract_extraction.executor` | 把现有 Agent 子图适配成公共处理和独立业务分支。 |
 | `app.service.contract_extraction.projector` | 从私有 Agent 结果构造用户可见 Core/Clause。 |
 | `app.service.contract_extraction.model` | 稳定运行状态、事件和提取结果应用契约。 |
+| `app.service.contract_ingestion` | 校验最终审核值、投影 ES 文档并协调 SQLite、处理版 PDF 与正式索引写入。 |
+| `app.infrastructure.contract_metadata_store` | 使用 SQLite 短事务维护文件目录、入库状态和启动对账输入。 |
 
-当前已验证内存 PDF 异步准备、合同与非合同分流、非合同 SSE 终态、工作流直接接收 `PreparedPDF`、合同结构识别阶段、ES 候选文件信息投影与事件回放、独立资源文件读取、固定期限销毁和一次性继续请求。文件大小与恶意内容策略、专家确认、正式对象修改与 Elasticsearch 投影尚未实现。
+当前已验证内存 PDF 异步准备、合同与非合同分流、非合同 SSE 终态、工作流直接接收 `PreparedPDF`、合同结构识别阶段、ES 候选文件信息投影与事件回放、独立资源文件读取、固定期限销毁、一次性继续请求，以及最终 Core/Clause 校验、正式 ES 投影和成功后运行释放。文件大小与恶意内容策略仍未实现。

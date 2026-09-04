@@ -10,7 +10,7 @@
 
 ```mermaid
 flowchart TD
-    input["PDF + 文档结构 + 公共前缀"]
+    input["页面图像 + 文档结构 + 公共前缀"]
 
     subgraph field_extraction["字段提取子图"]
         core_entry["core_extraction<br/>调用 Core 子图"]
@@ -30,7 +30,7 @@ flowchart TD
 ```
 
 ```text
-PDF + 文档结构 + 公共前缀
+页面图像 + 文档结构 + 公共前缀
   → 字段提取子图
       → 选择 Core 定义
       → 组装 Core 公共任务

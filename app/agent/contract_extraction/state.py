@@ -174,12 +174,13 @@ class ContractPrefillContext(BaseModel):
 
 
 class ContractExtractionResult(BaseModel):
-    """结构理解与三个业务子图合并后的工作流结果。"""
+    """结构理解、建议名称与三个业务子图合并后的工作流结果。"""
 
     model_config = ConfigDict(frozen=True)
 
     pdf_path: Path
     classification: SerializeAsAny[BaseModel]
+    suggested_file_name: SerializeAsAny[BaseModel]
     document_structure: SerializeAsAny[BaseModel]
     field_extraction: FieldExtractionResult
     clause_extraction: SerializeAsAny[BaseModel]
@@ -198,6 +199,7 @@ class ContractExtractionState(TypedDict, total=False):
     prompt_context: PDFPromptContext
     base_context: ContractBaseContext
     classification: BaseModel
+    suggested_file_name: BaseModel
     prefill_context: ContractPrefillContext
     document_structure: BaseModel
     field_extraction: FieldExtractionResult

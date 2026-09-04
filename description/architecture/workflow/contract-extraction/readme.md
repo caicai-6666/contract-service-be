@@ -13,6 +13,7 @@
 | [PDF 准备与文档结构理解](document-understanding.md) | 定义工作流外的 PDF 准备，以及文档结构理解子图入口。 |
 | [文档结构发现](document-structure.md) | 定义合同内容单元发现与并发视觉定位。 |
 | [合同分类](classification.md) | 定义逐类别并发判断和紧凑分类结果。 |
+| [建议文件名生成](file-name-generation.md) | 定义分类后如何组装命名上下文并生成证据化友好名称。 |
 | [最终公共前缀组装](final-context-assembly.md) | 定义分类结果如何进入三个并行分支共享的稳定上下文。 |
 | [Core 字段提取](field-extraction.md) | 定义固定 Core 目录选择与逐字段并行提取。 |
 | [条款提取](clause-extraction.md) | 定义候选发现、上下文组装和逐条款并发提取。 |
@@ -35,12 +36,18 @@ flowchart TD
         build_prompt --> discover_units --> locate_units
     end
 
-    assemble_base["基础前缀组装节点<br/>PDF + 文档结构"]
+    assemble_base["基础前缀组装节点<br/>页面图像 + 文档结构"]
 
     subgraph classification_subgraph["合同分类子图"]
         assemble_classification["分类公共前缀组装节点"]
         classify["逐类别并发判定节点"]
         assemble_classification --> classify
+    end
+
+    subgraph file_name_subgraph["建议文件名生成子图"]
+        assemble_file_name["组装命名上下文"]
+        generate_file_name["生成证据化建议名称"]
+        assemble_file_name --> generate_file_name
     end
 
     assemble_prefill["最终前缀组装节点<br/>基础前缀 + 分类结果"]
@@ -72,7 +79,8 @@ flowchart TD
 
     upload --> prepare_service --> input --> build_prompt
     locate_units --> assemble_base --> assemble_classification
-    classify --> assemble_prefill
+    classify --> assemble_file_name
+    generate_file_name --> assemble_prefill
     assemble_prefill --> select_core
     assemble_prefill --> discover_clause
     assemble_prefill --> render_question_guides
@@ -83,7 +91,7 @@ flowchart TD
     merge --> result["合同 OCR 结果包络"]
 ```
 
-应用服务在创建请求内异步形成 `PreparedPDF`，Agent 工作流从该不可变输入开始构造页面提示词上下文、发现结构并完成逐单元视觉定位。主图随后组装“PDF + 文档结构”基础前缀并执行分类；最终前缀组装节点将分类结果追加到基础前缀末尾。字段、条款和检索问题生成三个子图随后并行执行，合并节点只在三者均结束后运行。
+应用服务在创建请求内异步形成 `PreparedPDF`，Agent 工作流从该不可变输入开始构造页面提示词上下文、发现结构并完成逐单元视觉定位。主图随后组装“页面图像 + 文档结构”基础前缀并执行分类，再生成建议文件名；最终前缀组装节点将分类结果追加到基础前缀末尾。字段、条款和检索问题生成三个子图随后并行执行，合并节点只在三者均结束后运行。
 
 ---
 
@@ -95,23 +103,29 @@ flowchart TD
 
 文档结构理解子图直接接收 `PreparedPDF`，内部拓扑为 `build_pdf_prompt_context → discover_document_units → locate_document_units`。`build_pdf_prompt_context` 将每页页码和模型实际接收的图像宽高转换为确定性提示词计划，每条描述紧邻对应图片且不暴露压缩实现。公共阅读规范、页面消息和构造器统一位于 `subgraph/document_understanding/prompt.py`。
 
-`discover_document_units` 复用同一 PDF 前缀，通过 `summary`、`think`、`generate_unit` 和 `finish` function tools 形成语义结构。随后 `locate_document_units` 为所有单元并发建立独立的 `think`、`draw_bbox`、`finish` 循环；每个会话只发送对应单元跨度内的带页码页面，并把完整结果写入权威结构元数据。两者均使用 `strict:false + tool_choice:auto`，并由客户端执行统一的有界协议恢复与本地严格校验。相关工具、状态和专属提示词内聚在 `subgraph/document_understanding/document_structure/`。完整职责见[PDF 准备服务与文档结构理解子图](document-understanding.md)和[文档结构与视觉定位节点](document-structure.md)。
+`discover_document_units` 复用同一页面图像前缀，通过 `summary`、`think`、`generate_unit` 和 `finish` function tools 形成语义结构。随后 `locate_document_units` 为所有单元并发建立独立的 `think`、`draw_bbox`、`finish` 循环；每个会话只发送对应单元跨度内的带页码页面，并把完整结果写入权威结构元数据。两者均使用 `strict:false + tool_choice:auto`，并由客户端执行统一的有界协议恢复与本地严格校验。相关工具、状态和专属提示词内聚在 `subgraph/document_understanding/document_structure/`。完整职责见[PDF 准备服务与文档结构理解子图](document-understanding.md)和[文档结构与视觉定位节点](document-structure.md)。
 
 ---
 
 ## 基础前缀组装节点
 
-`assemble_base_context` 是主图中的独立节点，不属于文档结构理解子图。它复用 `document_understanding.prompt.build_pdf_common_messages`，在 PDF 前缀后以带字段注释的稳定 YAML 追加包含 `unit_locations` 的 `DocumentStructureMetadata`，并输出版本为 `contract-base-context-v3` 的不可变 `ContractBaseContext`。分类子图必须直接读取该上下文，不能重新编码 PDF 或重新序列化文档结构。
+`assemble_base_context` 是主图中的独立节点，不属于文档结构理解子图。它复用 `document_understanding.prompt.build_pdf_common_messages`，在合同页面图像前缀后以带字段注释的稳定 YAML 追加包含 `unit_locations` 的 `DocumentStructureMetadata`，并输出版本为 `contract-base-context-v4` 的不可变 `ContractBaseContext`。分类子图必须直接读取该上下文，不能重新编码页面图像或重新序列化文档结构。
 
 ---
 
 ## 合同分类子图
 
-`classification` 包含 `assemble_classification_context` 和 `classify_contract`。节点一复制 `ContractBaseContext` 并追加所有单类别请求共享的多标签分类规则，形成版本为 `classification-common-v7` 且带独立指纹的 `ClassificationContext`；节点二读取启动期内存目录，为每个类别并发执行独立工具循环。所有请求使用相同工具定义、`before_task` 布局和公共消息前缀；页面已经由前置结构理解请求填充 vLLM 媒体缓存，因此分类并发只发送 UUID 引用，同时继续复用模型 prefix cache。具体类别资料和工具历史只属于分类子图，不写回基础前缀。
+`classification` 包含 `assemble_classification_context` 和 `classify_contract`。节点一复制 `ContractBaseContext` 并追加所有单类别请求共享的多标签分类规则，形成版本为 `classification-common-v8` 且带独立指纹的 `ClassificationContext`；节点二读取启动期内存目录，为每个类别并发执行独立工具循环。所有请求使用相同工具定义、`before_task` 布局和公共消息前缀；页面已经由前置结构理解请求填充 vLLM 媒体缓存，因此分类并发只发送 UUID 引用，同时继续复用模型 prefix cache。具体类别资料和工具历史只属于分类子图，不写回基础前缀。
 
 分类只使用文档结构中的单元页码、文字锚点和摘要辅助导航，忽略 `unit_locations` 坐标，不按定位框裁剪页面，也不在分类证据中输出视觉位置；导航不足时必须回退完整相关页面核查。
 
 分类节点把完整逐类别审计保留在私有 `classification_run`，只把紧凑 `classification` 写回主图。最终前缀的模型可读投影仅追加状态、命中卡片和必要的未映射类型描述，不注入失败类别 code、未命中证据或工具历史。完整边界见[合同分类子图](classification.md)。
+
+---
+
+## 建议文件名生成子图
+
+分类完成后，主图调用 `assemble_file_name_context → generate_suggested_file_name`。子图复用 `ContractBaseContext` 的页面与文档结构，并以友好 Markdown 追加紧凑分类摘要；正式结果包含建议 `file_name`、命名理由和页面证据，不包含扩展名。该结果不写入 `ContractPrefillContext`，因此不会改变 Core、Clause 或 Retrieval 的任务上下文。完整规则见[合同建议文件名生成子图](file-name-generation.md)。
 
 ---
 
@@ -141,11 +155,11 @@ flowchart TD
 
 ## 合并与输出
 
-`merge_extraction_results` 汇集分类、文档结构、字段、条款、检索问题、逐问题向量与合同融合向量，形成单一合同结果包络。后续实现应在此处保留节点级错误、模型与提示词版本、字段目录版本和原始证据索引，而非直接丢弃失败分支。
+`merge_extraction_results` 汇集分类、建议文件名、文档结构、字段、条款、检索问题、逐问题向量与合同融合向量，形成单一合同结果包络。后续实现应在此处保留节点级错误、模型与提示词版本、字段目录版本和原始证据索引，而非直接丢弃失败分支。
 
-当前异步 PDF 准备、结构单元发现、基础前缀组装、合同并行分类、最终公共前缀组装、Core 字段提取、条款三节点子图、检索问题生成、逐问题向量化和合同向量融合已经可用；正式索引和专家确认接口尚未接入主图。因此合并结果仍属于自动提取草稿。
+当前异步 PDF 准备、结构单元发现、基础前缀组装、合同并行分类、建议文件名生成、最终公共前缀组装、Core 字段提取、条款三节点子图、检索问题生成、逐问题向量化和合同向量融合已经可用；合并结果仍属于自动提取草稿，正式入库以用户审核后的提交值为准。
 
-HTTP 应用不会用主图末尾的三路汇合等待用户查看结果。服务层复用相同节点和子图完成公共前置处理，随后独立调用 Core、Clause 与 Retrieval 分支：任一路成功即可原子提交增量草稿，失败阶段可从断点重试。这是应用交互与容错编排，不改变 Agent 子图内部职责；完整状态机见[合同提取应用运行时](../../system/contract-extraction-runtime.md)，外部协议见[合同 API](../../../api/contract.md)。
+HTTP 应用不会用主图末尾的三路汇合等待用户查看结果。服务层复用相同节点和子图完成公共前置处理，在分类后串行生成建议文件名并通过 SSE、快照与历史列表公开，再独立调用 Core、Clause 与 Retrieval 分支：任一路成功即可原子提交增量草稿，失败阶段可从断点重试。这是应用交互与容错编排，不改变 Agent 子图内部职责；完整状态机见[合同提取应用运行时](../../system/contract-extraction-runtime.md)，外部协议见[合同 API](../../../api/contract.md)。
 
 ---
 

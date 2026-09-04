@@ -1,4 +1,4 @@
-"""合同文档识别的稳定业务定义与 PDF 消息构造器。"""
+"""合同文档识别的稳定业务定义与页面图像消息构造器。"""
 
 from __future__ import annotations
 
@@ -12,20 +12,20 @@ from app.agent.contract_extraction.subgraph.document_understanding.prompt import
 from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
 
 ContractDocumentDetectionPromptVersion = Literal[
-    "contract-document-detection-v2"
+    "contract-document-detection-v3"
 ]
 
 CONTRACT_DOCUMENT_DETECTION_PROMPT_VERSION: Final[
     ContractDocumentDetectionPromptVersion
-] = "contract-document-detection-v2"
+] = "contract-document-detection-v3"
 
 # 工具将在任务描述之后由统一聊天模板渲染，后续增加 think 历史时不得
-# 把动态内容插回 PDF 页面与本任务之间，以免破坏稳定视觉前缀。
+# 把动态内容插回页面图像与本任务之间，以免破坏稳定视觉前缀。
 CONTRACT_DOCUMENT_DETECTION_TOOL_PLACEMENT: Final[
     Literal["after_task"]
 ] = "after_task"
 
-CONTRACT_DOCUMENT_DETECTION_TASK_PROMPT: Final = """你是具有采购、财务和合同档案审核经验的文档审核员。你已获得同一份上传 PDF 的全部可用页面。当前只需判断这份 PDF 是否属于合同类文档，不判断合同是否成立、生效、可执行，也不提供法律意见。PDF 页面是唯一事实来源；不得使用文件名或合同外知识补全页面中没有的事实。
+CONTRACT_DOCUMENT_DETECTION_TASK_PROMPT: Final = """你是具有采购、财务和合同档案审核经验的文档审核员。你已获得同一份上传文档按原始顺序排列的全部可用页面图像。当前只需判断这份文档是否属于合同类文档，不判断合同是否成立、生效、可执行，也不提供法律意见。页面图像是唯一事实来源；不得使用文件名或合同外知识补全页面中没有的事实。
 
 权威定义：
 本任务以“民事主体之间设立、变更、终止民事法律关系的协议”为合同的基础定义，并将其转换为以下唯一可执行标准。文档整体同时满足下列三项时，判定为合同类文档：
@@ -69,7 +69,7 @@ CONTRACT_DOCUMENT_DETECTION_TOOL_INSTRUCTION_PROMPT: Final = f"""工具使用：
 def build_contract_document_detection_messages(
     prepared_pdf: PreparedPDF,
 ) -> list[dict[str, object]]:
-    """构造“稳定 PDF 前缀 → 合同权威定义任务”的完整消息。"""
+    """构造“稳定页面图像前缀 → 合同权威定义任务”的完整消息。"""
     prompt_pages = tuple(
         PDFPromptPage(
             page_number=page.page_number,

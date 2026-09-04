@@ -35,7 +35,7 @@ class StructureEvidence(StrictToolModel):
     """支持合同主题、单元内容或边界判断的页面证据。"""
 
     page_number: int = Field(
-        description="该证据所在的 PDF 物理页码，从 1 开始；不是合同印刷页码。"
+        description="该证据所在合同页面的物理页码，从 1 开始；不是页面中印刷的页码。"
     )
     kind: EvidenceKind = Field(
         description=(
@@ -162,7 +162,7 @@ class ThinkArguments(StrictToolModel):
 class UnitBoundary(StrictToolModel):
     """一个内容单元的开始或结束锚点。"""
 
-    page_number: int = Field(description="该边界锚点所在的 PDF 物理页码，从 1 开始。")
+    page_number: int = Field(description="该边界锚点所在合同页面的物理页码，从 1 开始。")
     anchor_kind: EvidenceKind = Field(
         description=(
             "边界锚点形式：text 使用页面原文，visual 使用标题、印章或版式等可核对视觉特征。"
@@ -201,7 +201,7 @@ class UnitNavigationAnchor(StrictToolModel):
     """位于单元起止边界之间、供后续视觉定位使用的有序锚点。"""
 
     page_number: int = Field(
-        description="该中间导航锚点所在的 PDF 物理页码，从 1 开始。"
+        description="该中间导航锚点所在合同页面的物理页码，从 1 开始。"
     )
     anchor_kind: EvidenceKind = Field(
         description=(

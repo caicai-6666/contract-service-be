@@ -93,7 +93,7 @@ def _validate_evidence_pages(
     return ContractDocumentDetectionToolFeedback(
         ok=False,
         message=(
-            f"evidence.page_number 超出上传 PDF 的 1-{page_count} 页：{invalid}；"
+            f"evidence.page_number 超出上传文档的 1-{page_count} 页：{invalid}；"
             "请根据页面标签修正后重新提交。"
         ),
     )

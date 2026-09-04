@@ -967,7 +967,7 @@ def _build_candidate_navigation_guide(
             )
         ],
         "authority": (
-            "以上仅为处理版 PDF 的确定性页面元数据和位置提示；"
+            "以上仅为候选文档的确定性页面元数据和位置提示；"
             "当前没有复核后 Core、条款页定位或自动页面摘要。"
         ),
     }

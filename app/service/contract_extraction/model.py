@@ -20,6 +20,7 @@ class RunStatus(StrEnum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     EXPIRED = "expired"
+    INGESTED = "ingested"
 
 
 class RunListStatus(StrEnum):
@@ -36,6 +37,7 @@ class StageCode(StrEnum):
     PDF_DEDUPLICATION = "pdf_deduplication"
     CONTRACT_STRUCTURE_RECOGNITION = "contract_structure_recognition"
     CONTRACT_CLASSIFICATION = "contract_classification"
+    FILE_NAME_GENERATION = "file_name_generation"
     CORE_EXTRACTION = "core_extraction"
     CLAUSE_EXTRACTION = "clause_extraction"
     RETRIEVAL_PREPARATION = "retrieval_preparation"
@@ -76,6 +78,7 @@ class EventType(StrEnum):
     RUN_REVIEW_READY = "run.review_ready"
     RUN_CANCELLED = "run.cancelled"
     RUN_EXPIRED = "run.expired"
+    RUN_INGESTED = "run.ingested"
 
 
 class ResultStatus(StrEnum):
@@ -168,7 +171,7 @@ class ProcessedPDFMetadataView(ContractExtractionViewModel):
 
 
 class ProcessingRunSnapshot(ContractExtractionViewModel):
-    """一次任务当前状态及全部用户业务阶段。"""
+    """一次任务当前状态、公共结果及全部用户业务阶段。"""
 
     run_id: str
     status: RunStatus
@@ -181,13 +184,15 @@ class ProcessingRunSnapshot(ContractExtractionViewModel):
     document_detection: ContractDocumentDetectionView | None = None
     deduplication: DeduplicationReviewView | None = None
     classification: ContractClassificationView | None = None
+    suggested_file_name: SuggestedFileNameView | None = None
 
 
 class ContractExtractionRunSummary(ContractExtractionViewModel):
-    """一项尚未入库且可由前端恢复的内存任务摘要。"""
+    """一项尚未入库且可由前端恢复名称的内存任务摘要。"""
 
     run_id: str
     document: ProcessedPDFMetadataView
+    suggested_file_name: str | None = Field(default=None, min_length=1)
     status: RunListStatus
     created_at: datetime
     updated_at: datetime
@@ -214,6 +219,40 @@ class ContractClassificationView(ContractExtractionViewModel):
     status: Literal["classified", "unmapped", "partial"]
     categories: tuple[ContractCategoryView, ...]
     unmapped_type_description: str | None = None
+
+
+class SuggestedFileNameEvidenceView(ContractExtractionViewModel):
+    """支持建议名称的一条可由前端回到页面核对的证据。"""
+
+    page_number: int = Field(
+        ge=1,
+        description="证据所在合同页面从 1 开始的物理页码。",
+    )
+    content: str = Field(
+        min_length=1,
+        max_length=300,
+        description="直接支持建议名称的简短页面原文。",
+    )
+
+
+class SuggestedFileNameView(ContractExtractionViewModel):
+    """前端可采用或修改的证据化建议展示名称。"""
+
+    file_name: str = Field(
+        min_length=1,
+        max_length=255,
+        description="不含扩展名、可由审核用户最终修改的建议展示名称。",
+    )
+    reasoning: str = Field(
+        min_length=1,
+        max_length=2000,
+        description="页面事实与分类摘要如何支持当前建议名称的简洁理由。",
+    )
+    evidence: tuple[SuggestedFileNameEvidenceView, ...] = Field(
+        min_length=1,
+        max_length=10,
+        description="按页面阅读顺序排列的命名依据。",
+    )
 
 
 FieldScalar = str | int | float | bool
@@ -283,7 +322,7 @@ class ContractExtractionDraft(ContractExtractionViewModel):
 
 
 class ContractExtractionSnapshot(ContractExtractionViewModel):
-    """普通查询接口返回的运行状态、分类与当前 Core/Clause 结果。"""
+    """查询接口返回的状态、分类、建议名称与 Core/Clause 结果。"""
 
     run: ProcessingRunSnapshot
     draft: ContractExtractionDraft | None
@@ -303,6 +342,7 @@ class ContractExtractionEvent(ContractExtractionViewModel):
     document_detection: ContractDocumentDetectionView | None = None
     deduplication: DeduplicationReviewView | None = None
     classification: ContractClassificationView | None = None
+    suggested_file_name: SuggestedFileNameView | None = None
     occurred_at: datetime
 
 
@@ -334,4 +374,6 @@ __all__ = [
     "StageProgress",
     "StageSnapshot",
     "StageStatus",
+    "SuggestedFileNameEvidenceView",
+    "SuggestedFileNameView",
 ]
