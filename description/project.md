@@ -41,14 +41,17 @@
 
 - 支持审核用户仅凭配置密钥登录，签发带 TTL 的进程内免登码。
 - 除健康检查和登录外，所有 HTTP/SSE 接口统一校验 Bearer 免登码并注入审核人名称。
+- 用户具有三级合同权限，所有等级可查看，1、2 级可新增；1 级可通过正式删除接口清理 ES、PDF 和 SQLite 合同数据。
 - 合同任务在创建时绑定当前审核人名称；运行列表、快照、SSE、继续和重试只允许任务所有者访问，跨用户请求按任务不存在处理。
 - 支持按正式合同文档的 `file_uri` 安全读取 `data/contract` 中的 PDF。
 - 支持读取启动期固定的 Core 表单定义，使前端能够识别字段属性、数据类型、必填规则和单项/多项基数。
+- 支持读取 SQLite 全部合同类别的 ID、代码与名称，供前端构建类别选项。
+- 支持已登录审核人读取全部已成功入库合同的轻量元数据目录。
 - 支持列出当前进程内正在处理、等待人工操作或已经形成提取结果但尚未入库的运行；列表以 `processing | blocked` 区分自动推进与人工介入，并在可用时提供建议文件名摘要，供前端选择 `run_id` 后恢复快照、SSE 和处理版 PDF 元数据。
 - 通过 HTTP 上传单份 PDF，并创建进程内合同处理任务。
 - 通过快照接口返回八个用户阶段、合同文档判断、查重审核结果、建议文件名，以及用户必须复核的 Core 与 Clause；请求内 PDF 技术处理不作为用户阶段暴露。
 - 通过 SSE 返回阶段开始、真实离散进度、查重暂停、继续、完成、失败、重试和草稿更新事件。
-- 查重完成后只返回 ES Top-3 中判定为重复或相似的合同及其原始 cosine、友好 `file_name` 和 `file_uri`，暂停最长 10 分钟；不同合同和失败判断只留在内部，PDF 由独立资源接口按 `file_uri` 获取，前端提交继续请求后才执行合同结构识别、分类和提取。
+- 查重完成后返回重复或相似候选及 PDF 地址；哈希一致或模型判重时直接结束，保留候选展示但禁止继续、重试和入库。无重复时暂停最长 10 分钟，确认后执行结构识别、分类和提取；PDF 仍由独立资源接口读取。
 - 分类完成后先生成建议文件名，再并行运行 Core、Clause 和 Retrieval 三个业务分支；Core 或 Clause 成功后独立更新用户可见提取结果，Retrieval 结果只在内存中供后续入库使用。
 - 合同分类成功事件通过 SSE 及时返回类别 `code`、名称和当前合同场景；同一精简结果持续保存在单任务 GET 快照中供恢复，但不进入可编辑的 Core/Clause 草稿。
 - 建议名称成功事件通过 SSE 返回 `file_name`、命名理由和页面证据；同一结果保存在单任务快照中，运行历史列表保留名称摘要，供断线和重新进入任务时恢复。
@@ -75,9 +78,9 @@
 - 系统只支持固定 Core 提取，不包含候选字段生成、归并、统计或治理流程。
 - Core 只能来自启动期通过严格校验的固定字段目录；运行时不得创建目录外字段。
 - 原始 PDF 只在创建请求期间存在；任务只保存栅格化处理版 PDF，处理版、同源页面缓存、自动草稿和中间状态只驻留当前 API 进程内存。
-- 当前没有独立的专家编辑版本、审核历史或角色权限；正式入库接口直接接收任务所有者提交的最终文件名、Core 和 Clause。
+- 当前没有独立的专家编辑版本或审核历史；正式入库接口直接接收有新增权限的任务所有者提交的最终文件名、Core 和 Clause。
 - 当前注册表不跨进程共享，开发热更新会清空任务；合同处理服务必须使用单 worker。
-- 免登校验确认审核人身份并用于合同任务所有权隔离，但尚未实现角色权限；免登码缓存和任务注册表均不跨进程共享，重启即清空。
+- 免登校验确认审核人身份，结合三级操作权限和合同任务所有权隔离；免登码缓存和任务注册表均不跨进程共享，重启即清空。
 - 系统不替代合同审阅、法律意见或合同效力判断。
 - 检索问题只生成问题和向量，不生成配套答案。
 
@@ -143,7 +146,9 @@ flowchart TD
     sse["SSE 阶段状态、进度<br/>与结果更新通知"]
 
     pdf --> preparation --> detection
-    detection -->|是合同| dedup --> pause --> continue --> understanding --> base_context --> classification --> file_name --> prefill_context
+    detection -->|是合同| dedup
+    dedup -->|重复| duplicate_end["重复终态：保留候选展示"]
+    dedup -->|无重复| pause --> continue --> understanding --> base_context --> classification --> file_name --> prefill_context
     detection -->|不是合同| rejected
     prefill_context --> core
     prefill_context --> clause
@@ -193,4 +198,4 @@ flowchart TD
 - 启动本地 Elasticsearch：阅读[Elasticsearch 本地开发部署](capability/infrastructure/elasticsearch-development.md)。
 - 修改提示词：阅读[提示词工程规范](standard/prompt-engineering.md)。
 - 修改多轮工具节点：阅读[多轮 Agent 上下文与记忆管理规范](standard/agent-context-management.md)。
-- 新建或修改文档：阅读[文档撰写风格手册](standard/documentation.md)。
+- 新建或修改文档：阅读[文档撰写风格手册](documentation.md)。

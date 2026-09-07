@@ -101,6 +101,16 @@ class LocalContractFileStore:
             raise ContractFileNotFoundError(uri_path.name)
         return resolved_path
 
+    def delete_processed_pdf(self, document_id: str) -> None:
+        """只删除固定根目录中的哈希命名文件；不存在视为已完成。"""
+        if re.fullmatch(r"[0-9a-f]{64}", document_id) is None:
+            raise InvalidContractFileAddressError("document_id 必须是 64 位小写 SHA-256")
+        target = self._root / f"{document_id}.pdf"
+        # 不沿符号链接删除，避免被替换的文件指向其他合同或根目录外。
+        if target.is_symlink() or (target.exists() and not target.is_file()):
+            raise InvalidContractFileAddressError("合同删除目标不是普通文件")
+        target.unlink(missing_ok=True)
+
 
 __all__ = [
     "ContractFileNotFoundError",

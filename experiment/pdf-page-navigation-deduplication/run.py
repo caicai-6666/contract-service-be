@@ -161,6 +161,7 @@ def target_candidate(
         document_id=source["document_id"],
         file_name=source["file_name"],
         file_uri=source["file_uri"],
+        reviewer=source["ingestion"]["reviewer"],
         page_count=source["page_count"],
         score=score,
     )

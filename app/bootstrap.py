@@ -143,6 +143,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
             index_name=settings.elasticsearch_index_name,
             file_store=contract_file_store,
             metadata_store=contract_metadata_store,
+            category_catalog=contract_category_catalog,
             field_catalog=field_definition_catalog,
             vector_dimensions=settings.elasticsearch_vector_dimensions,
         )

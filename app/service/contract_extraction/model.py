@@ -14,6 +14,7 @@ class RunStatus(StrEnum):
 
     PROCESSING = "processing"
     NOT_A_CONTRACT = "not_a_contract"
+    DUPLICATE_REJECTED = "duplicate_rejected"
     AWAITING_DEDUPLICATION_REVIEW = "awaiting_deduplication_review"
     PARTIAL_READY = "partial_ready"
     READY = "ready"
@@ -70,6 +71,7 @@ class EventType(StrEnum):
     STAGE_FAILED = "stage.failed"
     STAGE_RETRYING = "stage.retrying"
     RUN_DOCUMENT_REJECTED = "run.document_rejected"
+    RUN_DUPLICATE_REJECTED = "run.duplicate_rejected"
     RUN_DEDUPLICATION_REVIEW_REQUIRED = (
         "run.deduplication_review_required"
     )
@@ -147,6 +149,10 @@ class DeduplicationCandidateView(ContractExtractionViewModel):
         min_length=1,
         description="Elasticsearch 合同文档中的原始文件地址。",
     )
+    reviewer: str = Field(
+        min_length=1,
+        description="确认候选合同最终结果并执行入库的审核人。",
+    )
     page_count: int = Field(gt=0)
     reasoning_summary: str = Field(min_length=1)
 
@@ -156,7 +162,8 @@ class DeduplicationReviewView(ContractExtractionViewModel):
 
     status: Literal["unique", "duplicate", "failed"]
     candidates: tuple[DeduplicationCandidateView, ...] = Field(max_length=3)
-    review_expires_at: datetime
+    review_expires_at: datetime | None
+    can_continue: bool = Field(description="是否允许确认后继续；重复合同固定为 false。")
     continued_at: datetime | None = None
 
 

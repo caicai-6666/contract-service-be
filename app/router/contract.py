@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Annotated
@@ -15,6 +16,7 @@ from fastapi import (
     Header,
     HTTPException,
     Query,
+    Path,
     Request,
     Response,
     status,
@@ -24,15 +26,25 @@ from fastapi.responses import StreamingResponse
 from app.agent.contract_extraction.subgraph.field_extraction.definition import (
     FieldDefinitionCatalog,
 )
-from app.router.dependency import ReviewerUserDependency
+from app.router.dependency import (
+    ReviewerUserDependency,
+    require_contract_add,
+    require_contract_delete,
+)
+from app.infrastructure.contract_metadata_store import SQLiteContractMetadataStore
 from app.schema.contract import (
+    ContractCategoryResponse,
     ContractIngestionAuditResponse,
     ContractIngestionRequest,
     ContractIngestionResponse,
+    ContractMetadataResponse,
     CoreDefinitionCatalogResponse,
     project_core_definition_catalog,
 )
 from app.service.contract_ingestion import (
+    ContractIngestionService,
+    ContractDocumentNotFoundError,
+    ContractDocumentConflictError,
     ContractPersistenceError,
     ContractReviewValidationError,
 )
@@ -78,6 +90,95 @@ FieldDefinitionCatalogDependency = Annotated[
 ]
 
 
+def get_contract_metadata_store(request: Request) -> SQLiteContractMetadataStore:
+    """取得启动期已初始化并同步类别目录的 SQLite 存储。"""
+    return request.app.state.contract_metadata_store
+
+
+ContractMetadataStoreDependency = Annotated[
+    SQLiteContractMetadataStore,
+    Depends(get_contract_metadata_store),
+]
+
+
+def get_contract_ingestion_service(request: Request) -> ContractIngestionService:
+    """取得入库与正式删除共享的持久化服务和文档锁。"""
+    return request.app.state.contract_ingestion_service
+
+
+@router.delete(
+    "/documents/{document_id}",
+    dependencies=[Depends(require_contract_delete)],
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="删除已入库合同及其全部正式存储数据",
+    responses={
+        403: {"description": "仅 1 级用户允许删除正式合同。"},
+        404: {"description": "合同不存在或已删除。"},
+        409: {"description": "合同尚未完成入库。"},
+        502: {"description": "存储删除失败，可能部分完成，可重试。"},
+    },
+)
+async def delete_contract_document(
+    document_id: Annotated[str, Path(pattern=r"^[0-9a-f]{64}$", description="合同 document_id，即处理版 PDF 的 SHA-256。")],
+    service: Annotated[ContractIngestionService, Depends(get_contract_ingestion_service)],
+    reviewer_user_name: ReviewerUserDependency,
+) -> Response:
+    """1 级可删除共享目录中任意正式合同，不以原入库审核人过滤。"""
+    try:
+        await service.delete_document(document_id, reviewer=reviewer_user_name)
+    except ContractDocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="合同不存在或已删除") from exc
+    except ContractDocumentConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ContractPersistenceError as exc:
+        # 完整错误链保留在服务日志，不向前端暴露连接信息与本地路径。
+        logging.getLogger(__name__).exception("正式合同删除未完成：document_id=%s", document_id)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/documents",
+    response_model=list[ContractMetadataResponse],
+    summary="获取所有已入库合同的元数据",
+)
+def get_contract_documents(
+    store: ContractMetadataStoreDependency,
+) -> list[ContractMetadataResponse]:
+    """共享正式合同目录仅公开 ready 记录，不按当前审核人过滤。"""
+    return [
+        ContractMetadataResponse(
+            document_id=metadata.document_id,
+            file_name=metadata.file_name,
+            category=metadata.category,
+            contract_time=metadata.contract_time,
+            file_uri=metadata.file_uri,
+            reviewer=metadata.reviewer,
+            ingested_at=metadata.ingested_at,
+        )
+        for metadata in store.list_ready()
+    ]
+
+
+@router.get(
+    "/categories",
+    response_model=list[ContractCategoryResponse],
+    summary="获取合同类别列表",
+)
+def get_contract_categories(
+    store: ContractMetadataStoreDependency,
+) -> list[ContractCategoryResponse]:
+    """返回全部类别；同步 SQLite 查询由 FastAPI 在线程池中执行。"""
+    return [
+        ContractCategoryResponse(
+            category_id=category.category_id,
+            code=category.code,
+            name=category.name,
+        )
+        for category in store.list_categories()
+    ]
+
+
 @router.get(
     "/core-definitions",
     response_model=CoreDefinitionCatalogResponse,
@@ -92,6 +193,7 @@ async def get_core_definitions(
 
 @router.post(
     "/extraction-runs",
+    dependencies=[Depends(require_contract_add)],
     response_model=ContractExtractionSnapshot,
     status_code=status.HTTP_202_ACCEPTED,
     summary="上传 PDF 并启动合同提取",
@@ -170,6 +272,7 @@ async def get_contract_extraction_run(
 
 @router.delete(
     "/extraction-runs/{run_id}",
+    dependencies=[Depends(require_contract_add)],
     status_code=status.HTTP_204_NO_CONTENT,
     summary="取消合同处理任务",
 )
@@ -194,6 +297,7 @@ async def cancel_contract_extraction_run(
 
 @router.post(
     "/extraction-runs/{run_id}/continue",
+    dependencies=[Depends(require_contract_add)],
     response_model=ContractExtractionSnapshot,
     status_code=status.HTTP_202_ACCEPTED,
     summary="确认查重结果并继续合同提取",
@@ -260,6 +364,7 @@ async def stream_contract_extraction_events(
             for event in replay:
                 yield _format_event(event)
                 if event.event_type in {
+                    EventType.RUN_DUPLICATE_REJECTED,
                     EventType.RUN_CANCELLED,
                     EventType.RUN_EXPIRED,
                     EventType.RUN_INGESTED,
@@ -278,6 +383,7 @@ async def stream_contract_extraction_events(
                     return
                 yield _format_event(event)
                 if event.event_type in {
+                    EventType.RUN_DUPLICATE_REJECTED,
                     EventType.RUN_CANCELLED,
                     EventType.RUN_EXPIRED,
                     EventType.RUN_INGESTED,
@@ -299,6 +405,7 @@ async def stream_contract_extraction_events(
 
 @router.post(
     "/extraction-runs/{run_id}/stages/{stage_code}/retry",
+    dependencies=[Depends(require_contract_add)],
     response_model=ContractExtractionSnapshot,
     status_code=status.HTTP_202_ACCEPTED,
     summary="单独重试一个合同处理阶段",
@@ -330,6 +437,7 @@ async def retry_contract_extraction_stage(
 
 @router.post(
     "/extraction-runs/{run_id}/ingestion",
+    dependencies=[Depends(require_contract_add)],
     response_model=ContractIngestionResponse,
     status_code=status.HTTP_201_CREATED,
     summary="提交最终审核值并正式入库合同",

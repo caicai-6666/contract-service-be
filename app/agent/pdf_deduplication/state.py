@@ -63,6 +63,7 @@ class PDFDuplicateCandidate(PDFDeduplicationModel):
     document_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     file_name: str = Field(min_length=1)
     file_uri: str = Field(min_length=1)
+    reviewer: str = Field(min_length=1)
     page_count: int = Field(gt=0)
     score: float
 

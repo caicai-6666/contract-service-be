@@ -3,6 +3,10 @@
 __pycache__/
 *.py[cod]
 
+# JetBrains IDE 配置仅在本地保留。
+.idea/
+*.iml
+
 # 实验方案和运行器进入版本控制；运行产物只在本地保留。
 /experiment/**/output/
 

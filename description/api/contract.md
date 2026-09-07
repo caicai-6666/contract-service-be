@@ -7,12 +7,119 @@
 ## 资源约定
 
 - 本文所有接口都必须携带 `Authorization: Bearer <login_code>`；免登码通过[审核用户登录接口](auth.md)取得。
+- 查询接口对三个等级开放；上传、继续、重试、正式入库和取消未入库任务仅限 1、2 级，3 级访问返回 `403`。等级不会绕过任务所有者隔离。删除正式合同仅限 1 级，取消任务不等于删除正式合同。权限定义见[用户权限等级](../architecture/data/reviewer-user-definition.md#权限等级)。
 - `run_id` 是一次上传任务的唯一标识，不等同于合同 `document_id`。
 - 创建任务时，服务端会把免登码解析出的审核人名称写为任务所有者；客户端不提交、也不能覆盖该名称。
 - 运行列表以及所有携带 `run_id` 的查询、SSE 和状态变更接口只允许任务所有者访问。其他审核用户访问时与任务不存在一样返回 `404`，不会泄露 `run_id` 是否真实存在。
 - `document_id` 是任务实际保存并计划入库的处理版 PDF 字节 SHA-256。
 - SSE 及时传递状态事件、紧凑的合同文档判断、查重审核结果、分类结果和建议文件名；单任务快照持续保存分类与建议名称，Core 与 Clause 提取值也只能通过快照接口获取。
 - 原始 PDF 只在创建请求期间保留；任务保存按视觉预算栅格化的处理版 PDF、同源页面缓存、处理状态和草稿。
+
+---
+
+## 获取所有已入库合同元数据
+
+```http
+GET /contract/api/contract/documents
+```
+
+无需路径参数、查询参数或请求体。返回 SQLite 中所有 `ready` 合同，不分页、不按审核人过滤；正在入库的 `ingesting` 记录不可见。所有已登录审核人均可读取该共享正式合同目录，这与按所有者隔离的内存运行列表不同。
+
+成功状态码为 `200 OK`，响应为数组，无已入库合同时返回 `[]`。沿用存储目录顺序：`ingested_at` 降序，同值时 `document_id` 升序。
+
+```json
+[
+  {
+    "document_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "file_name": "设备采购合同",
+    "category": "sale / construction",
+    "contract_time": "2026-09-07",
+    "file_uri": "/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pdf",
+    "reviewer": "审核人甲",
+    "ingested_at": "2026-09-07T06:00:00Z"
+  }
+]
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `document_id` | string | 处理版 PDF 的 64 位小写 SHA-256 文档标识。 |
+| `file_name` | string | 用户最终确认的展示名称。 |
+| `category` | string | 类别 `code` 以 ` / ` 连接；不是数组或类别 ID。未映射时保留类型说明。 |
+| `contract_time` | string 或 null | 签订日期，格式为 `YYYY-MM-DD`；缺失时返回 `null`。 |
+| `file_uri` | string | 处理版 PDF 的稳定根相对读取地址。 |
+| `reviewer` | string | 确认最终结果并执行入库的审核人名称。 |
+| `ingested_at` | string | 带时区的 ISO 8601 入库时间。 |
+
+响应每项仅包含以上七个必有字段，不返回入库状态、尝试标识、分类理由或完整 Core/Clause。接口复用 `SQLiteContractMetadataStore.list_ready()`，同步查询在线程池中执行，不访问 Elasticsearch 或读取 PDF。当前不提供筛选与分页。
+
+```bash
+curl --header 'Authorization: Bearer <login_code>' \
+  'http://127.0.0.1:20000/contract/api/contract/documents'
+```
+
+缺少、无效或过期的 Bearer 免登码返回 `401`。
+
+---
+
+## 删除正式合同
+
+```http
+DELETE /contract/api/contract/documents/{document_id}
+```
+
+仅限 1 级用户，可删除任意审核人已入库的正式合同。路径参数 `document_id` 必须是 64 位小写十六进制 SHA-256；不接受文件名或文件路径，无查询参数及请求体。
+
+按顺序删除正式 Elasticsearch 索引中的同 ID 文档、`data/contract/<document_id>.pdf`、SQLite 合同摘要；类别关联由外键级联清除，全局类别字典保留。成功返回 `204 No Content`，无响应体。此操作不自动备份，也不删除历史备份、实验产物或其他内存提取任务。
+
+| 状态码 | 含义 |
+| --- | --- |
+| `401` | 未登录或免登码无效。 |
+| `403` | 当前用户不是 1 级。 |
+| `404` | SQLite 中不存在该合同，包括删除成功后重复请求。 |
+| `409` | 合同尚未完成入库，当前不能删除。 |
+| `422` | 文档 ID 格式错误。 |
+| `502` | 存储操作失败，可能部分完成，应使用同一 ID 重试。 |
+
+ES 或 PDF 已不存在不阻断剩余清理。SQLite 始终最后删除，中途失败时保留摘要与类别关联作为重试入口；此时列表可能仍显示该合同，但 PDF 或 ES 已不可用。没有跨存储原子回滚或自动删除恢复任务，重启后仍需重新调用本接口完成清理。相同 ID 的删除与入库在当前单进程内串行。
+
+```bash
+curl --request DELETE --header 'Authorization: Bearer <login_code>' \
+  'http://127.0.0.1:20000/contract/api/contract/documents/<document_id>'
+```
+
+---
+
+## 获取合同类别列表
+
+```http
+GET /contract/api/contract/categories
+```
+
+无需路径参数、查询参数或请求体。读取 SQLite 的 `contract_category_metadata`，返回全部类别（包括尚未关联任何合同的类别），按 `category_id` 升序排列，不分页。该表在应用启动时从权威类别目录同步；接口不查询 Elasticsearch，也不返回模型分类理由。
+
+成功状态码为 `200 OK`，响应为数组；类别表为空时返回 `[]`。以下为单项结构示例，具体值以接口返回为准：
+
+```json
+[
+  {"category_id": 1, "code": "example_category", "name": "示例合同类别"}
+]
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `category_id` | integer | 当前 SQLite 数据库中的正整数类别主键，可与合同类别关联表对应；不同数据库之间不保证一致。 |
+| `code` | string | 权威类别目录的稳定代码，可与提取结果的类别 `code` 对应。 |
+| `name` | string | 类别标准中文名称，供前端展示。 |
+
+所有字段均必有且非空。缺少、无效或过期的 Bearer 免登码返回 `401`，沿用统一认证约定。
+
+```bash
+curl --header 'Authorization: Bearer <login_code>' \
+  'http://127.0.0.1:20000/contract/api/contract/categories'
+```
+
+本接口仅提供类别选项，不查询合同列表，也不新增或修改类别。
 
 ---
 
@@ -266,6 +373,7 @@ draft:
 | --- | --- |
 | `processing` | 尚无可用 Core/Clause 结果，任务仍在处理。 |
 | `not_a_contract` | 上传内容已被可靠判定为非合同，后续处理已停止。 |
+| `duplicate_rejected` | 哈希一致或模型判定为重复，保留候选展示，但禁止继续、重试及入库。 |
 | `awaiting_deduplication_review` | 查重结果已返回，结构识别尚未启动，正在等待前端处理候选并调用继续接口。 |
 | `partial_ready` | 至少一个分区可查看，其他分支仍在处理或失败。 |
 | `ready` | 建议名称成功，且三个业务分支均已形成当前结果。 |
@@ -295,7 +403,7 @@ draft:
 
 ### 查重暂停结果
 
-`pdf_deduplication` 完成后，快照中的 `run.deduplication` 与 `run.deduplication_review_required` SSE 事件会返回同一个紧凑结果：
+`pdf_deduplication` 完成后，快照中的 `run.deduplication` 与 SSE 事件返回同一个紧凑结果。有重复候选时发送终态事件 `run.duplicate_rejected`；否则发送暂停事件 `run.deduplication_review_required`。以下为重复合同结果：
 
 ```json
 {
@@ -308,11 +416,13 @@ draft:
       "document_id": "e7591f0d...",
       "file_name": "设备采购合同（友好名称）.pdf",
       "file_uri": "/e7591f0d....pdf",
+      "reviewer": "张三",
       "page_count": 21,
       "reasoning_summary": "合同身份和核心交易条款一致，属于同一合同的完整版本。"
     }
   ],
-  "review_expires_at": "2026-09-02T10:10:00Z",
+  "review_expires_at": null,
+  "can_continue": false,
   "continued_at": null
 }
 ```
@@ -321,11 +431,13 @@ draft:
 - `cosine_similarity` 是 `[-1, 1]` 的原始 cosine，不是 Elasticsearch 变换后的 `_score`。
 - `relation` 只可能是 `duplicate` 或 `similar`。
 - `document_id` 与上传处理版 PDF 完全一致时，服务依据 SHA-256 文件身份直接形成 `duplicate`，不加载候选文件或调用 MLLM；其他候选仍执行视觉判断。
-- `file_name` 和 `file_uri` 均直接来自该候选的 Elasticsearch 文档；服务不使用哈希文件名覆盖友好展示名称，也不生成运行级下载地址。
+- `file_name`、`file_uri` 和 `reviewer` 均直接来自该候选的 Elasticsearch 文档；`reviewer` 表示确认该合同最终结果并执行入库的审核人。服务不使用哈希文件名覆盖友好展示名称，也不生成运行级下载地址。
 - `different` 和 `failed` 判断仍保留在查重内部结果及私有审计中，但不会返回前端。
 - 每个返回候选都提供 `reasoning_summary`；精确哈希命中只说明文件身份一致，MLLM 判断也不公开完整工具轨迹。
 - 前端需要预览 PDF 时，将 `file_uri` 作为查询参数传给[资源文件 API](resource.md)，即 `GET /contract/api/resource/contract?file_uri=...`。SSE 不内联 PDF 二进制或 Base64。
 - `review_expires_at` 在暂停点形成后固定，GET、SSE 和心跳不会刷新。成功继续后 `continued_at` 记录实际消费暂停点的时间。
+- 重复合同不进入暂停点：`can_continue=false`、`review_expires_at=null`、`continued_at=null`，运行状态为 `duplicate_rejected`。候选 PDF 列表、负责人和理由继续展示，快照及事件保留至普通运行 TTL 到期；不进入可恢复运行列表。SSE 发出终态事件后关闭，重连可回放。前端须接收新事件并隐藏继续、重试和入库操作，而不是隐藏候选列表。
+- 非重复（包括仅 `similar`）仍按原流程暂停，此时 `can_continue=true`；成功继续后变为 `false`。重复结果不可人工放行，即使之后删除候选，原任务也不能继续，需要重新上传发起查重。继续、重试和入库入口均在后端校验重复结果并返回 `409`。
 
 ### 阶段对象
 
@@ -414,7 +526,7 @@ POST /contract/api/contract/extraction-runs/{run_id}/continue
 
 请求没有 Body。只有 `awaiting_deduplication_review` 状态接受该操作；成功后返回 `202 Accepted` 和当前快照，运行恢复普通 TTL，`contract_structure_recognition` 已进入 `running`。结构识别成功后服务自动开始分类。暂停点只能消费一次，重复提交不具备幂等成功语义。
 
-前端可以在调用继续接口前，通过独立的合同管理接口删除或处理候选 PDF；这些外部操作不写回本次运行，也不自动触发继续。等待超过 `review_expires_at` 后整个运行从内存释放，必须重新上传。
+非重复任务可以在调用继续接口前处理相似候选；这些外部操作不写回本次运行，也不自动触发继续。重复任务永久禁止继续，即使已删除原候选也必须重新上传。非重复任务等待超过 `review_expires_at` 后整个运行从内存释放，必须重新上传。
 
 | 状态码 | 条件 |
 | --- | --- |
@@ -456,6 +568,7 @@ data: {"sequence":12,"run_id":"...","event_type":"stage.completed","overall_stat
 | `stage.failed` | 展示失败消息，并依据 `retryable` 决定是否显示重试。 |
 | `stage.retrying` | 标记已接受重试。 |
 | `run.document_rejected` | 上传内容不是合同；展示 `document_detection` 的证据与理由并停止等待后续阶段。 |
+| `run.duplicate_rejected` | 已发现重复合同；继续展示 `deduplication.candidates`，停止后续处理并关闭 SSE。 |
 | `run.deduplication_review_required` | 渲染 `deduplication` 候选，暂停其他阶段并提示用户在截止时间前处理和继续。 |
 | `run.continued` | 标记暂停点已经消费，继续展示结构识别、分类和提取进度。 |
 | `draft.updated` | 调用快照接口获取最新 Core 与 Clause 提取值。 |
@@ -477,7 +590,7 @@ data: {"event_type":"run.document_rejected","overall_status":"not_a_contract","d
 
 ```text
 event: run.deduplication_review_required
-data: {"event_type":"run.deduplication_review_required","overall_status":"awaiting_deduplication_review","deduplication":{"status":"duplicate","candidates":[...],"review_expires_at":"...","continued_at":null}}
+data: {"event_type":"run.deduplication_review_required","overall_status":"awaiting_deduplication_review","deduplication":{"status":"unique","candidates":[...],"can_continue":true,"review_expires_at":"...","continued_at":null}}
 ```
 
 `stage.completed` 只表示 `pdf_deduplication` 阶段成功；前端应以随后的 `run.deduplication_review_required` 渲染候选并停止等待分类进度。断线漏掉该事件时，通过 GET 快照读取 `run.status` 和 `run.deduplication` 恢复。
@@ -626,6 +739,8 @@ Content-Type: application/json
 
 八个用户业务阶段全部为 `succeeded` 后，审核用户提交最终展示文件名以及完整 Core、Clause。请求体不接受建议名称、`document_id`、分类、向量、PDF 地址、审核人或入库时间，这些信息均由服务端根据当前运行和登录用户补齐。最终 `file_name` 可以沿用、修改或完全替换自动建议。
 
+`core.signing_date` 是入库必填项，必须提供完整合法的签订日期。缺失、`null`、空白或非法日期返回 `422`，不会写入任何正式存储；日期统一规范为 `YYYY-MM-DD`。提取结果仍可能为 `null`，前端需提示审核人依据合同补充日期后再入库，不得自动用当前日期或其他业务日期替代。历史合同查询仍兼容空日期。
+
 ```json
 {
   "file_name": "设备采购合同",
@@ -644,7 +759,7 @@ Content-Type: application/json
     "currency": "CNY",
     "related_parties": null,
     "signed": null,
-    "signing_date": null,
+    "signing_date": "2026-09-07",
     "tax_included": true,
     "tax_rate": 13
   },
@@ -706,7 +821,7 @@ Content-Type: application/json
 4. 立即渲染创建或同步响应中的 `contract_document_detection` 状态。
 5. 使用支持 `Authorization` 请求头的客户端建立 SSE 连接，按事件更新处理时间线。
 6. 收到 `run.document_rejected` 后展示非合同证据并停止流程；若合同识别成功，则继续等待查重事件。
-7. 收到 `run.deduplication_review_required` 后渲染重复或相似候选；需要预览时将 `file_uri` 传给资源文件接口。
+7. 收到 `run.duplicate_rejected` 后继续渲染候选 PDF 列表，隐藏后续操作并停止流程；收到 `run.deduplication_review_required` 则展示相似候选并允许继续。预览统一将 `file_uri` 传给资源文件接口。
 8. 在 `review_expires_at` 前完成与提取流无关的候选处理，然后调用一次 `POST .../{run_id}/continue`。
 9. 继续消费合同结构识别、分类、建议名称和三个并行提取阶段；收到建议名称完成事件时初始化可编辑文件名，收到 `draft.updated` 或 `run.review_ready` 后获取一次全量快照。
 10. 对 `retryable: true` 的失败阶段提供断点重试入口；阶段成功后继续消费后续 SSE，并在 `draft.updated` 后获取最新修订。

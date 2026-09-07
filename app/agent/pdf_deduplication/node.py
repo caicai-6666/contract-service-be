@@ -169,16 +169,26 @@ async def retrieve_duplicate_candidates(
             # ES 会在近邻探索后排除低于门槛的结果，因此最终可以少于 3 条。
             "similarity": minimum_similarity,
         },
-        source=["document_id", "file_name", "file_uri", "page_count"],
+        source=[
+            "document_id",
+            "file_name",
+            "file_uri",
+            "page_count",
+            "ingestion.reviewer",
+        ],
     )
     candidates = []
     for rank, hit in enumerate(response["hits"]["hits"], start=1):
         source = hit.get("_source", {})
+        ingestion = source.get("ingestion")
+        if not isinstance(ingestion, dict):
+            raise ValueError("ES 候选合同缺少 ingestion 元数据")
         candidates.append(PDFDuplicateCandidate(
             rank=rank,
             document_id=source["document_id"],
             file_name=source["file_name"],
             file_uri=source["file_uri"],
+            reviewer=ingestion["reviewer"],
             page_count=source["page_count"],
             score=float(hit["_score"]),
         ))
@@ -244,10 +254,7 @@ async def judge_duplicate_candidates(
                 rank=candidate.rank,
                 rounds=0,
                 elapsed_ms=(monotonic() - candidate_started) * 1000,
-                reasoning_summary=(
-                    "上传处理版 PDF 与已入库合同的 SHA-256 document_id "
-                    "完全一致，属于同一份文件。"
-                ),
+                reasoning_summary="后台存在一模一样的合同。",
             )
         try:
             assert candidate_subgraph is not None

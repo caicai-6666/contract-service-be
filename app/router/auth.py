@@ -28,6 +28,7 @@ async def login(
     return LoginResponse(
         login_code=result.login_code,
         user_name=result.user_name,
+        permission_level=result.permission_level,
     )
 
 

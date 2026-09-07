@@ -1,4 +1,11 @@
 # 本文件仅提供本机开发默认值；部署前应替换密钥并限制文件读取权限。
 users:
+  - name: "Amy"
+    permission_level: 1
+    secret_key: "111111"
   - name: "Jason"
-    secret_key: "20020104"
+    permission_level: 2
+    secret_key: "222222"
+  - name: "James"
+    permission_level: 3
+    secret_key: "333333"

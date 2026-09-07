@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import math
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -14,6 +16,9 @@ from uuid import uuid4
 from elasticsearch import AsyncElasticsearch, NotFoundError
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.agent.contract_extraction.subgraph.classification.definition import (
+    ContractCategoryCatalog,
+)
 from app.agent.contract_extraction.subgraph.field_extraction.definition import (
     FieldCardinality,
     FieldDefinition,
@@ -21,8 +26,11 @@ from app.agent.contract_extraction.subgraph.field_extraction.definition import (
     FieldPropertyDefinition,
     FieldValueType,
 )
+from app.core.contract_date import normalize_contract_date
 from app.infrastructure.contract_file_store import LocalContractFileStore
 from app.infrastructure.contract_metadata_store import (
+    ContractCategoryAssignment,
+    ContractCategoryMetadata,
     ContractMetadata,
     ContractMetadataStatus,
     SQLiteContractMetadataStore,
@@ -36,6 +44,8 @@ if TYPE_CHECKING:
         CoreDraftData,
     )
 
+logger = logging.getLogger(__name__)
+
 
 class ContractReviewValidationError(ValueError):
     """人工复核值不符合启动期字段目录或最终条款契约。"""
@@ -43,6 +53,14 @@ class ContractReviewValidationError(ValueError):
 
 class ContractPersistenceError(RuntimeError):
     """SQLite、处理版 PDF 或 ES 未能形成一致的正式合同。"""
+
+
+class ContractDocumentNotFoundError(LookupError):
+    """正式合同目录中不存在指定文档。"""
+
+
+class ContractDocumentConflictError(RuntimeError):
+    """合同尚未就绪，不能执行正式删除。"""
 
 
 class _ContractIndexModel(BaseModel):
@@ -121,6 +139,7 @@ class ContractIngestionService:
         index_name: str,
         file_store: LocalContractFileStore,
         metadata_store: SQLiteContractMetadataStore,
+        category_catalog: ContractCategoryCatalog,
         field_catalog: FieldDefinitionCatalog,
         vector_dimensions: int,
         clock: Callable[[], datetime] | None = None,
@@ -134,6 +153,13 @@ class ContractIngestionService:
         self._index_name = normalized_index_name
         self._file_store = file_store
         self._metadata_store = metadata_store
+        self._category_metadata = tuple(
+            ContractCategoryMetadata(
+                code=category.definition.code,
+                name=category.definition.name,
+            )
+            for category in category_catalog.categories
+        )
         self._field_catalog = field_catalog
         self._vector_dimensions = vector_dimensions
         self._clock = clock or (lambda: datetime.now(UTC))
@@ -145,6 +171,10 @@ class ContractIngestionService:
         """初始化 SQLite，并恢复上次进程中断留下的非就绪记录。"""
         try:
             await asyncio.to_thread(self._metadata_store.initialize)
+            await asyncio.to_thread(
+                self._metadata_store.synchronize_categories,
+                self._category_metadata,
+            )
             unfinished = await asyncio.to_thread(
                 self._metadata_store.list_unfinished
             )
@@ -163,6 +193,7 @@ class ContractIngestionService:
         file_name: str,
         reviewer: str,
         classification: ContractClassificationView,
+        category_reasoning: Mapping[str, str],
         core: CoreDraftData,
         clauses: ClauseDraftData,
         question_fusion_vector: tuple[float, ...],
@@ -176,7 +207,15 @@ class ContractIngestionService:
         if page_count <= 0:
             raise ContractReviewValidationError("处理版 PDF 页数必须大于 0")
 
+        category_assignments = self._category_assignments(
+            classification,
+            category_reasoning=category_reasoning,
+        )
+
         projected_core = self._project_core(core)
+        contract_time = self._contract_time(projected_core)
+        # 入库必须具有真实、完整的签订日期；SQLite 和 ES 共用同一标准值。
+        projected_core["signing_date"] = contract_time
         projected_clauses = self._project_clauses(
             clauses,
             page_count=page_count,
@@ -234,12 +273,13 @@ class ContractIngestionService:
             document_id=document_id,
             file_name=normalized_file_name,
             category=self._category_summary(classification),
-            contract_time=self._contract_time(projected_core),
+            contract_time=contract_time,
             file_uri=file_uri,
             reviewer=normalized_reviewer,
             ingested_at=ingested_at,
             status=ContractMetadataStatus.INGESTING,
             ingestion_id=ingestion_id,
+            category_assignments=category_assignments,
         )
 
         document_lock = self._document_locks.setdefault(
@@ -252,6 +292,48 @@ class ContractIngestionService:
                 document=document,
                 processed_pdf_bytes=processed_pdf_bytes,
             )
+
+    async def delete_document(self, document_id: str, *, reviewer: str) -> None:
+        """与同文档入库串行，依次清理 ES、PDF 和 SQLite。"""
+        if re.fullmatch(r"[0-9a-f]{64}", document_id) is None:
+            raise ValueError("document_id 必须是 64 位小写 SHA-256")
+        document_lock = self._document_locks.setdefault(document_id, asyncio.Lock())
+        async with document_lock:
+            try:
+                metadata = await asyncio.to_thread(self._metadata_store.get, document_id)
+            except Exception as exc:
+                raise ContractPersistenceError("读取合同 SQLite 元数据失败") from exc
+            if metadata is None:
+                raise ContractDocumentNotFoundError(document_id)
+            if metadata.status is not ContractMetadataStatus.READY:
+                raise ContractDocumentConflictError("合同尚未完成入库，不能删除")
+            if metadata.file_uri != f"/{document_id}.pdf":
+                raise ContractPersistenceError("合同文件地址与文档身份不一致，拒绝删除")
+
+            # 保留 SQLite 作为失败重试入口；不把跨存储删除伪装成原子事务。
+            # ES 或 PDF 已不存在时允许继续，以收敛上次部分完成的删除。
+            try:
+                try:
+                    await self._elasticsearch.delete(
+                        index=self._index_name, id=document_id, refresh="wait_for"
+                    )
+                except NotFoundError:
+                    pass
+            except Exception as exc:
+                raise ContractPersistenceError("删除 Elasticsearch 合同失败，可重试") from exc
+            try:
+                await asyncio.to_thread(self._file_store.delete_processed_pdf, document_id)
+            except Exception as exc:
+                raise ContractPersistenceError("删除合同 PDF 失败，可重试") from exc
+            try:
+                await asyncio.to_thread(
+                    self._metadata_store.delete_ingestion,
+                    document_id=document_id,
+                    ingestion_id=metadata.ingestion_id,
+                )
+            except Exception as exc:
+                raise ContractPersistenceError("删除 SQLite 合同摘要失败，可重试") from exc
+            logger.info("正式合同删除完成：document_id=%s reviewer=%s", document_id, reviewer)
 
     async def _persist(
         self,
@@ -280,7 +362,7 @@ class ContractIngestionService:
             if stored_file_uri != metadata.file_uri:
                 raise RuntimeError("合同文件存储返回了非预期地址")
         except Exception as exc:
-            await self._record_failure(
+            await self._cleanup_failed_ingestion(
                 metadata,
                 reason="处理版 PDF 保存失败",
                 cause=exc,
@@ -299,7 +381,7 @@ class ContractIngestionService:
             # 超时或连接中断不代表 ES 一定没有接收写入；立即按实时 GET
             # 核对本次完整元数据，匹配时按成功收敛，避免错误回滚状态。
             if not await self._elasticsearch_matches(metadata):
-                await self._record_failure(
+                await self._cleanup_failed_ingestion(
                     metadata,
                     reason="合同写入 Elasticsearch 失败",
                     cause=exc,
@@ -310,7 +392,6 @@ class ContractIngestionService:
                 self._metadata_store.mark_ready,
                 document_id=metadata.document_id,
                 ingestion_id=metadata.ingestion_id,
-                updated_at=self._clock(),
             )
         except Exception as exc:
             # 此时 ES 可能已经成功，不能伪造回滚；保留 ingesting 供启动
@@ -328,25 +409,23 @@ class ContractIngestionService:
             ingested_at=metadata.ingested_at,
         )
 
-    async def _record_failure(
+    async def _cleanup_failed_ingestion(
         self,
         metadata: ContractMetadata,
         *,
         reason: str,
         cause: Exception,
     ) -> None:
-        """尽力持久化失败状态；状态落库失败时仍不返回成功。"""
+        """删除明确失败的当前尝试；清理失败时仍不返回成功。"""
         try:
             await asyncio.to_thread(
-                self._metadata_store.mark_failed,
+                self._metadata_store.delete_ingestion,
                 document_id=metadata.document_id,
                 ingestion_id=metadata.ingestion_id,
-                failure_reason=reason,
-                updated_at=self._clock(),
             )
         except Exception as metadata_error:
             raise ContractPersistenceError(
-                f"{reason}，且 SQLite 失败状态记录失败"
+                f"{reason}，且 SQLite 尝试记录清理失败"
             ) from metadata_error
         raise ContractPersistenceError(reason) from cause
 
@@ -382,18 +461,21 @@ class ContractIngestionService:
                     self._metadata_store.mark_ready,
                     document_id=metadata.document_id,
                     ingestion_id=metadata.ingestion_id,
-                    updated_at=self._clock(),
                 )
             else:
+                logger.warning(
+                    "启动对账清理失败的 SQLite 入库尝试："
+                    "document_id=%s reason=%s",
+                    metadata.document_id,
+                    failure_reason,
+                )
                 await asyncio.to_thread(
-                    self._metadata_store.mark_failed,
+                    self._metadata_store.delete_ingestion,
                     document_id=metadata.document_id,
                     ingestion_id=metadata.ingestion_id,
-                    failure_reason=failure_reason,
-                    updated_at=self._clock(),
                 )
         except Exception as exc:
-            raise ContractPersistenceError("启动恢复状态写入 SQLite 失败") from exc
+            raise ContractPersistenceError("启动恢复结果写入 SQLite 失败") from exc
 
     async def _elasticsearch_matches(self, metadata: ContractMetadata) -> bool:
         """在写入结果不确定时，实时核验 ES 是否已经接收本次文档。"""
@@ -466,36 +548,75 @@ class ContractIngestionService:
 
     @staticmethod
     def _category_summary(classification: ContractClassificationView) -> str:
-        names = [category.name.strip() for category in classification.categories]
-        if names:
-            return " / ".join(names)
+        codes = [category.code.strip() for category in classification.categories]
+        if codes:
+            return " / ".join(codes)
         description = classification.unmapped_type_description
         return description.strip() if description else "未映射"
+
+    @staticmethod
+    def _category_assignments(
+        classification: ContractClassificationView,
+        *,
+        category_reasoning: Mapping[str, str],
+    ) -> tuple[ContractCategoryAssignment, ...]:
+        """将内部分类理由与公共类别投影严格对齐。"""
+        expected_codes = tuple(
+            category.code.strip() for category in classification.categories
+        )
+        normalized_reasoning: dict[str, str] = {}
+        for raw_code, raw_reasoning in category_reasoning.items():
+            code = raw_code.strip()
+            reasoning = raw_reasoning.strip()
+            if not code or not reasoning:
+                raise ContractReviewValidationError(
+                    "合同类别 code 和推理摘要不能为空"
+                )
+            if code in normalized_reasoning:
+                raise ContractReviewValidationError(
+                    f"合同类别推理重复：{code}"
+                )
+            normalized_reasoning[code] = reasoning
+
+        if set(expected_codes) != set(normalized_reasoning):
+            raise ContractReviewValidationError(
+                "合同类别投影与模型推理结果不一致"
+            )
+        return tuple(
+            ContractCategoryAssignment(
+                category_code=code,
+                reasoning_summary=normalized_reasoning[code],
+            )
+            for code in expected_codes
+        )
 
     @staticmethod
     def _category_summary_from_mapping(classification: Mapping[str, Any]) -> str:
         categories = classification.get("categories")
         if isinstance(categories, list):
-            names = [
-                item.get("name", "").strip()
+            codes = [
+                item.get("code", "").strip()
                 for item in categories
                 if isinstance(item, Mapping)
-                and isinstance(item.get("name"), str)
-                and item.get("name", "").strip()
+                and isinstance(item.get("code"), str)
+                and item.get("code", "").strip()
             ]
-            if names:
-                return " / ".join(names)
+            if codes:
+                return " / ".join(codes)
         description = classification.get("unmapped_type_description")
         return description.strip() if isinstance(description, str) else "未映射"
 
     @staticmethod
-    def _contract_time(core: Mapping[str, Any]) -> str | None:
+    def _contract_time(core: Mapping[str, Any]) -> str:
         value = core.get("signing_date")
-        if value is None:
-            return None
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise ContractReviewValidationError("签订日期不能为空，请补充签订日期后再入库")
         if not isinstance(value, str):
-            raise RuntimeError("Core signing_date 必须投影为字符串")
-        return value
+            raise ContractReviewValidationError("签订日期必须是完整日期字符串")
+        try:
+            return normalize_contract_date(value)
+        except ValueError as exc:
+            raise ContractReviewValidationError(str(exc)) from exc
 
     def _project_core(self, core: CoreDraftData) -> dict[str, Any]:
         """按固定目录校验完整 Core，并过滤没有最终值的字段。"""

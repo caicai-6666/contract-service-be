@@ -12,16 +12,16 @@
 
 | 位置 | 命名规则 | 示例 |
 | --- | --- | --- |
-| `description/` 顶层的全局入口 | 小写 kebab-case；使用 `-`，不使用 `_` | `project.md`、`readme.md` |
+| `description/` 顶层的全局入口 | 固定保留三个 Markdown 文件 | `project.md`、`documentation.md`、`readme.md` |
 | 任意子目录 | 小写 kebab-case；使用 `-`，不使用 `_` | `field-definition-contract.md`、`prompt-engineering.md` |
 
-`description/` 下的所有文档文件名都不得包含大写字母。新文档应先按阅读目的归类，再选择目录；不要因为对应代码文件位于某处而机械放入同名目录。文档分层与阅读入口见[项目文档导航](../readme.md)。
+`description/` 下的所有文档文件名都不得包含大写字母。新文档应先按阅读目的归类，再选择目录；不要因为对应代码文件位于某处而机械放入同名目录。文档分层与阅读入口见[项目文档导航](readme.md)。
 
 目录职责固定如下：
 
 | 目录 | 职责 |
 | --- | --- |
-| `description/standard/` | 跨模块提示词、文档、实验和开发规范。 |
+| `description/standard/` | 跨模块提示词、Agent 上下文、实验等专项开发规范；文档规范由顶层 `documentation.md` 维护。 |
 | `description/api/` | 面向外部调用方的 HTTP、SSE、请求响应和错误契约。 |
 | `description/architecture/system/` | 跨模块系统边界、总体流程、应用状态机和数据流。 |
 | `description/architecture/workflow/` | 按业务任务容纳相互独立的 Agent 工作流文档包。 |
@@ -31,7 +31,7 @@
 | `description/capability/infrastructure/` | Elasticsearch、模型服务等外部系统的适配、部署和观测能力。 |
 | `description/capability/document/` | PDF、图像和其他文档处理工具的行为与限制。 |
 
-除 `project.md` 和 `readme.md` 外，不在 `description/` 根目录新增专题文档；`architecture/` 和 `capability/` 根目录也不直接放置文档。目录名使用单数，避免同义目录并存。
+`description/` 根目录仅保留三个 Markdown 文件：`project.md` 说明项目目标与全局边界，`documentation.md` 维护文档组织与撰写规范，`readme.md` 提供统一导航。专题文档继续按下属目录归档，不在根目录新增其他 Markdown 文件；`architecture/` 和 `capability/` 根目录也不直接放置文档。目录名使用单数，避免同义目录并存。
 
 归类时先判断文档回答的问题：跨模块如何协作放入 `system/`，模型节点如何执行放入对应的 `workflow/<task>/`，数据长什么样放入 `data/`，可复用技术如何配置和运行则按应用、基础设施或文档处理能力归档。一个专题只选择一个主目录，不按对应 Python 文件路径机械复制层级。
 
@@ -151,7 +151,7 @@ OpenAPI 是机器可读 Schema，Markdown API 参考负责跨接口业务语义�
 
 ### 4.5 实验报告
 
-实验方案、运行产物和 `analysis.md` 的职责、目录和固定章节遵循[实验验证规范](experiment.md)。实验报告的相邻标题之间必须使用 `---` 形成视觉分割；这项规则优先于“仅在独立大主题之间使用分割线”的一般约定。
+实验方案、运行产物和 `analysis.md` 的职责、目录和固定章节遵循[实验验证规范](standard/experiment.md)。实验报告的相邻标题之间必须使用 `---` 形成视觉分割；这项规则优先于“仅在独立大主题之间使用分割线”的一般约定。
 
 ---
 
@@ -160,7 +160,7 @@ OpenAPI 是机器可读 Schema，Markdown API 参考负责跨接口业务语义�
 - 使用相对 Markdown 链接，并采用能说明目标内容的中文链接文本。
 - 迁移或重命名文档时，必须同步更新所有入站链接、文档导航页和必要的锚点链接。
 - 子目录中的文档改名为 kebab-case 时，同时检查代码、实验 README、配置注释和其他说明文档中的旧路径。
-- 新建正式功能文档后，更新[项目文档导航](../readme.md)中的入口；不要在 `project.md` 重新维护长篇文档清单。
+- 新建正式功能文档后，更新[项目文档导航](readme.md)中的入口；不要在 `project.md` 重新维护长篇文档清单。
 
 ---
 

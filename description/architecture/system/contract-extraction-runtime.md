@@ -17,7 +17,8 @@ flowchart TD
     run --> detection["合同文档识别"]
     detection -->|不是合同| rejected["not_a_contract<br/>停止"]
     detection -->|是合同| deduplication["PDF 查重"]
-    deduplication --> pause["返回重复/相似合同与文件地址<br/>暂停最长 10 分钟"]
+    deduplication -->|无重复| pause["返回相似合同与文件地址<br/>暂停最长 10 分钟"]
+    deduplication -->|重复| duplicate_end["终止：保留候选展示，禁止继续、重试与入库"]
     pause --> external["前端独立处理候选"]
     external --> continue["POST continue"]
     continue --> structure["合同结构识别"]
@@ -109,7 +110,9 @@ flowchart TD
 
 `contract_document_detection` 成功判定为合同时自动开始 `pdf_deduplication`。判定为非合同时，该阶段仍为 `succeeded`，运行转为 `not_a_contract`，发布携带紧凑证据与理由的 `run.document_rejected`，查重及全部下游阶段保持 `pending`。模型连接、工具协议、材料可读性等失败属于技术失败，阶段为 `failed`，不能伪装成非合同。
 
-`pdf_deduplication` 成功后不会自动开始合同结构识别。工作流内部仍完整保存 ES Top-3 召回及 `duplicate | similar | different | failed` 逐候选判断；应用层只向前端投影其中的 `duplicate | similar`，并返回原始 cosine、简洁理由，以及 Elasticsearch 原样提供的 `document_id`、友好 `file_name`、`file_uri` 和页数。随后服务发布 `run.deduplication_review_required`，把运行置为 `awaiting_deduplication_review`。过滤后候选可以少于三份，且原始排名可以不连续；没有重复或相似合同时数组为空，但仍形成同一个暂停点，确保前端调用顺序稳定。SSE 不提供 PDF 字节或运行级下载地址；前端通过独立资源接口按 `file_uri` 获取文件。
+`pdf_deduplication` 成功后不会自动开始合同结构识别。工作流内部保留完整候选判断，应用层投影 `duplicate | similar` 候选、原始 cosine、理由、名称、PDF 地址及负责人。只要哈希一致或模型判重，运行进入 `duplicate_rejected`，发布携带同一候选列表的 `run.duplicate_rejected` 后结束，不建立暂停定时器。快照和事件保留至普通运行 TTL，终态不进入可恢复列表；继续、重试及入库均返回冲突。SSE 发送终态事件后关闭，已消费终态事件的重连也立即关闭。
+
+只有无重复时才发布 `run.deduplication_review_required` 并进入原有最长 600 秒暂停点。`DeduplicationReviewView.can_continue` 仅在允许确认时为 true；重复结果的 `review_expires_at` 为 null。候选展示和资源 PDF 读取方式不变，完整协议见[合同 API](../../api/contract.md#查重暂停结果)。
 
 暂停期限从结果事件形成时固定为最长 600 秒。GET 快照、SSE 建连、断线重连和心跳不会延长期限。前端可以在此期间通过与提取流独立的接口处理已入库候选；处理完成后调用一次继续接口。成功继续会记录时间、取消暂停到期任务、恢复普通运行 TTL 并启动合同结构识别；结构识别成功后自动开始分类与建议名称生成，重复继续返回冲突。
 

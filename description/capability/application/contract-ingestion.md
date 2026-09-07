@@ -24,6 +24,8 @@ SQLite 字段以[合同 SQLite 元数据结构](../../architecture/data/contract
 - PDF 查重阶段的页面融合向量；
 - 当前登录审核人的名称和带时区入库时间。
 
+合同分类同时投影到 SQLite 两种结构：`contracts.category` 保留以 ` / ` 连接的 code 摘要（未映射时保留类型说明），`contract_category_assignments` 通过类别外键保留可精确筛选的多标签关系，并逐关联保存模型的 `reasoning_summary`。新入库与 ES 对账均按分类 code 生成摘要；前端通过类别目录映射中文名称。推理摘要从运行聚合内的完整分类结果取得，不扩大面向前端的紧凑分类 View。
+
 审核人不由请求体提供。入库调用继续执行与快照、SSE、重试相同的运行所有权校验，跨用户访问按任务不存在处理。
 
 ---
@@ -32,7 +34,11 @@ SQLite 字段以[合同 SQLite 元数据结构](../../architecture/data/contract
 
 八个用户业务阶段必须全部为 `succeeded`，并且内存聚合中必须同时存在分类、建议名称、Core、Clause、Retrieval 和 PDF 查重结果。分支结果可以是 `partial`：用户提交的完整最终值会替换自动 Core 和 Clause，且最终文件名可以与自动建议不同；两个合同级向量仍必须已经成功形成。
 
-Core 按启动期不可变字段目录执行动态校验：
+Core 按启动期不可变字段目录执行动态校验。
+
+正式入库额外要求 `core.signing_date` 非空，且为真实、完整的年月日；缺失、`null`、空字符串或非法日期均返回 `422`，不会开始 SQLite、PDF 或 ES 写入。通过校验后统一为 `YYYY-MM-DD`。提取阶段仍允许未知日期为 `null`，不能为满足入库约束而猜测；审核人需补充有依据的签订日期后再次提交。此规则只约束新入库，不回填或删除历史空日期记录。
+
+其余校验规则：
 
 - 顶层必须精确包含全部 Core `code`，拒绝未知或缺失字段；
 - `single` 单属性字段使用标量，`single` 多属性字段使用对象，`multiple` 字段使用对象数组；
@@ -61,19 +67,27 @@ flowchart TD
     event --> remove["删除内存 run_id 并关闭 SSE"]
 ```
 
-SQLite 默认位于 `data/abstract/contracts.db`。服务首先以短事务写入名称、类别摘要、Core `signing_date`、文件地址、审核人和入库时间，并把状态设为 `ingesting`；SQLite 事务提交后才开始文件和 ES I/O，不会在网络调用期间持有写锁。普通文件管理只能读取 `ready` 记录。
+SQLite 默认位于 `data/abstract/contracts.db`。服务首先将最终 Core `signing_date` 规范为 `YYYY-MM-DD`，再以同一个短事务写入名称、类别展示摘要、规范签约日期、文件地址、审核人、入库时间和全部已知类别关联，并把状态设为 `ingesting`；Elasticsearch Core 写入同一日期值。SQLite 事务提交后才开始文件和 ES I/O，不会在网络调用期间持有写锁。普通文件管理只能读取 `ready` 记录；类别筛选使用关联表和 `contract_category_metadata.code`，不解析展示摘要。
 
 处理版 PDF 先保存到 `data/contract/<document_id>.pdf`。文件存储重新计算 SHA-256，拒绝字节与身份不一致的内容；写入使用同目录临时文件和原子替换，已有同身份文件会先核对内容后直接复用。
 
 ES 写入使用 `ELASTICSEARCH_INDEX_NAME`，默认 `contracts-v1`，并以 `document_id` 同时作为 `_id` 和 `_source.document_id`。同一 `document_id` 再次写入会覆盖该合同文档，支持审核用户在查重后选择更新同身份合同；不会使用实验索引配置。
 
-PDF 或 ES 明确失败时，SQLite 状态转为 `failed` 并保存失败原因；内容寻址文件可以安全保留，运行聚合不会删除，用户能够使用同一 `run_id` 重试。ES 请求超时或连接中断时会立即实时读取同一 `_id`，只有完整元数据匹配才按成功收敛。ES 成功后还必须把 SQLite 状态提交为 `ready`，服务才发布 `run.ingested`、从内存注册表删除运行并关闭现有 SSE。之后该 `run_id` 的查询、重复入库或重试均返回不存在。
+PDF 或 ES 明确失败时，应用按 `document_id + ingestion_id` 删除当前 SQLite 尝试记录，具体原因由异常链与日志记录；内容寻址文件可以安全保留，运行聚合不会删除，用户能够使用同一 `run_id` 重试。ES 请求超时或连接中断时会立即实时读取同一 `_id`，只有完整元数据匹配才按成功收敛。ES 成功后还必须把 SQLite 状态提交为 `ready`，服务才发布 `run.ingested`、从内存注册表删除运行并关闭现有 SSE。之后该 `run_id` 的查询、重复入库或重试均返回不存在。
 
-同一进程内相同 `document_id` 的入库尝试串行执行，防止并发 ES 覆盖与 SQLite 状态错配。应用启动时扫描 `ingesting` 和 `failed`：重新核验 PDF 哈希以及 ES 中的名称、地址、审核人、入库时间、类别摘要和签订日期，全部匹配时恢复为 `ready`，否则保持不可见并标记失败。ES 在对账期间不可访问会阻止应用启动。
+同一进程内相同 `document_id` 的入库尝试串行执行，防止并发 ES 覆盖与 SQLite 状态错配。应用启动时扫描 `ingesting`：重新核验 PDF 哈希以及 ES 中的名称、地址、审核人、入库时间、类别摘要和签订日期，全部匹配时恢复为 `ready`，否则删除该 SQLite 尝试记录。ES 在对账期间不可访问会阻止应用启动。
 
 ---
 
 ## 依赖与验证
+
+### 正式合同删除
+
+`ContractIngestionService.delete_document()` 复用同一实例的文档锁，与同 ID 入库串行。它只接受 SQLite 中的 `ready` 合同，按 ES → PDF → SQLite 顺序清理；SQLite 通过 `document_id + ingestion_id` 条件删除并级联清除类别关联，避免旧操作误删新尝试。PDF 删除只使用固定根目录与哈希文件名，拒绝符号链接和非普通文件。ES 删除使用 `refresh=wait_for`，已不存在的文档和 PDF 允许跳过。
+
+外部存储失败时不继续删除后续存储；SQLite 记录保留供显式重试，不能保证失败后的合同仍可读取。无自动回滚、备份或启动删除恢复；此前完成的删除不会撤销。HTTP 契约见[删除正式合同](../../api/contract.md#删除正式合同)。此接口不会清除其他运行、实验数据或全局类别目录。
+
+### 装配与验证
 
 应用启动时由 `app.bootstrap` 使用共享 `AsyncElasticsearch`、正式索引名、固定 Core 目录、向量维度、本地合同文件存储和 SQLite 元数据存储装配入库服务。SQLite 路径由 `CONTRACT_METADATA_DATABASE_FILE` 配置，默认 `data/abstract/contracts.db`。
 

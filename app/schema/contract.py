@@ -1,6 +1,6 @@
 """合同定义与正式入库 HTTP 契约。"""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel
@@ -17,6 +17,28 @@ class ContractSchemaModel(BaseModel):
     """合同定义接口共用的严格不可变模型。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ContractMetadataResponse(ContractSchemaModel):
+    """已成功入库合同的公开元数据，不暴露内部入库状态。"""
+
+    document_id: str = Field(
+        pattern=r"^[0-9a-f]{64}$", description="处理版 PDF 的 SHA-256 文档标识。"
+    )
+    file_name: str = Field(description="用户最终确认的合同展示名称。")
+    category: str = Field(description="类别 code 以 / 分隔的摘要；未映射时保留类型说明。")
+    contract_time: date | None = Field(description="签订日期 YYYY-MM-DD，缺失时为 null。")
+    file_uri: str = Field(description="处理版 PDF 的稳定根相对读取地址。")
+    reviewer: str = Field(description="确认最终结果并执行入库的审核人名称。")
+    ingested_at: datetime = Field(description="带时区的 ISO 8601 入库时间。")
+
+
+class ContractCategoryResponse(ContractSchemaModel):
+    """前端构建类别选项所需的 SQLite 类别身份。"""
+
+    category_id: int = Field(gt=0, description="当前 SQLite 数据库中的类别主键。")
+    code: str = Field(min_length=1, description="权威类别目录的稳定英文代码。")
+    name: str = Field(min_length=1, description="类别的标准中文名称。")
 
 
 class CorePropertyDefinitionResponse(ContractSchemaModel):
@@ -62,7 +84,7 @@ class ContractIngestionRequest(ContractSchemaModel):
     core: CoreDraftData = Field(
         description=(
             "按 Core 定义目录稳定 code 提交的完整审核对象；全部目录字段均须出现，"
-            "没有最终值的字段使用 null。"
+            "签订日期 signing_date 入库必填；其他没有最终值的字段使用 null。"
         )
     )
     clauses: ClauseDraftData = Field(

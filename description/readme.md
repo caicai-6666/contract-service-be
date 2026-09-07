@@ -9,7 +9,7 @@
 | 当前目标 | 建议阅读 |
 | --- | --- |
 | 了解项目目标、范围、术语与全局约束 | [项目说明](project.md) |
-| 新建、修改或审查项目文档 | [文档撰写风格手册](standard/documentation.md) |
+| 新建、修改或审查项目文档 | [文档撰写风格手册](documentation.md) |
 | 新增或修改模型提示词 | [提示词工程规范](standard/prompt-engineering.md) |
 | 新增或修改多轮 Agent、工具循环或错误恢复 | [多轮 Agent 上下文与记忆管理规范](standard/agent-context-management.md) |
 | 修改 PDF 准备、页面事实或文档结构理解 | [PDF 准备服务与文档结构理解子图](architecture/workflow/contract-extraction/document-understanding.md) |
@@ -36,6 +36,7 @@
 ```text
 description/
   project.md                 项目目标、范围与全局边界
+  documentation.md           文档组织、撰写与维护规范
   readme.md                  文档统一导航
   standard/                  跨模块开发与验证规范
   api/                       面向外部调用方的接口参考
@@ -52,13 +53,13 @@ description/
     document/                PDF 等文档处理工具
 ```
 
-根目录只保留项目说明和统一导航，`architecture/` 与 `capability/` 根目录也不直接平铺文档。新增文档必须先判断它描述的是系统关系、工作流、数据契约还是可复用能力，再进入对应分类。
+根目录仅保留 `project.md`、`documentation.md` 和 `readme.md` 三个 Markdown 文件，分别负责项目说明、文档规范和统一导航；专题目录继续保留。`architecture/` 与 `capability/` 根目录也不直接平铺文档。新增文档必须先判断它描述的是系统关系、工作流、数据契约还是可复用能力，再进入对应分类。
 
 ---
 
 ## 规范
 
-- [文档撰写风格手册](standard/documentation.md)：约束文档命名、分层、排版、链接和审查方式。
+- [文档撰写风格手册](documentation.md)：约束文档命名、分层、排版、链接和审查方式。
 - [实验验证规范](standard/experiment.md)：规定实验方案、运行产物、分析报告和复现检查格式。
 - [提示词工程规范](standard/prompt-engineering.md)：规定公共前缀、证据推理协议和结构化输出要求。
 - [多轮 Agent 上下文与记忆管理规范](standard/agent-context-management.md)：规定稳定前缀、工作区、短期记忆、临时纠错、私有审计及成功后清理协议。
@@ -177,4 +178,4 @@ description/
 
 4. 移动或重命名文档时，应同步更新所有相对链接和本导航页，并检查文档内锚点。
 
-5. 文档命名、结构、排版和审查要求统一遵循[文档撰写风格手册](standard/documentation.md)。
+5. 文档命名、结构、排版和审查要求统一遵循[文档撰写风格手册](documentation.md)。

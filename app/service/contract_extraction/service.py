@@ -473,6 +473,8 @@ class ContractExtractionService:
         async with aggregate.lock:
             if aggregate.cancelled or aggregate.expired or aggregate.ingested:
                 raise RunNotFoundError(run_id)
+            if self._has_duplicate_locked(aggregate):
+                raise RunConflictError("已发现重复合同，流程已结束，禁止入库")
             if any(
                 aggregate.stages[code].status is not StageStatus.SUCCEEDED
                 for code in _STAGE_ORDER
@@ -481,8 +483,14 @@ class ContractExtractionService:
 
             draft = aggregate.draft
             classification = aggregate.classification_view
+            context = aggregate.prerequisites
             deduplication = aggregate.deduplication_result
-            if draft is None or classification is None or deduplication is None:
+            if (
+                draft is None
+                or classification is None
+                or not isinstance(context, ExtractionContext)
+                or deduplication is None
+            ):
                 raise RunConflictError("合同运行缺少正式入库所需的前置结果")
             if any(
                 code not in draft.sections
@@ -510,6 +518,10 @@ class ContractExtractionService:
                 file_name=file_name,
                 reviewer=reviewer_user_name,
                 classification=classification,
+                category_reasoning={
+                    match.decision.category_code: match.reasoning_summary
+                    for match in context.classification.matches
+                },
                 core=core,
                 clauses=clauses,
                 question_fusion_vector=question_vector,
@@ -609,6 +621,8 @@ class ContractExtractionService:
         )
         expired = False
         async with aggregate.lock:
+            if self._has_duplicate_locked(aggregate):
+                raise RunConflictError("已发现重复合同，流程已结束，禁止继续提取")
             now = _utcnow()
             # 存活检查和暂停点消费必须在同一把锁中完成，避免截止时刻
             # “到期任务”和“继续请求”竞态时错误放行已过期任务。
@@ -673,6 +687,8 @@ class ContractExtractionService:
         async with aggregate.lock:
             if aggregate.cancelled or aggregate.expired or aggregate.ingested:
                 raise RunNotFoundError(run_id)
+            if self._has_duplicate_locked(aggregate):
+                raise StageRetryError("已发现重复合同，流程已结束，禁止重试")
             stage = aggregate.stages[stage_code]
             if stage.status is not StageStatus.FAILED:
                 raise StageRetryError("只有执行失败的阶段可以重试")
@@ -782,6 +798,9 @@ class ContractExtractionService:
                 event for event in aggregate.events if event.sequence > threshold
             )
             aggregate.subscribers.add(queue)
+            # 重连时客户端可能已消费终态事件；仍应立即关闭流，避免永久心跳。
+            if self._has_duplicate_locked(aggregate):
+                self._offer_queue(queue, None)
         try:
             yield replay, queue
         finally:
@@ -967,6 +986,18 @@ class ContractExtractionService:
                 result=deduplication,
             )
             now = _utcnow()
+            if self._has_duplicate_locked(aggregate):
+                # 查重是成功的业务判断，不是可重试失败。保留候选 PDF 投影和
+                # 快照至普通运行 TTL，不进入人工确认暂停点，也不启动下游。
+                aggregate.awaiting_deduplication_review = False
+                aggregate.deduplication_review_expires_at = None
+                self._publish_locked(
+                    aggregate,
+                    EventType.RUN_DUPLICATE_REJECTED,
+                    "后台存在重复合同，处理已结束，不允许继续提取或入库。",
+                    deduplication=self._deduplication_view_locked(aggregate),
+                )
+                return
             aggregate.awaiting_deduplication_review = True
             aggregate.updated_at = now
             review_expires_at = now + self._deduplication_review_ttl
@@ -1500,7 +1531,7 @@ class ContractExtractionService:
         """从私有向量、工具审计和错误中投影最小前端查重结果。"""
         result = aggregate.deduplication_result
         review_expires_at = aggregate.deduplication_review_expires_at
-        if result is None or review_expires_at is None:
+        if result is None:
             return None
 
         judgments = {
@@ -1525,6 +1556,7 @@ class ContractExtractionService:
                     document_id=candidate.document_id,
                     file_name=candidate.file_name,
                     file_uri=candidate.file_uri,
+                    reviewer=candidate.reviewer,
                     page_count=candidate.page_count,
                     reasoning_summary=judgment.reasoning_summary,
                 )
@@ -1534,6 +1566,10 @@ class ContractExtractionService:
             candidates=tuple(candidates),
             review_expires_at=review_expires_at,
             continued_at=aggregate.continued_at,
+            can_continue=(
+                aggregate.awaiting_deduplication_review
+                and not self._has_duplicate_locked(aggregate)
+            ),
         )
 
     def _publish_locked(
@@ -1660,6 +1696,15 @@ class ContractExtractionService:
             cover_height_pixels=cover.height_pixels,
         )
 
+    @staticmethod
+    def _has_duplicate_locked(aggregate: RunAggregate) -> bool:
+        """精确哈希或模型判重均禁止后续操作，不能通过伪造请求绕过。"""
+        result = aggregate.deduplication_result
+        return result is not None and (
+            result.status == "duplicate"
+            or any(item.status == "duplicate" for item in result.judgments)
+        )
+
     def _run_status_locked(self, aggregate: RunAggregate) -> RunStatus:
         if aggregate.ingested:
             return RunStatus.INGESTED
@@ -1667,6 +1712,8 @@ class ContractExtractionService:
             return RunStatus.CANCELLED
         if aggregate.expired:
             return RunStatus.EXPIRED
+        if self._has_duplicate_locked(aggregate):
+            return RunStatus.DUPLICATE_REJECTED
         detection = aggregate.document_detection_result
         if detection is not None and detection.status == "not_contract":
             return RunStatus.NOT_A_CONTRACT

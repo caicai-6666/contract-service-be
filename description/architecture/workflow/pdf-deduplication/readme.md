@@ -92,7 +92,7 @@ flowchart TD
 4. 将候选加载、子图执行或输出身份错误隔离为该候选的 `failed`，不取消兄弟候选。
 5. 按原召回顺序收集全部判断并形成 `PDFDeduplicationResult`。
 
-精确哈希判断以 `match_basis=processed_pdf_sha256` 标记，`rounds=0`，且不携带模型、提示词版本、token 用量、工具轨迹或伪造的页面证据。其公开理由只说明处理版 PDF 字节身份一致。若候选集合全部是精确哈希命中，节点连候选判断子图都不会构建；混合候选中只有非精确项继续走文件加载和 MLLM。
+精确哈希判断以 `match_basis=processed_pdf_sha256` 标记，`rounds=0`，且不携带模型、提示词版本、token 用量、工具轨迹或伪造的页面证据。其对外提示固定为“后台存在一模一样的合同。”，不向用户暴露 SHA-256 或 `document_id` 等技术细节。若候选集合全部是精确哈希命中，节点连候选判断子图都不会构建；混合候选中只有非精确项继走文件加载和 MLLM。
 
 启动期创建 `LocalPDFDuplicateCandidateLoader` 并把它注入查重工作流。加载器只接受严格的 `/<document_id>.pdf`，然后安全拼接到项目的 `data/contract` 根目录；协议、主机、查询参数、嵌套路径、路径穿越和符号链接逃逸均被拒绝。文件内容 SHA-256、ES `document_id`、文件名哈希和 ES `page_count` 必须一致。
 
@@ -212,7 +212,7 @@ flowchart TD
 
 当前 `workflow.py` 已装配三个异步节点，并要求构建方显式传入共享 Elasticsearch Client、索引名和 `PDFDuplicateCandidateLoader`。应用 bootstrap 使用 `data/contract` 本地适配器完成依赖注入，并通过 `AgentPDFDeduplicationExecutor` 把已编译查重图交给合同提取服务。
 
-应用流程在合同文档识别可靠判定为合同后、合同结构识别前运行查重；非合同不会进入本工作流。应用层从内部 Top-3 判断中过滤出 `duplicate` 和 `similar` 前端对象，每项只公开原始 cosine、关系、简洁理由，以及 Elasticsearch 原样提供的 `document_id`、友好 `file_name`、`file_uri` 和页数；`different`、`failed`、页面融合向量、完整工具轨迹及内部错误仍留在聚合私有状态。过滤后保留原始 ES 排名，因此 `rank` 可以不连续。SSE 发布 `run.deduplication_review_required` 后停止推进，运行状态变为 `awaiting_deduplication_review`，等待期最长 600 秒；普通快照、SSE 订阅与心跳均不续期。前端通过 `POST .../{run_id}/continue` 消费一次暂停点后，才依次开始合同结构识别、分类、建议名称生成和三个业务分支。
+应用流程在合同文档识别可靠判定为合同后、合同结构识别前运行查重；非合同不会进入本工作流。应用层从内部 Top-3 判断中过滤出 `duplicate` 和 `similar` 前端对象，每项只公开原始 cosine、关系、简洁理由，以及 Elasticsearch 原样提供的 `document_id`、友好 `file_name`、`file_uri`、审核人 `reviewer` 和页数；`different`、`failed`、页面融合向量、完整工具轨迹及内部错误仍留在聚合私有状态。过滤后保留原始 ES 排名，因此 `rank` 可以不连续。SSE 发布 `run.deduplication_review_required` 后停止推进，运行状态变为 `awaiting_deduplication_review`，等待期最长 600 秒；普通快照、SSE 订阅与心跳均不续期。前端通过 `POST .../{run_id}/continue` 消费一次暂停点后，才依次开始合同结构识别、分类、建议名称生成和三个业务分支。
 
 候选 PDF 不以内联 Base64 进入 SSE，也不再生成依赖当前运行生命周期的 `pdf_url`。前端把 `file_uri` 作为查询参数传给[资源文件 API](../../api/resource.md)以读取处理版 PDF；资源接口独立执行路径限制和存在性校验。前端通过其他独立接口删除或处理候选时，不得直接修改本次运行已经形成的查重结果。
 

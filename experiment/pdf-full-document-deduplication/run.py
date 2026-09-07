@@ -306,6 +306,7 @@ def build_state(
         document_id=candidate_pdf.document_id,
         file_name=candidate_name,
         file_uri=f"/{candidate_pdf.document_id}.pdf",
+        reviewer="实验夹具",
         page_count=candidate_pdf.page_count,
         score=1.0,
     )

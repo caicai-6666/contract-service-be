@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from secrets import token_urlsafe
 from time import monotonic
 
-from app.user import ReviewerUserCatalog
+from app.user import PermissionLevel, ReviewerUser, ReviewerUserCatalog
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +25,7 @@ class AuthLoginResult:
 
     login_code: str
     user_name: str
+    permission_level: PermissionLevel
 
 
 class LoginCodeCache:
@@ -127,11 +128,26 @@ class AuthService:
         if user is None:
             raise InvalidReviewerSecretError("审核用户密钥无效")
         login_code = await self._login_code_cache.issue(user.name)
-        return AuthLoginResult(login_code=login_code, user_name=user.name)
+        return AuthLoginResult(
+            login_code=login_code,
+            user_name=user.name,
+            permission_level=user.permission_level,
+        )
+
+    async def resolve_user(self, login_code: str) -> ReviewerUser | None:
+        """权限始终从服务端权威用户快照取得，不信任客户端提交的等级。"""
+        user_name = await self._login_code_cache.resolve(login_code)
+        if user_name is None:
+            return None
+        try:
+            return self._reviewer_users.get(user_name)
+        except KeyError:
+            return None
 
     async def resolve_user_name(self, login_code: str) -> str | None:
         """解析仍然有效的免登码。"""
-        return await self._login_code_cache.resolve(login_code)
+        user = await self.resolve_user(login_code)
+        return user.name if user is not None else None
 
 
 __all__ = [
