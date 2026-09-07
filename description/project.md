@@ -64,7 +64,7 @@
 
 - 应用启动时探测正式 Elasticsearch 索引，不存在时按当前契约创建，存在时增量补齐新增 Core mapping；自动草稿不写入 Elasticsearch，只有用户提交的最终审核值进入正式索引。
 - 正式合同的轻量文件目录保存在 `data/abstract/contracts.db`；普通文件管理只读取 `ready`，应用启动时对非就绪记录核验处理版 PDF 与 ES 文档。
-- 根目录提供单节点 Elasticsearch 9.4.5 Docker Compose 开发环境。
+- 根目录 Dockerfile 负责后端镜像构建；前端、后端与 Elasticsearch 的 Compose 编排由独立 `contract-service-deploy` 项目维护。
 - 多模态生成和 Embedding 均通过环境变量连接本地 OpenAI 兼容服务。
 - MLLM 页面首次发送完整视觉内容，后续并发与多轮请求通过 vLLM 媒体 UUID 引用同一页面，并在缓存失效时自动重填一次。
 - 合同类别、Core 字段和检索问题指南在应用启动时全量加载并形成不可变快照。

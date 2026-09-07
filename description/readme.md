@@ -125,6 +125,8 @@ description/
 
 ### 基础设施能力
 
+- [后端 Docker 镜像](capability/infrastructure/docker-deployment.md)：说明项目内镜像构建、运行契约及独立部署项目的编排职责。
+
 - [Elasticsearch 本地开发部署](capability/infrastructure/elasticsearch-development.md)：说明单节点 Docker Compose、应用连接、启动索引同步、数据卷和本机安全边界。
 - [开发合同入库脚本](capability/infrastructure/development-contract-ingestion.md)：调用正式提取流程并为开发测试写入带双融合向量的合同文档。
 - [vLLM 自定义聊天模板](capability/infrastructure/vllm-chat-template.md)：说明 Qwen3.6 工具前后置布局、启动参数和接入边界。
