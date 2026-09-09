@@ -20,7 +20,7 @@ SQLite 字段以[合同 SQLite 元数据结构](../../architecture/data/contract
 
 - 处理版 PDF 的 `document_id`、字节、页数和 `file_uri`；
 - 已确认的合同分类；
-- Retrieval 分支的问题融合向量；
+- Retrieval 分支的全部正式生成问题原文（`retrieval_questions`）及问题融合向量；
 - PDF 查重阶段的页面融合向量；
 - 当前登录审核人的名称和带时区入库时间。
 
@@ -47,6 +47,8 @@ Core 按启动期不可变字段目录执行动态校验。
 - 顶层 `null` 和空多值数组在最终投影时省略，不写入 Elasticsearch。
 
 Clause 至少包含一条，并校验 `clause_id` 唯一、`order` 按数组顺序从 1 连续增长、父条款先于子条款出现、页码不超过处理版 PDF 总页数，以及编号、路径和正文非空。`title`、`parent_clause_id` 为 `null` 时在最终文档中省略。
+
+检索问题原文必须是非空列表，所有元素必须是非空文本；在任何持久化写入前校验，随后按原顺序保存至 ES `retrieval_questions`。前端请求契约不变，SQLite 不增加问题字段。包括部分 Embedding 失败在内的保存边界及后续换模型方式，见[检索问题原文契约](../../architecture/data/contract-elasticsearch-document.md#检索问题原文)。
 
 `file_name` 会去除首尾空白，并拒绝路径分隔符、控制字符、平台保留符号、首尾句点和超过 255 个字符的名称。它不决定物理文件名；处理版 PDF 始终使用 `document_id.pdf`。
 

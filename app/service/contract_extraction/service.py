@@ -72,6 +72,7 @@ from app.service.contract_extraction.registry import (
     SourceDocument,
 )
 from app.service.pdf_preparation import (
+    assemble_processed_pdf,
     PDFPreparationError,
     PDFPreparationService,
 )
@@ -112,6 +113,8 @@ _LISTABLE_RUN_STATUSES = {
     RunStatus.PARTIAL_READY,
     RunStatus.READY,
     RunStatus.FAILED,
+    RunStatus.NOT_A_CONTRACT,
+    RunStatus.DUPLICATE_REJECTED,
 }
 _PUBLIC_SECTION_ORDER = (
     InternalDraftSectionCode.CORE,
@@ -367,12 +370,34 @@ class ContractExtractionService:
                 raise RunNotFoundError(run_id)
             return self._snapshot_locked(aggregate)
 
+    async def get_processed_pdf(
+        self, file_id: str, *, reviewer_user_name: str,
+    ) -> tuple[ProcessedPDFMetadataView, bytes]:
+        """读取本人的页面并按需组装 PDF，不重新渲染或通过访问延长保留期限。"""
+        await self.expire_due_runs()
+        aggregate = await self._get_live_aggregate(
+            file_id, reviewer_user_name=reviewer_user_name,
+        )
+        async with aggregate.lock:
+            # 与取消、过期和入库共用锁，防止初次查找后读取已被释放的任务。
+            if aggregate.cancelled or aggregate.expired or aggregate.ingested:
+                raise RunNotFoundError(file_id)
+            metadata = self._processed_pdf_metadata_locked(aggregate)
+            prepared = aggregate.prepared_pdf
+        # CPU 组装在线程执行且不占聚合锁；取消无需等待 PDF 编码。
+        content = await assemble_processed_pdf(prepared)
+        await self._get_live_aggregate(file_id, reviewer_user_name=reviewer_user_name)
+        async with aggregate.lock:
+            if aggregate.cancelled or aggregate.expired or aggregate.ingested:
+                raise RunNotFoundError(file_id)
+        return metadata, content
+
     async def list_unpersisted_runs(
         self,
         *,
         reviewer_user_name: str,
     ) -> ContractExtractionRunList:
-        """列出仍在自动处理或等待人工操作、但尚未入库的任务。"""
+        """列出未入库且仍驻留的任务，包括仅可查看的业务拒绝终态。"""
         # 列表读取不续期；先清理已到期且没有活跃执行的任务，避免前端
         # 选择一个随即返回 404 的陈旧 run_id。
         await self.expire_due_runs()
@@ -513,7 +538,7 @@ class ContractExtractionService:
 
             result = await self._ingestion_service.ingest(
                 document_id=aggregate.source.document_id,
-                processed_pdf_bytes=aggregate.prepared_pdf.processed_pdf_bytes,
+                processed_pdf_bytes=await assemble_processed_pdf(aggregate.prepared_pdf),
                 page_count=aggregate.prepared_pdf.page_count,
                 file_name=file_name,
                 reviewer=reviewer_user_name,
@@ -524,6 +549,9 @@ class ContractExtractionService:
                 },
                 core=core,
                 clauses=clauses,
+                retrieval_questions=tuple(
+                    question.question for question in retrieval_result.questions.questions
+                ),
                 question_fusion_vector=question_vector,
                 page_fusion_vector=deduplication.page_fusion_vector.vector,
             )
@@ -559,7 +587,7 @@ class ContractExtractionService:
         aggregate: RunAggregate,
         run_status: RunStatus,
     ) -> RunListStatus:
-        """把细粒度运行状态投影为列表中的自动推进/人工介入状态。"""
+        """列表只区分是否自动推进，blocked 不代表一定可以继续。"""
         if run_status is RunStatus.PROCESSING:
             # 公共前置节点衔接的极短间隔内可能暂时没有 running 阶段，
             # 但后台协程仍会继续推进，不应在列表中闪烁为阻塞。
@@ -569,8 +597,8 @@ class ContractExtractionService:
             for stage in aggregate.stages.values()
         ):
             return RunListStatus.PROCESSING
-        # 查重暂停、失败节点、分支停止以及提取完成后都需要用户确认、
-        # 重试或入库操作，统一标记为 blocked。
+        # 暂停、失败、待入库及非合同/重复拒绝均不再自动推进。
+        # 前端必须读取快照区分可操作状态与仅可查看的拒绝终态。
         return RunListStatus.BLOCKED
 
     async def _get_live_aggregate(
@@ -1687,6 +1715,7 @@ class ContractExtractionService:
         except IndexError as exc:
             raise RuntimeError("处理版 PDF 缺少封面页面") from exc
         return ProcessedPDFMetadataView(
+            file_id=aggregate.run_id,
             file_name=aggregate.source.file_name,
             processed_file_size_bytes=(
                 aggregate.prepared_pdf.processed_file_size_bytes

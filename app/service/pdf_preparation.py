@@ -15,7 +15,12 @@ from app.agent.contract_extraction.state import (
     PreparedPDFPage,
 )
 from app.core.config import MLLMSettings
-from app.tool.pdf_page import PDFPageRenderConfig, compress_pdf
+from app.tool.pdf_page import (
+    PDFPageRenderConfig,
+    assemble_pdf_pages,
+    compress_pdf,
+    serialized_pdf_operation,
+)
 
 PDFSource = Path | bytes
 
@@ -46,6 +51,7 @@ class AsyncPDFPreparationService:
         except (FileNotFoundError, ValueError) as exc:
             raise PDFPreparationError(str(exc)) from exc
 
+    @serialized_pdf_operation
     def _prepare_sync(self, request: ContractExtractionRequest) -> PreparedPDF:
         """按 MLLM 视觉预算完成确定性的同步 PDF 检查与渲染。"""
         source = request.pdf_source
@@ -75,6 +81,8 @@ class AsyncPDFPreparationService:
                 png_bytes=page.png_bytes,
                 width_pixels=page.width_pixels,
                 height_pixels=page.height_pixels,
+                width_points=page.width_points,
+                height_points=page.height_points,
                 render_scale=page.render_scale,
                 visual_tokens=page.visual_tokens,
                 content_sha256=sha256(page.png_bytes).hexdigest(),
@@ -85,7 +93,6 @@ class AsyncPDFPreparationService:
         return PreparedPDF(
             document_id=sha256(compressed_pdf.pdf_bytes).hexdigest(),
             source_path=request.source_path,
-            processed_pdf_bytes=compressed_pdf.pdf_bytes,
             source_file_size_bytes=_source_size(source),
             processed_file_size_bytes=len(compressed_pdf.pdf_bytes),
             page_count=page_count,
@@ -94,6 +101,20 @@ class AsyncPDFPreparationService:
             visual_tokens_per_request_budget=visual_tokens_per_request,
             pages=pages,
         )
+
+
+async def assemble_processed_pdf(prepared: PreparedPDF) -> bytes:
+    """按需组装上传任务的 PDF，并在交付预览/入库前验证身份未发生变化。
+
+    候选恢复的页面可能按新预算重新渲染，不能用此接口替代磁盘候选读取。
+    """
+    content = await asyncio.to_thread(assemble_pdf_pages, prepared.pages)
+    if (
+        len(content) != prepared.processed_file_size_bytes
+        or sha256(content).hexdigest() != prepared.document_id
+    ):
+        raise RuntimeError("按需组装的处理版 PDF 与创建时的文件身份不一致")
+    return content
 
 
 def _source_size(source: PDFSource) -> int:
@@ -132,4 +153,5 @@ __all__ = [
     "AsyncPDFPreparationService",
     "PDFPreparationError",
     "PDFPreparationService",
+    "assemble_processed_pdf",
 ]

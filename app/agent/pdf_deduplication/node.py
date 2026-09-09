@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import math
 from collections.abc import Sequence
 from time import monotonic
@@ -33,6 +32,7 @@ from app.agent.pdf_deduplication.subgraph.candidate_judgment import (
 )
 from app.core.config import get_settings
 from app.infrastructure.embedding import EmbeddingClient
+from app.infrastructure.png_image import PNGImage
 
 PDF_PAGE_FUSION_VERSION = "tail-weighted-1.5-l2-v1"
 PDF_PAGE_FUSION_TAIL_WEIGHT = 1.5
@@ -56,12 +56,13 @@ async def vectorize_processed_pdf(
     semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
     async with EmbeddingClient(settings) as client:
         async def embed_page(page) -> tuple[int, str, tuple[float, ...]]:
-            data_url = "data:image/png;base64," + base64.b64encode(
-                page.png_bytes
-            ).decode("ascii")
             async with semaphore:
+                # 节点只传不可变引用；客户端取得全局配额后才编码。
                 completion = await client.create_multimodal_embedding(
-                    messages=build_pdf_page_embedding_messages(data_url)
+                    messages=build_pdf_page_embedding_messages(PNGImage(
+                        png_bytes=page.png_bytes,
+                        content_sha256=page.content_sha256,
+                    ))
                 )
             vector = _normalize_vector(
                 completion.vectors[0],

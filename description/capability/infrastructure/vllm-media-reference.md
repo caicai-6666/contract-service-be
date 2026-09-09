@@ -8,7 +8,7 @@
 
 该能力位于 `app.infrastructure.vllm_media_reference`，由统一 `MLLMClient` 自动使用。它覆盖合同结构理解、分类、Core、条款、检索问题生成以及 PDF 查重中的 MLLM 图片内容块，不改变 Agent 节点的模型可见任务、工具、短期记忆或工作区。
 
-页面 Embedding 不使用该能力：每个页面在当前向量化流程中只发送一次，没有跨请求重复的同一视觉输入；其连接、批次和归一化仍由 `EmbeddingClient` 负责。
+页面 Embedding 不使用 UUID 缓存能力：每个页面在当前向量化流程中只发送一次，没有跨请求重复的同一视觉输入；消息构造时只传 PNG 引用，客户端取得全局发送配额后才临时编码 Base64，排队页面不会提前编码。其连接、批次和归一化仍由 `EmbeddingClient` 负责。
 
 远端服务必须为支持 OpenAI Chat Completions 媒体 `uuid` 与空媒体引用的 vLLM 版本，并启用多模态处理器缓存或 prefix cache。当前已对 vLLM `0.26.0` 验证该协议。
 
@@ -16,7 +16,7 @@
 
 ## 传输流程
 
-`PreparedPDFPage` 在形成时获得一个随机 UUIDv4 `media_uuid`。消息构造器仍保留完整 `image_url` data URL，同时把该 UUID 写入同一个图片内容块。协调器决定本轮真正发送完整内容还是空引用：
+`PreparedPDFPage` 在形成时获得一个随机 UUIDv4 `media_uuid`。消息构造器在内部 `image_url.url` 中保存 `PNGImage` 引用，共享该页不可变 PNG 字节，同时把 UUID 写入同一个图片内容块。它不是可直接发送的 JSON URL；只有统一 `MLLMClient` 可以将其转换为真实请求。协调器先决定本轮发送完整内容还是空引用，再由 `materialize_image_messages` 临时编码尚未命中的页面：
 
 ```mermaid
 flowchart TD
@@ -37,6 +37,8 @@ flowchart TD
 
 同一事件循环内，协调器按 `base_url + model` 隔离。不同媒体可以并行首次填充；包含重叠 UUID 的请求只等待重叠页面，不会同时各自序列化同一组 Base64。请求成功表示 vLLM 已接受并处理媒体，此时即使模型工具输出随后不满足业务 Schema，页面仍可以供下一纠错轮次引用。
 
+媒体等待不占用[全局模型请求额度](model-concurrency.md)；首次发送和每次透明重填都在取得 MLLM 全局额度后编码并发出，避免因等待其他填充者而阻塞配额池。
+
 ---
 
 ## 缓存失效与失败边界
@@ -53,7 +55,9 @@ flowchart TD
 
 媒体身份使用每个 `PreparedPDFPage` 独占的随机 UUIDv4，不使用文件名、页码、用户 ID 或可预测顺序值。UUID 只用于传输层多模态缓存，不由 chat template 渲染给模型，也不进入模型任务说明。
 
-协调器替换内容块时只浅复制消息容器，未替换的 Base64 字符串保持单一 Python 对象引用。原始稳定消息始终保留完整 data URL，因此 cache miss 重填无需从模型历史或外部文件恢复图片。
+协调器替换内容块时只浅复制消息容器，公共上下文始终保留共享 PNG 引用，不被临时请求改写。首次填充和 cache miss 重填在发送边界生成 Base64；命中的页面不编码。同一请求重复使用同一 PNG 时只编码一次，编码结果不写回上下文或全局缓存，不需要 vLLM 回源请求图片。
+
+`PNGImage` 深复制仍共享不可变对象；其审计序列化排除图片字节，只输出内容指纹。应用层公共前缀 SHA-256 也改用图片指纹计算，避免哈希时构造整份 Base64；这一内部指纹表示方法变化不改变模型实际看到的图片、文本或工具排列。原有字符串 URL/data URL 输入继续兼容。
 
 > **边界：** 媒体 UUID 只能复用完全相同的页面对象；不得让不同图片共享同一 UUID。当前页面 UUID 随 `PreparedPDF` 生命周期生成，进程重启后不会依赖远端遗留缓存。
 
@@ -85,8 +89,9 @@ VLLM_MLLM_USE_MEDIA_REFERENCES=true
 ## 验证
 
 ```bash
-.venv/bin/python -m unittest tests.infrastructure.test_vllm_media_reference
-.venv/bin/python -m unittest discover -s tests -p 'test_*.py'
+python -m unittest discover -s tests -p 'test_pdf_memory_optimization.py'
+python -m unittest discover -s tests -p 'test_extraction_pdf_resource.py'
+python -m unittest discover -s tests -p 'test_*.py'
 ```
 
 测试覆盖并发等待、首次填充失败接管、影子状态 LRU、显式失效、关闭能力回退和 `MLLMClient` cache-miss 自动重填。真实服务接入时还应验证首轮完整请求、第二轮空 `image_url` 引用、服务重启后的自动恢复，以及峰值 RSS 与请求上传字节。

@@ -44,6 +44,7 @@ description/
     system/                  系统边界、总体流程与应用状态机
     workflow/
       contract-extraction/   合同提取工作流任务包
+      contract-communication/ 面向用户的合同沟通智能体（门禁初始化子图）
       contract-document-detection/ 合同文档识别工作流任务包
       pdf-deduplication/     PDF 查重工作流任务包
     data/                    业务定义与持久化数据契约
@@ -70,9 +71,24 @@ description/
 
 ### 系统设计
 
+- [Communication 历史驻留](architecture/system/communication-history.md)：说明 open、向前 refresh、驻留历史和模型最新摘要窗口的隔离。
+- [Communication 记忆归档与驱逐](architecture/system/communication-archive.md)：十分钟扫描、弹性分批、总结与向量落库、文件/工作区同步及新输入取消驱逐。
+- [Communication 总体设计](architecture/system/contract-communication.md)：记录已确认的助手定位、核心结构、会话轮次边界、实现状态与待定事项。
+- [Communication 事件运行时](architecture/system/communication-events.md)：说明五类通用事件、内部发布、单消息约束、有界回放和快照恢复。
 - [合同提取应用运行时](architecture/system/contract-extraction-runtime.md)：说明进程内任务、查重前合同文档门禁、结构识别前的查重暂停、三路并发、增量草稿、重试、事件和 TTL 状态机。
 
 ### 工作流任务包
+
+- [会话记忆加工工作流](architecture/workflow/conversation-memory/readme.md)：批量筛选、Send并发总结与向量化、待入库数据汇总及已接入的归档边界。
+- [会话记忆待入库数据](architecture/workflow/conversation-memory/pending-records.md)：节点2编码、节点3原轨迹与向量的成对组装、失败隔离及Service接入责任。
+- [会话历史检索向量化契约](architecture/workflow/conversation-memory/retrieval-embedding.md)：已选定的双侧场景化指令、输入格式及后续查询端接入约定，尚未实现正式向量检索。
+
+#### 合同沟通智能体
+
+- [轮次有序轨迹设计](architecture/workflow/contract-communication/turn-trace.md)：记录方法调用、阶段说明与最终答复的统一顺序，以及内存存储和压缩边界。
+- [合同沟通智能体](architecture/workflow/contract-communication/readme.md)：工作流入口；已有门禁初始化子图、骨架包、事件及快照，真实业务执行待实现。
+- [业务门禁子图](architecture/workflow/contract-communication/business-gate.md)：说明初始化结构及已确认的相关性、PDF 检查和文件剔除确认规则。
+- [用户消息与上下文设计](architecture/workflow/contract-communication/user-context.md)：记录手动终止、用户补充和方向调整的模型可见语义。
 
 #### 合同文档识别
 
@@ -97,6 +113,7 @@ description/
 
 ### 数据契约
 
+- [Communication SQLite 存储](architecture/data/communication-sqlite.md)：定义会话、任务/摘要和独立工作区三表，以及摘要恢复边界与密钥归属。
 - [合同 SQLite 元数据结构](architecture/data/contract-sqlite-metadata.md)：定义文件管理目录、入库状态及 SQLite、PDF、ES 三处一致性边界。
 - [合同 Elasticsearch 文档结构](architecture/data/contract-elasticsearch-document.md)：定义复核后合同的正式索引结构、启动创建及 Core mapping 增量同步边界。
 - [模型提取对象定义结构](architecture/data/field-definition.md)：定义单值或多值扁平对象的 YAML 结构、稳定索引代码、分词策略、基本类型及禁止嵌套约束。
@@ -108,6 +125,7 @@ description/
 
 ## API
 
+- [多轮对话 API](api/communication.md)：说明 `/communication` 路由前缀、认证约定和当前未实现边界。
 - [API 参考](api/readme.md)：定义服务入口、全局媒体类型、错误格式、健康检查和业务接口导航。
 - [审核用户登录 API](api/auth.md)：定义仅凭审核用户密钥签发限时免登码的接口。
 - [资源文件 API](api/resource.md)：定义按 SQLite 目录或 ES 候选中的 `file_uri` 安全读取本地正式合同 PDF 的接口。
@@ -119,19 +137,22 @@ description/
 
 ### 应用能力
 
+- [Communication 样式联调服务](capability/application/communication-ui-demo.md)：独立模拟服务，使用真实路由测试流式输出、确认、拒绝、失败、取消、替换与回放。
 - [FastAPI 后端应用骨架](capability/application/backend-application.md)：说明应用分层、启动生命周期、Elasticsearch 索引同步、运行方式和环境配置。
 - [Agent 工作流包](capability/application/agent-workflow.md)：说明 `app.agent` 与 API、服务层和基础设施的调用边界。
 - [复核后合同正式入库](capability/application/contract-ingestion.md)：说明最终审核值校验、处理版 PDF 保存、正式 ES 投影、失败重试和运行释放。
 
 ### 基础设施能力
 
+- [SQLite 向量支持](capability/infrastructure/sqlite-vector.md)：提供按连接加载的向量扩展、普通表距离查询及镜像构建检查。
 - [后端 Docker 镜像](capability/infrastructure/docker-deployment.md)：说明项目内镜像构建、运行契约及独立部署项目的编排职责。
 
 - [Elasticsearch 本地开发部署](capability/infrastructure/elasticsearch-development.md)：说明单节点 Docker Compose、应用连接、启动索引同步、数据卷和本机安全边界。
 - [开发合同入库脚本](capability/infrastructure/development-contract-ingestion.md)：调用正式提取流程并为开发测试写入带双融合向量的合同文档。
-- [vLLM 自定义聊天模板](capability/infrastructure/vllm-chat-template.md)：说明 Qwen3.6 工具前后置布局、启动参数和接入边界。
+- [vLLM 自定义聊天模板](capability/infrastructure/vllm-chat-template.md)：说明 Qwen3.6 工具调用格式资产、工具前后置布局、启动参数和接入边界。
 - [vLLM 多模态媒体引用](capability/infrastructure/vllm-media-reference.md)：说明页面首次填充、UUID-only 引用、并发协调和 cache-miss 自动重填。
 - [模型推理指标观察能力](capability/infrastructure/inference-observability.md)：说明任务局部的 MLLM、Embedding 请求耗时、token 与 vLLM 逐请求指标采集。
+- [模型全局并发额度](capability/infrastructure/model-concurrency.md)：说明跨合同、跨节点共享的 MLLM 与 Embedding 请求限制、取消回收及排队边界。
 
 ### 文档处理能力
 
@@ -140,6 +161,8 @@ description/
 ---
 
 ## 实验
+
+- [会话记忆筛选质量实验](../experiment/conversation-memory-selection/README.md)：24轮合成业务对话，默认准备输入，可显式调用节点1评估任务筛选与提取边界。
 
 - [合同提取质量与推理指标实验](../experiment/contract-extraction-quality/README.md)：批量验证 `test-data` 合同的结构化提取完成度、失败分布和逐请求推理性能。
 - [PDF 页面向量召回实验](../experiment/pdf-page-embedding-recall/README.md)：比较 Qwen3-VL-Embedding 默认与近重复专用指令在单页编码、整份 PDF 平均融合后的召回效果。

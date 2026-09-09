@@ -19,8 +19,12 @@ from app.agent.contract_extraction.subgraph.retrieval_view_generation.catalog im
     load_retrieval_view_guide_catalog,
 )
 from app.agent.pdf_deduplication import build_pdf_deduplication_graph
+from app.agent.conversation_memory import build_conversation_memory_graph
 from app.core.config import get_settings
+from app.core.tool_tag import initialize_mllm_tool_tag
 from app.infrastructure.contract_index import synchronize_contract_index
+from app.infrastructure.model_concurrency import get_model_request_limiter
+from app.infrastructure.communication_store import SQLiteCommunicationStore
 from app.infrastructure.contract_file_store import LocalContractFileStore
 from app.infrastructure.contract_metadata_store import (
     SQLiteContractMetadataStore,
@@ -30,6 +34,10 @@ from app.infrastructure.pdf_candidate_loader import (
     LocalPDFDuplicateCandidateLoader,
 )
 from app.service.auth import AuthService, LoginCodeCache
+from app.service.communication import CommunicationEventService
+from app.service.communication_history import ConversationHistoryService
+from app.service.communication_archive import CommunicationArchiveService
+from app.service.communication_demo import DemoEventService
 from app.service.contract_ingestion import ContractIngestionService
 from app.service.contract_extraction import (
     AgentContractDocumentDetectionExecutor,
@@ -47,6 +55,22 @@ logger = logging.getLogger(__name__)
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     """装配应用级依赖，并统一管理共享资源的启动与关闭。"""
     settings = get_settings()
+    # 模板先于数据库和外部客户端加载；配置错误时尽早中止启动。
+    initialize_mllm_tool_tag(settings.mllm)
+    logger.info("MLLM 工具调用模板加载完成：file=%s", settings.mllm.tool_tag_file)
+    # 在任何工作流启动前固定两类全局请求额度，客户端只复用、不重建。
+    get_model_request_limiter("mllm", settings.mllm.max_concurrent_requests)
+    get_model_request_limiter("embedding", settings.embedding.max_concurrent_requests)
+    # 先初始化持久化结构；归档只消费统一历史，不将 SSE 快照当作原轨迹。
+    communication_store = SQLiteCommunicationStore(settings.communication_database_path)
+    communication_store.initialize()
+    application.state.communication_store = communication_store
+    communication_history_service = ConversationHistoryService(communication_store)
+    application.state.communication_history_service = communication_history_service
+    communication_memory_graph = build_conversation_memory_graph()
+    application.state.conversation_memory_graph = communication_memory_graph
+    communication_archive_service = CommunicationArchiveService(communication_memory_graph, communication_history_service)
+    application.state.communication_archive_service = communication_archive_service
 
     # 权威业务定义只在进程启动时读取一次，运行期间统一复用不可变快照。
     contract_category_catalog = load_contract_category_catalog(
@@ -91,7 +115,16 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     elasticsearch = create_elasticsearch_client(settings)
     application.state.elasticsearch = elasticsearch
     contract_extraction_service: ContractExtractionService | None = None
+    # 联调仅替换激活后的事件生产者，继续复用当前进程的登录、路由和生命周期。
+    communication_event_service = (
+        DemoEventService() if settings.communication_demo_enabled else CommunicationEventService()
+    )
+    if settings.communication_demo_enabled:
+        logger.warning("Communication 展示工作流已启用：输出均为模拟内容，不执行真实合同分析")
+    application.state.communication_event_service = communication_event_service
+    communication_event_service.bind_history(communication_history_service)
     try:
+        await communication_event_service.start()
         index_sync = await synchronize_contract_index(
             elasticsearch,
             settings,
@@ -99,10 +132,11 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         )
         application.state.contract_index_sync = index_sync
         logger.info(
-            "Elasticsearch 合同索引同步完成：index=%s created=%s added_core=%s",
+            "Elasticsearch 合同索引同步完成：index=%s created=%s added_core=%s added_retrieval_questions=%s",
             index_sync.index_name,
             index_sync.created,
             list(index_sync.added_core_fields),
+            index_sync.added_retrieval_questions,
         )
 
         pdf_candidate_loader = LocalPDFDuplicateCandidateLoader(settings.mllm)
@@ -183,8 +217,13 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         application.state.contract_extraction_service = (
             contract_extraction_service
         )
+        await communication_archive_service.start()
         yield
     finally:
+        # 先停止归档模型作业，再冻结事件生产，最后备份原轨迹及工作区。
+        await communication_archive_service.close()
+        await communication_event_service.close()
+        await communication_history_service.close()
         if contract_extraction_service is not None:
             await contract_extraction_service.close()
         await elasticsearch.close()

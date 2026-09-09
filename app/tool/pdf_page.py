@@ -4,10 +4,37 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import wraps
 from math import ceil, sqrt
 from pathlib import Path
+from threading import RLock
+from typing import Callable, ParamSpec, Protocol, TypeVar
 
 import pymupdf
+
+# PyMuPDF 不支持多个线程同时执行。准备、候选恢复、按需组装共用锁；
+# RLock 允许整份准备流程复用下面的单页/组装工具。
+_PDF_PROCESSING_LOCK = RLock()
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+
+
+def serialized_pdf_operation(function: Callable[_P, _T]) -> Callable[_P, _T]:
+    """串行执行进程内 PDF 操作；调用方仍可通过 to_thread 避免阻塞事件循环。"""
+    @wraps(function)
+    def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        with _PDF_PROCESSING_LOCK:
+            return function(*args, **kwargs)
+    return wrapped
+
+
+class RasterPDFPage(Protocol):
+    """重新封装 PDF 所需的最小页面数据，与工作流状态解耦。"""
+
+    page_number: int
+    png_bytes: bytes
+    width_points: float
+    height_points: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +64,8 @@ class CompressedPDFPage:
     height_pixels: int
     render_scale: float
     visual_tokens: int
+    width_points: float
+    height_points: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +129,7 @@ def calculate_render_scale(
     return scale
 
 
+@serialized_pdf_operation
 def compress_pdf_page(
     pdf_source: PDFSource,
     page_number: int,
@@ -142,9 +172,12 @@ def _compress_open_pdf_page(
         height_pixels=pixmap.height,
         render_scale=scale,
         visual_tokens=visual_tokens,
+        width_points=page.rect.width,
+        height_points=page.rect.height,
     )
 
 
+@serialized_pdf_operation
 def compress_pdf_pages(
     pdf_source: PDFSource,
     *,
@@ -179,43 +212,37 @@ def compress_pdf_pages(
         )
 
 
+@serialized_pdf_operation
 def compress_pdf(
     pdf_source: PDFSource,
     *,
     config: PDFPageRenderConfig = _DEFAULT_RENDER_CONFIG,
 ) -> CompressedPDF:
     """按视觉预算渲染整份 PDF，并重新封装为唯一的处理版 PDF。"""
-    with _open_pdf(pdf_source) as source_document:
-        output_document = pymupdf.open()
-        try:
-            pages: list[CompressedPDFPage] = []
-            for page_index, source_page in enumerate(source_document):
-                compressed_page = _compress_open_pdf_page(
-                    source_page,
-                    page_index + 1,
-                    config,
-                )
-                pages.append(compressed_page)
+    pages = compress_pdf_pages(pdf_source, config=config)
+    return CompressedPDF(pdf_bytes=assemble_pdf_pages(pages), pages=pages)
 
-                # 使用旋转生效后的可见页面尺寸，处理版只保留模型实际读取的栅格内容。
-                output_page = output_document.new_page(
-                    width=source_page.rect.width,
-                    height=source_page.rect.height,
-                )
-                output_page.insert_image(
-                    output_page.rect,
-                    stream=compressed_page.png_bytes,
-                    keep_proportion=False,
-                )
 
-            pdf_bytes = output_document.tobytes(
-                garbage=4,
-                deflate=True,
-                no_new_id=True,
-                preserve_metadata=False,
-                reproducible=True,
+@serialized_pdf_operation
+def assemble_pdf_pages(pages: Iterable[RasterPDFPage]) -> bytes:
+    """只封装已有 PNG，不重新渲染；保持旧版写入顺序和确定性 PDF 编码。"""
+    with pymupdf.open() as document:
+        count = 0
+        for count, page in enumerate(pages, start=1):
+            if page.page_number != count:
+                raise ValueError("组装 PDF 的页面必须从 1 开始连续排列")
+            if page.width_points <= 0 or page.height_points <= 0:
+                raise ValueError("PDF 页面物理尺寸必须大于 0")
+            # 不能由像素数/缩放比例反推尺寸，渲染时的像素取整会改变 PDF 身份。
+            output_page = document.new_page(
+                width=page.width_points, height=page.height_points,
             )
-        finally:
-            output_document.close()
-
-    return CompressedPDF(pdf_bytes=pdf_bytes, pages=tuple(pages))
+            output_page.insert_image(
+                output_page.rect, stream=page.png_bytes, keep_proportion=False,
+            )
+        if not count:
+            raise ValueError("组装 PDF 至少需要一页")
+        return document.tobytes(
+            garbage=4, deflate=True, no_new_id=True,
+            preserve_metadata=False, reproducible=True,
+        )

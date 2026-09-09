@@ -37,6 +37,14 @@
 
 ```text
 app/agent/
+  contract_communication/    # 门禁仅初始化，智能体骨架待实现
+    __init__.py
+    business_gate/
+      __init__.py
+      state.py
+      node.py
+    agent_core/
+      __init__.py
   contract_document_detection/
     __init__.py
     workflow.py

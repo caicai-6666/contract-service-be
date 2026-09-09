@@ -170,6 +170,7 @@ class DeduplicationReviewView(ContractExtractionViewModel):
 class ProcessedPDFMetadataView(ContractExtractionViewModel):
     """任务持有的处理版 PDF 基本信息。"""
 
+    file_id: str = Field(min_length=1, description="内存处理版 PDF 的 UUID；一轮一份 PDF，复用该轮 run_id，可通过 resource 接口读取。")
     file_name: str = Field(min_length=1)
     processed_file_size_bytes: int = Field(ge=1)
     page_count: int = Field(ge=1)

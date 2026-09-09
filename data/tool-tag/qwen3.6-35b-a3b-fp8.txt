@@ -1,0 +1,9 @@
+合法工具调用必须使用以下 XML 结构，不得使用“工具名: JSON”、代码块或普通文本模拟调用：
+<tool_call>
+<function=工具名称>
+<parameter=参数名称>
+参数值
+</parameter>
+</function>
+</tool_call>
+请替换为实际工具名称和全部必填参数；调用结束后不得追加任何文本。

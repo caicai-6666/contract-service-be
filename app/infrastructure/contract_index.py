@@ -30,6 +30,7 @@ class ContractIndexSyncResult:
     index_name: str
     created: bool
     added_core_fields: tuple[str, ...]
+    added_retrieval_questions: bool = False
 
 
 def _text_mapping(analyzer: str) -> ElasticsearchMapping:
@@ -114,6 +115,8 @@ def build_contract_index_mapping(
             "file_name": {"type": "keyword", "index": False},
             "file_uri": {"type": "keyword", "index": False},
             "page_count": {"type": "integer"},
+            # 仅通过 _source 保存重算向量的输入，不建立额外全文索引。
+            "retrieval_questions": {"type": "text", "index": False},
             "ingestion": {
                 "type": "object",
                 "dynamic": "strict",
@@ -295,7 +298,7 @@ async def synchronize_contract_index(
     settings: Settings,
     catalog: FieldDefinitionCatalog,
 ) -> ContractIndexSyncResult:
-    """确保正式索引存在，并增量补齐当前配置新增的 Core mapping。"""
+    """确保正式索引存在，增量补齐 Core 及检索问题原文 mapping。"""
     index_name = settings.elasticsearch_index_name
     exists_response = await client.indices.exists(index=index_name)
     exists = bool(_response_body(exists_response))
@@ -327,6 +330,7 @@ async def synchronize_contract_index(
                 added_core_fields=tuple(
                     definition.code for definition in catalog.core.definitions
                 ),
+                added_retrieval_questions=True,
             )
 
     mapping_response = await client.indices.get_mapping(index=index_name)
@@ -337,9 +341,8 @@ async def synchronize_contract_index(
             f"Elasticsearch 索引 {index_name!r} 的根 properties 格式无效"
         )
 
-    expected_core = build_contract_index_mapping(settings, catalog)["properties"][
-        "core"
-    ]
+    expected_properties = build_contract_index_mapping(settings, catalog)["properties"]
+    expected_core = expected_properties["core"]
     current_core = current_properties.get("core")
     if current_core is None:
         core_patch = dict(expected_core)
@@ -355,21 +358,40 @@ async def synchronize_contract_index(
             path="core",
         )
 
+    additions: ElasticsearchMapping = {}
     if core_patch is not None:
+        additions["core"] = core_patch
+    current_questions = current_properties.get("retrieval_questions")
+    added_questions = current_questions is None
+    if added_questions:
+        additions["retrieval_questions"] = expected_properties["retrieval_questions"]
+    else:
+        # 不能把已存在的其他类型字段强行改成文本；不兼容时要求显式迁移。
+        if not isinstance(current_questions, Mapping):
+            raise ContractIndexSchemaError("Elasticsearch 字段 retrieval_questions mapping 不是对象")
+        _build_mapping_addition(
+            expected_properties["retrieval_questions"], current_questions,
+            path="retrieval_questions",
+        )
+        if current_questions.get("index", True) is not False:
+            raise ContractIndexSchemaError("Elasticsearch 字段 retrieval_questions 必须配置 index=false")
+
+    if additions:
         response = await client.indices.put_mapping(
             index=index_name,
-            properties={"core": core_patch},
+            properties=additions,
         )
         body = _response_body(response)
         if isinstance(body, Mapping) and not body.get("acknowledged", False):
             raise ContractIndexSchemaError(
-                f"Elasticsearch 未确认索引 {index_name!r} 的 Core mapping 更新"
+                f"Elasticsearch 未确认索引 {index_name!r} 的 mapping 更新"
             )
 
     return ContractIndexSyncResult(
         index_name=index_name,
         created=False,
         added_core_fields=added_paths,
+        added_retrieval_questions=added_questions,
     )
 
 

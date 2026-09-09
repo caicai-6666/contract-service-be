@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from typing import Any, Literal
 from weakref import WeakKeyDictionary
 
+from app.infrastructure.png_image import PNGImage
+
 _MediaState = Literal["seeding", "ready"]
 
 
@@ -134,10 +136,10 @@ def _collect_media(
                 continue
             image_url = block.get("image_url")
             if not isinstance(image_url, dict) or not isinstance(
-                image_url.get("url"), str
+                image_url.get("url"), (str, PNGImage)
             ):
                 raise ValueError(
-                    "进入 MLLMClient 的 UUID 图片必须保留完整 image_url，"
+                    "进入 MLLMClient 的 UUID 图片必须保留 PNG 引用或完整 image_url，"
                     "引用替换只能由统一协调器执行"
                 )
             previous = media.setdefault(media_uuid, image_url)

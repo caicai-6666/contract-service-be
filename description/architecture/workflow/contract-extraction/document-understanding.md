@@ -27,11 +27,11 @@ flowchart TD
 
 ## 异步 PDF 准备服务
 
-`AsyncPDFPreparationService.prepare` 在创建请求中调用，检查文件存在性、空文件、PDF 格式、加密状态和页数，计算原始文件 SHA-256，并按原始页序调用[PDF 视觉压缩与重新封装工具](../../../capability/document/pdf-page-compression.md)。同步 PyMuPDF 调用整体放入工作线程，不阻塞 API 事件循环；每页独立渲染和缩放，同一 PDF 内不得假设所有页面尺寸相同。预算内页面随后重新封装成处理版 PDF。准备失败时创建接口返回 `422`，且不会注册任务或产生 `run_id`。
+`AsyncPDFPreparationService.prepare` 在创建请求中调用，检查文件存在性、空文件、PDF 格式、加密状态和页数，并按原始页序调用[PDF 视觉压缩与重新封装工具](../../../capability/document/pdf-page-compression.md)。同步 PyMuPDF 调用整体放入工作线程，不阻塞 API 事件循环；每页独立渲染和缩放，同一 PDF 内不得假设所有页面尺寸相同。预算内页面随后临时封装成处理版 PDF，用于计算权威哈希与大小。准备失败时创建接口返回 `422`，且不会注册任务或产生 `run_id`。
 
-任务聚合明确持有且只持有处理版 PDF 字节；原始上传字节在创建请求返回后释放。`document_id` 使用处理版 PDF 哈希，作为后续入库和所有工作流结果的权威文档身份；系统不计算或记录原始文件哈希。`source_file_size_bytes` 只保留原文件大小数值，`processed_file_size_bytes` 表示处理版大小。逐页 PNG 是从同一次渲染得到的工作流缓存，不是另一份原始 PDF。
+任务聚合长期只持有逐页 PNG 与元数据；原始上传字节在创建请求返回后释放，整份处理版 PDF 字节在计算身份后释放。`document_id` 使用处理版 PDF 哈希，作为后续入库和所有工作流结果的权威文档身份；系统不计算或记录原始文件哈希。`source_file_size_bytes` 只保留原文件大小数值，`processed_file_size_bytes` 表示处理版大小。预览与入库使用同一份 PNG 按需组装，不重新渲染。
 
-当前 `PreparedPDFPage` 已记录物理页码、PNG 字节、渲染宽高、实际渲染比例、视觉 token、图像 SHA-256 和是否缩放。后续如需扩展页面事实，应由本节点程序化补充：
+当前 `PreparedPDFPage` 已记录物理页码、PNG 字节、像素宽高、旋转生效后的物理宽高、实际渲染比例、视觉 token、图像 SHA-256、媒体 UUID 和是否缩放。以下是页面事实的概念分组示例；`rotation_degrees`、`has_text_layer` 仍属于未来可扩展项，不是当前已存字段：
 
 ```yaml
 page_number: 1
@@ -91,7 +91,7 @@ content_sha256: "..."
 
 ## 输出与所有权
 
-`PreparedPDF` 是进入 Agent 后的处理版文档和页面事实唯一来源，保存处理版标识与 PDF 字节、来源展示路径、原始与处理版大小、总页数、动态预算和完整页面缓存；`PDFPromptContext` 是从页面事实生成的轻量提示词计划；`DocumentStructureMetadata` 保存合同主题、内容单元和逐单元视觉定位结果。这三项共同传给后续节点。原始上传字节在创建请求结束后不再由运行聚合持有。
+`PreparedPDF` 是进入 Agent 后的处理版文档和页面事实唯一来源，保存处理版标识、来源展示路径、原始与处理版大小、总页数、动态预算和完整 PNG 页面缓存，不保存整份 PDF 字节；`PDFPromptContext` 是从页面事实生成的轻量提示词计划；`DocumentStructureMetadata` 保存合同主题、内容单元和逐单元视觉定位结果。这三项共同传给后续节点。原始上传字节在创建请求结束后不再由运行聚合持有。
 
 结构发现节点只读使用页面产物。若模型语义结果与程序页面事实冲突，程序事实优先，冲突必须保留在证据或审核信息中，不能静默覆盖。
 

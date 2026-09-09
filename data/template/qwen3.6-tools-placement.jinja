@@ -75,6 +75,16 @@
         {%- endif %}
     {%- endif %}
 {%- endfor %}
+{%- if tool_task_index is defined and tool_task_index is not none %}
+    {%- if tool_task_index is not integer or tool_task_index is boolean or tool_task_index < 0 or tool_task_index >= messages|length %}
+        {{- raise_exception('tool_task_index must be a valid user message index.') }}
+    {%- endif %}
+    {%- if messages[tool_task_index].role != 'user' %}
+        {{- raise_exception('tool_task_index must reference a user message.') }}
+    {%- endif %}
+    {%- set ns.last_query_index = tool_task_index %}
+    {%- set ns.multi_step_tool = false %}
+{%- endif %}
 {%- if ns.multi_step_tool %}
     {{- raise_exception('No user query found in messages.') }}
 {%- endif %}

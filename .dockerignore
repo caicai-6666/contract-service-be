@@ -5,5 +5,7 @@
 !data/
 !data/definition/
 !data/definition/**
+!data/tool-tag/
+!data/tool-tag/qwen3.6-35b-a3b-fp8.txt
 **/__pycache__/
 **/*.pyc

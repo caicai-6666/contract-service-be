@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-from base64 import b64encode
 from collections.abc import Iterable
 from hashlib import sha256
 from typing import Any
 
 from app.agent.contract_extraction.state import PDFPromptPage, PreparedPDFPage
+from app.infrastructure.png_image import PNGImage, image_reference_json
 
 PDF_READING_PROMPT_VERSION = "contract-page-reading-v4"
 
@@ -31,11 +31,15 @@ def build_pdf_page_descriptor(page: PreparedPDFPage) -> str:
 
 
 def _image_content(page: PreparedPDFPage) -> dict[str, Any]:
-    """将稳定 PNG 编码为带内容身份的 vLLM 多模态内容块。"""
-    encoded = b64encode(page.png_bytes).decode("ascii")
+    """公共上下文只共享 PNG 引用，传输层负责按需编码。"""
     return {
         "type": "image_url",
-        "image_url": {"url": f"data:image/png;base64,{encoded}"},
+        "image_url": {
+            "url": PNGImage(
+                png_bytes=page.png_bytes,
+                content_sha256=page.content_sha256,
+            ),
+        },
         # UUID 只参与传输层多模态缓存，不会由 chat template 渲染给模型。
         "uuid": page.media_uuid,
     }
@@ -122,5 +126,6 @@ def pdf_common_prefix_sha256(
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
+        default=image_reference_json,
     ).encode("utf-8")
     return sha256(serialized).hexdigest()

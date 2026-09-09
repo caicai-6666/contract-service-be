@@ -97,9 +97,9 @@ flowchart TD
 
 ## PDF 准备服务与文档结构理解子图
 
-`AsyncPDFPreparationService` 位于应用服务层，在创建任务时调用[PDF 页面压缩工具](../../../capability/document/pdf-page-compression.md)，检查文件有效性、加密状态和页数，计算原始文件 SHA-256，并按整份合同的动态视觉预算逐页等比渲染。PyMuPDF 同步工作通过 `asyncio.to_thread` 执行，不阻塞 API 事件循环；无效 PDF 在任务注册前返回请求错误。
+`AsyncPDFPreparationService` 位于应用服务层，在创建任务时调用[PDF 页面压缩工具](../../../capability/document/pdf-page-compression.md)，检查文件有效性、加密状态和页数，按整份合同的动态视觉预算逐页等比渲染，并计算处理版 PDF 的 SHA-256。PyMuPDF 同步工作通过 `asyncio.to_thread` 执行，不阻塞 API 事件循环；无效 PDF 在任务注册前返回请求错误。
 
-`PreparedPDF` 以处理版 PDF 的 SHA-256 作为权威 `document_id`，保存处理版 PDF 字节、原始与处理版大小、页数、动态预算、总视觉 token 和完整页面缓存，但不计算或记录原始文件哈希。每页保存稳定的 PNG 字节、实际尺寸、渲染比例、视觉 token、图像 SHA-256、随机媒体 UUID 和是否发生缩放；任务聚合不保存原始 PDF 字节。媒体 UUID 的首次填充、并发等待和后续引用由[vLLM 多模态媒体引用](../../../capability/infrastructure/vllm-media-reference.md)统一处理。
+`PreparedPDF` 以处理版 PDF 的 SHA-256 作为权威 `document_id`，保存原始与处理版大小、页数、动态预算、总视觉 token 和完整页面缓存，但不驻留原始或处理版 PDF 字节，也不计算或记录原始文件哈希。每页保存稳定的 PNG 字节、像素与物理尺寸、渲染比例、视觉 token、图像 SHA-256、随机媒体 UUID 和是否发生缩放；资源读取和入库时按需封装 PDF。公共上下文只共享 PNG 引用，媒体 UUID 的首次填充、并发等待和后续引用由[vLLM 多模态媒体引用](../../../capability/infrastructure/vllm-media-reference.md)统一处理。
 
 文档结构理解子图直接接收 `PreparedPDF`，内部拓扑为 `build_pdf_prompt_context → discover_document_units → locate_document_units`。`build_pdf_prompt_context` 将每页页码和模型实际接收的图像宽高转换为确定性提示词计划，每条描述紧邻对应图片且不暴露压缩实现。公共阅读规范、页面消息和构造器统一位于 `subgraph/document_understanding/prompt.py`。
 

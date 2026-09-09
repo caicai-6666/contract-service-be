@@ -15,10 +15,12 @@ from openai import (
 )
 
 from app.core.config import MLLMSettings
+from app.infrastructure.model_concurrency import get_model_request_limiter
 from app.infrastructure.inference_metrics import (
     build_inference_request_metrics,
     observe_inference_request,
 )
+from app.infrastructure.png_image import materialize_image_messages
 from app.infrastructure.vllm_media_reference import (
     get_vllm_media_reference_coordinator,
     is_vllm_media_cache_miss,
@@ -197,6 +199,7 @@ class MLLMClient:
         seed: int,
         enable_thinking: bool = False,
         tool_placement: ToolPlacement | None = None,
+        tool_task_index: int | None = None,
     ) -> MLLMToolCompletion:
         """异步调用 strict function tools，并返回可继续追加的助手消息。"""
         if self._settings.endpoint != "chat_completions":
@@ -213,6 +216,15 @@ class MLLMClient:
         # 完成消息边界设计的节点继续保持现状。
         if tool_placement is not None:
             chat_template_kwargs["tool_placement"] = tool_placement
+        # 显式锚定初始任务，避免后续 user 纠错消息移动服务端工具块。
+        if tool_task_index is not None:
+            if (
+                type(tool_task_index) is not int
+                or not 0 <= tool_task_index < len(messages)
+                or messages[tool_task_index].get("role") != "user"
+            ):
+                raise ValueError("tool_task_index 必须指向 messages 中真实的 user 任务")
+            chat_template_kwargs["tool_task_index"] = tool_task_index
 
         extra_body: dict[str, Any] = {
             "top_k": top_k,
@@ -335,7 +347,7 @@ class MLLMClient:
     ) -> Any:
         """首次发送完整媒体，后续只传 UUID；cache miss 时自动重填一次。"""
         if not self._settings.use_media_references:
-            return await self._client.chat.completions.create(
+            return await self._send_completion(
                 messages=strip_media_reference_metadata(messages),
                 **request,
             )
@@ -346,7 +358,7 @@ class MLLMClient:
         )
         prepared = await coordinator.prepare(messages)
         try:
-            response = await self._client.chat.completions.create(
+            response = await self._send_completion(
                 messages=prepared.messages,
                 **request,
             )
@@ -364,7 +376,7 @@ class MLLMClient:
             await coordinator.invalidate(prepared.media_uuids)
             retry = await coordinator.prepare(messages)
             try:
-                response = await self._client.chat.completions.create(
+                response = await self._send_completion(
                     messages=retry.messages,
                     **request,
                 )
@@ -379,6 +391,21 @@ class MLLMClient:
 
         await coordinator.finish(prepared, succeeded=True)
         return response
+
+    async def _send_completion(
+        self, *, messages: list[dict[str, Any]], **request: Any,
+    ) -> Any:
+        """每次实际 HTTP 尝试独立取得全局配额，再编码图片并发送。
+
+        媒体填充等待在此入口之外，不能持有全局配额等待其他填充者。
+        cache miss 重填重新排队；异常和取消均由 async with 归还额度。
+        """
+        async with get_model_request_limiter(
+            "mllm", self._settings.max_concurrent_requests,
+        ):
+            return await self._client.chat.completions.create(
+                messages=materialize_image_messages(messages), **request,
+            )
 
     def _observe_successful_request(
         self,

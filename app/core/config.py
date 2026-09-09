@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Self
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -59,13 +59,38 @@ class MLLMSettings(BaseModel):
     base_url: str = "http://127.0.0.1:8000/v1"
     api_key: str | None = None
     model: str = "qwen3.6-35b-a3b-fp8"
+    tool_tag_file: str = Field(
+        default="qwen3.6-35b-a3b-fp8.txt",
+        description="data/tool-tag 下的工具调用模板文件名；启动时读取，不允许目录路径。",
+    )
     endpoint: str = "chat_completions"
     timeout_seconds: int = Field(default=300, gt=0)
-    max_concurrent_requests: int = Field(default=20, gt=0)
+    max_concurrent_requests: int = Field(
+        default=20, gt=0,
+        description="单 worker 内所有 MLLM 客户端共享的在途请求上限，同时供节点局部并发控制使用。",
+    )
     use_media_references: bool = True
     context_window_tokens: int = Field(default=262144, gt=0)
     generation: MLLMGenerationSettings = MLLMGenerationSettings()
     vision: MLLMVisionSettings = MLLMVisionSettings()
+
+    @field_validator("tool_tag_file")
+    @classmethod
+    def validate_tool_tag_file(cls, value: str) -> str:
+        """只接受单个文件名，避免配置绕过固定模板目录。"""
+        if (
+            not value.strip()
+            or value != value.strip()
+            or value in {".", ".."}
+            or any(character in value for character in ("/", "\\", "\x00"))
+        ):
+            raise ValueError("MLLM 工具调用模板必须是非空文件名，不能包含目录路径")
+        return value
+
+    @property
+    def tool_tag_path(self) -> Path:
+        """模板位置固定于项目 data/tool-tag，不受启动工作目录影响。"""
+        return _PROJECT_ROOT / "data" / "tool-tag" / self.tool_tag_file
 
     @model_validator(mode="after")
     def validate_token_budget(self) -> Self:
@@ -131,7 +156,10 @@ class EmbeddingSettings(BaseModel):
     endpoint: str = "embeddings"
     timeout_seconds: int = Field(default=60, gt=0)
     batch_size: int = Field(default=32, gt=0)
-    max_concurrent_requests: int = Field(default=10, gt=0)
+    max_concurrent_requests: int = Field(
+        default=10, gt=0,
+        description="单 worker 内文本及页面 Embedding 共用的在途请求上限，同时供节点局部并发控制使用。",
+    )
     dimensions: int = Field(default=4096, gt=0)
     normalize: bool = True
 
@@ -160,6 +188,8 @@ class Settings(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     app_env: str = "development"
+    communication_demo_enabled: bool = Field(default=False, description="在现有 communication 接口启用展示工作流，仅用于联调。")
+    communication_database_file: Path = Path("data/communication/communication.db")
     contract_category_definition_dir: Path = Path(
         "data/definition/contract-category"
     )
@@ -240,6 +270,13 @@ class Settings(BaseModel):
             return self.contract_metadata_database_file
         return _PROJECT_ROOT / self.contract_metadata_database_file
 
+    @property
+    def communication_database_path(self) -> Path:
+        """会话数据库相对路径固定解析到项目根目录。"""
+        if self.communication_database_file.is_absolute():
+            return self.communication_database_file
+        return _PROJECT_ROOT / self.communication_database_file
+
 
 def _optional_env(name: str) -> str | None:
     """将空环境变量统一解析为未配置。"""
@@ -273,6 +310,8 @@ def get_settings() -> Settings:
     load_dotenv(_PROJECT_ROOT / ".env")
     return Settings(
         app_env=_env("APP_ENV", "development"),
+        communication_demo_enabled=_env("COMMUNICATION_DEMO_ENABLED", "false"),
+        communication_database_file=_env("COMMUNICATION_DATABASE_FILE", "data/communication/communication.db"),
         contract_category_definition_dir=_env(
             "CONTRACT_CATEGORY_DEFINITION_DIR",
             "data/definition/contract-category",
@@ -343,6 +382,9 @@ def get_settings() -> Settings:
             base_url=_env("VLLM_MLLM_BASE_URL", "http://127.0.0.1:8000/v1"),
             api_key=_optional_env("VLLM_MLLM_API_KEY"),
             model=_env("VLLM_MLLM_MODEL", "qwen3.6-35b-a3b-fp8"),
+            tool_tag_file=_env(
+                "VLLM_MLLM_TOOL_TAG_FILE", "qwen3.6-35b-a3b-fp8.txt"
+            ),
             endpoint=_env("VLLM_MLLM_ENDPOINT", "chat_completions"),
             timeout_seconds=_env("VLLM_MLLM_TIMEOUT_SECONDS", "300"),
             max_concurrent_requests=_env("VLLM_MLLM_MAX_CONCURRENT_REQUESTS", "20"),

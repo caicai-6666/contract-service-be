@@ -12,6 +12,33 @@ vLLM 使用 Jinja chat template 将 OpenAI `messages`、`tools` 和特殊 token 
 
 ---
 
+## 模型工具调用格式资产
+
+当前 `.env` 与 `.env.example` 的生成模型为 `qwen3.6-35b-a3b-fp8`，对应独立提示词模板为 [`data/tool-tag/qwen3.6-35b-a3b-fp8.txt`](../../../data/tool-tag/qwen3.6-35b-a3b-fp8.txt)。当前资产版本为 `qwen3.6-tool-tag-v2`，仅在本文记录版本，不向模板正文增加文字。Embedding 模型不生成工具调用，因此不建立对应模板。
+
+该文件直接复制 [`TOOL_CALL_XML_INSTRUCTION`](../../../app/agent/contract_extraction/tool_protocol.py) 的既有原文，不增加标题、规则或示例；与代码常量相比仅多文本文件的末尾换行。后续以 UTF-8 读取并移除一个末尾换行，即可得到与原常量完全相同的文本。它不是服务端 Jinja 模板，也不是工具 JSON Schema。
+
+模板说明 XML 标签结构、必填参数和调用结束后不得追加文本的要求。单轮必须且只能调用一个工具等规则继续由节点任务提示词和程序校验承担；实际工具名称及参数定义通过 OpenAI `tools` 提供。提示词不能保证输出合法，仍需服务端 `qwen3_xml` 解析、客户端协议及业务校验和有限次数纠错。
+
+使用 `VLLM_MLLM_TOOL_TAG_FILE=qwen3.6-35b-a3b-fp8.txt` 指定模板文件名，对应 `settings.mllm.tool_tag_file`。只能填写文件名，不接受绝对路径或子目录；路径固定解析到项目根目录的 `data/tool-tag`，不受启动工作目录影响，也不允许符号链接指向目录之外。未设置时使用上述默认值。
+
+`app.bootstrap.lifespan` 在初始化数据库和外部客户端之前调用 `initialize_mllm_tool_tag(settings.mllm)`，以 UTF-8 读取并检查非空，将文本保存到 `app.core.tool_tag` 的进程级全局变量。文件缺失、不可读、编码错误或空白内容均阻止启动，不静默回退。运行期间不再读盘，修改文件或配置需要重启；每个进程独立加载。公共读取方式如下：
+
+```python
+from app.core.tool_tag import get_mllm_tool_tag
+
+# 在启动初始化完成后、构造请求时读取，不要在模块导入期求值。
+instruction = get_mllm_tool_tag()
+```
+
+初始化前调用 getter 会抛出 `RuntimeError`。全局字符串通过 getter 共享，避免 `from ... import 变量` 捕获初始化前的旧值。离线脚本不经过 FastAPI 时，需要自行先调用初始化函数。
+
+**当前接入边界：** 已实现启动加载与全局读取入口；会话记忆的筛选规划提示词已通过 getter 将模板追加到 system 末尾，并已接入节点1模型循环；节点2仍为占位，尚未执行真实 vLLM 测试。其他现有工作流继续使用既有提示词及 `TOOL_CALL_XML_INSTRUCTION`，尚未迁移。后续接入时应替换对应重复格式说明，而不是叠加多份。资产已加入 Git 白名单并随后端镜像复制；若部署以已有卷挂载整个 `data`，镜像内的新文件会被挂载遮蔽，需要将模板同步至实际数据卷。新增其他模板时也需同步 Git 和 Docker 文件白名单。
+
+修改时应同步核对聊天模板、共享协议说明和解析器约定，并更新资产版本。离线测试覆盖配置读取、文件名校验、原文一致性、启动前访问、文件异常、内存快照和启动失败边界；不代表已验证真实模型调用成功率。
+
+---
+
 ## 工具布局契约
 
 模板只接受两个 `tool_placement` 值；缺省时使用 `after_task`，未知值直接拒绝渲染：
@@ -21,7 +48,7 @@ vLLM 使用 Jinja chat template 将 OpenAI `messages`、`tools` 和特殊 token 
 | `before_task` | 公共消息 → 工具 → 最后一个真实 user 任务 → 短期历史 | 并行任务共享同一工具、任务载荷不同，例如合同分类。 |
 | `after_task` | 公共消息 → 最后一个真实 user 任务 → 工具 → 短期历史 | 工具根据当前任务定义动态生成，例如 Core 字段提取。 |
 
-“最后一个真实 user 任务”是从消息尾部反向找到的最后一个 `role=user` 消息；后续 `assistant` 工具调用和 `role=tool` 反馈不改变这个锚点。因此同一任务多轮调用时，工具块始终固定在初始任务与短期历史之间，只渲染一次。
+未指定锚点时，“最后一个真实 user 任务”是从消息尾部反向找到的最后一个 `role=user` 消息，assistant/tool 交互不改变它，但新增 user 纠错消息会改变。现在可通过 chat_template_kwargs 的 `tool_task_index` 指定初始 user 任务在 messages 中的零基索引；必须为有效整数且指向 user 消息，否则客户端或模板拒绝。会话记忆节点固定传入 1，保证工具块在纠错及工作区重建后仍位于初始任务前；其他未传此参数的工作流保持原有行为。修改此参数逻辑后须更新服务端模板并重启 vLLM。
 
 `before_task` 要求调用方把公共前缀和任务变量拆为两个 user 消息，否则工具会位于同一个 user 消息全部内容之前：
 

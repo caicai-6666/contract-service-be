@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Final, Literal
 
+from app.infrastructure.png_image import PNGImage
+
 PDFPageEmbeddingInputVersion = Literal["contract-near-duplicate-v2"]
 
 PDF_PAGE_EMBEDDING_INPUT_VERSION: Final[PDFPageEmbeddingInputVersion] = (
@@ -18,13 +20,14 @@ PDF_PAGE_EMBEDDING_SYSTEM_INSTRUCTION: Final = (
 
 
 def build_pdf_page_embedding_messages(
-    image_data_url: str,
+    image_data_url: str | PNGImage,
 ) -> list[dict[str, object]]:
     """构造稳定的单页对称编码消息，不注入页面外文本或运行时元数据。"""
-    if not image_data_url.startswith("data:image/png;base64,"):
-        raise ValueError("合同页面向量化只接受 PNG data URL")
-    if image_data_url == "data:image/png;base64,":
-        raise ValueError("合同页面 PNG data URL 不能为空")
+    if not isinstance(image_data_url, PNGImage):
+        if not isinstance(image_data_url, str) or not image_data_url.startswith("data:image/png;base64,"):
+            raise ValueError("合同页面向量化只接受 PNG 引用或 data URL")
+        if image_data_url == "data:image/png;base64,":
+            raise ValueError("合同页面 PNG data URL 不能为空")
     return [
         {
             "role": "system",

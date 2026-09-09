@@ -114,6 +114,7 @@ class _ContractIndexDocument(_ContractIndexModel):
     classification: _ContractIndexClassification
     core: dict[str, Any]
     clauses: tuple[_ContractIndexClause, ...] = Field(min_length=1)
+    retrieval_questions: tuple[str, ...] = Field(min_length=1)
     vectors: _ContractIndexVectors
 
 
@@ -196,6 +197,7 @@ class ContractIngestionService:
         category_reasoning: Mapping[str, str],
         core: CoreDraftData,
         clauses: ClauseDraftData,
+        retrieval_questions: tuple[str, ...],
         question_fusion_vector: tuple[float, ...],
         page_fusion_vector: tuple[float, ...],
     ) -> ContractIngestionResult:
@@ -220,6 +222,12 @@ class ContractIngestionService:
             clauses,
             page_count=page_count,
         )
+        # 保存生成时的原文与顺序，不能只留下不可逆的融合向量。
+        # 不去重或改写文本；更换模型时可直接以这些问题重新生成向量。
+        if not isinstance(retrieval_questions, (tuple, list)) or not retrieval_questions:
+            raise ContractReviewValidationError("入库检索问题必须是非空列表")
+        if any(not isinstance(item, str) or not item.strip() for item in retrieval_questions):
+            raise ContractReviewValidationError("入库检索问题必须全部为非空文本")
         question_vector = self._validate_vector(
             question_fusion_vector,
             field_name="question_fusion",
@@ -263,6 +271,7 @@ class ContractIngestionService:
                 _ContractIndexClause.model_validate(clause)
                 for clause in projected_clauses
             ),
+            retrieval_questions=tuple(retrieval_questions),
             vectors=_ContractIndexVectors(
                 question_fusion=tuple(question_vector),
                 page_fusion=tuple(page_vector),

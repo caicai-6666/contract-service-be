@@ -17,6 +17,7 @@ from app.agent.contract_extraction.subgraph.document_understanding.document_stru
 from app.agent.contract_extraction.subgraph.document_understanding.prompt import (
     build_pdf_common_messages,
 )
+from app.infrastructure.png_image import image_reference_json
 
 if TYPE_CHECKING:
     from app.agent.contract_extraction.subgraph.classification.state import (
@@ -82,6 +83,7 @@ def context_sha256(messages: Iterable[dict[str, Any]]) -> str:
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
+        default=image_reference_json,
     ).encode("utf-8")
     return sha256(serialized).hexdigest()
 

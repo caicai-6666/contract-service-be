@@ -191,6 +191,7 @@ GET /contract/api/contract/extraction-runs
   {
     "run_id": "f98a2b1d-...",
     "document": {
+      "file_id": "f98a2b1d-...",
       "file_name": "设备采购合同.pdf",
       "processed_file_size_bytes": 824301,
       "page_count": 12,
@@ -209,16 +210,17 @@ GET /contract/api/contract/extraction-runs
 返回项按 `updated_at` 倒序排列，`status` 只可能是：
 
 - `processing`：后台拓扑仍在自动推进，至少还有公共流程或业务分支正在执行；
-- `blocked`：后台不会继续自动推进，需要用户确认查重结果、重试失败节点、复核结果或执行后续入库操作。
+- `blocked`：后台不会继续自动推进，列表可展示为“待处理”；包括等待确认、可重试失败、待复核入库，以及仅可查看或取消清理的非合同、重复拒绝终态。该状态不代表允许继续提取。
 
-合同结构识别、合同分类等公共前置阶段失败时，任务会继续出现在列表中并标记为 `blocked`，避免因为没有形成草稿而从恢复入口消失。某个业务分支失败、但其他分支仍在执行时暂时保持 `processing`；所有自动执行停止后转为 `blocked`。非合同和已过期运行不返回。读取列表不会刷新任务 TTL；列表为空时直接返回 `[]`。
+合同结构识别、合同分类等公共前置阶段失败时，任务会继续出现在列表中并标记为 `blocked`，避免因为没有形成草稿而从恢复入口消失。某个业务分支失败、但其他分支仍在执行时暂时保持 `processing`；所有自动执行停止后转为 `blocked`。非合同（`not_a_contract`）和重复拒绝（`duplicate_rejected`）在保留期内也返回，列表均标记为 `blocked`。已取消、已过期回收及已入库释放的任务不返回。读取列表不会刷新任务 TTL；列表为空时直接返回 `[]`。
 
-列表状态是面向恢复入口的粗粒度投影，不替代单任务快照中的 `run.status` 和八个阶段状态。`suggested_file_name` 在命名成功前为 `null`，成功后返回不带扩展名的名称摘要；完整理由和证据仍需查询单任务快照。前端选择一项后，应以其 `run_id` 查询快照来判断具体阻塞位置、可重试阶段和已有结果，并建立 SSE 连接同步后续事件。
+列表状态是面向恢复入口的粗粒度投影，不替代单任务快照中的 `run.status` 和八个阶段状态。`suggested_file_name` 在命名成功前为 `null`，成功后返回不带扩展名的名称摘要；完整理由和证据仍需查询单任务快照。前端选择一项后，应以其 `run_id` 查询快照来判断具体阻塞位置、可重试阶段和已有结果。非合同与重复拒绝只展示终态说明及 PDF，隐藏继续、重试和入库操作，允许主动取消清理；其他任务按快照能力显示操作并订阅 SSE。
 
 `document` 是任务实际持有的处理版 PDF 元数据，在创建响应、列表项和单任务快照中使用同一结构：
 
 | 字段 | 说明 |
 | --- | --- |
+| `file_id` | 内存处理版 PDF 的 UUID，复用本轮 `run_id`，用于资源接口读取。 |
 | `file_name` | 创建任务时保存的用户文件名。 |
 | `processed_file_size_bytes` | 压缩并重新封装后的 PDF 字节数，不是原始上传大小。 |
 | `page_count` | 处理版 PDF 的物理页数。 |
@@ -226,6 +228,8 @@ GET /contract/api/contract/extraction-runs
 | `cover_height_pixels` | 处理后第 1 页图像的像素高度。 |
 
 这个运行期 `document` 对象只服务恢复和前端展示，不会被整体复制到 Elasticsearch。正式入库会从中使用处理版页数，并以用户最终提交的 `file_name` 替代创建任务时的原始文件名。
+
+恢复 PDF 预览时，使用 `file_id` 请求 `GET /contract/api/resource/extraction-pdf/{file_id}`，携带同一用户的 Bearer 免登码。读取原有内存处理版，不重新渲染；完整协议与生命周期见[内存处理版 PDF 读取](resource.md#读取提取任务的内存处理版-pdf)。
 
 > **入库后释放：** 正式入库成功后，入库服务会从内存注册表删除对应 `run_id`；该任务随后不再出现在本列表中。
 
@@ -274,6 +278,7 @@ curl --request POST \
     "updated_at": "2026-08-29T10:00:00Z",
     "expires_at": "2026-08-29T11:00:00Z",
     "document": {
+      "file_id": "f98a2b1d-...",
       "file_name": "contract.pdf",
       "processed_file_size_bytes": 824301,
       "page_count": 12,
@@ -335,6 +340,7 @@ run:
   updated_at: "2026-08-29T10:03:00Z"
   expires_at: "2026-08-29T11:03:00Z"
   document:
+    file_id: f98a2b1d-...         # 与本轮 run_id 相同，资源读取使用此 UUID
     file_name: 设备采购合同.pdf
     processed_file_size_bytes: 824301
     page_count: 12
@@ -436,7 +442,7 @@ draft:
 - 每个返回候选都提供 `reasoning_summary`；精确哈希命中只说明文件身份一致，MLLM 判断也不公开完整工具轨迹。
 - 前端需要预览 PDF 时，将 `file_uri` 作为查询参数传给[资源文件 API](resource.md)，即 `GET /contract/api/resource/contract?file_uri=...`。SSE 不内联 PDF 二进制或 Base64。
 - `review_expires_at` 在暂停点形成后固定，GET、SSE 和心跳不会刷新。成功继续后 `continued_at` 记录实际消费暂停点的时间。
-- 重复合同不进入暂停点：`can_continue=false`、`review_expires_at=null`、`continued_at=null`，运行状态为 `duplicate_rejected`。候选 PDF 列表、负责人和理由继续展示，快照及事件保留至普通运行 TTL 到期；不进入可恢复运行列表。SSE 发出终态事件后关闭，重连可回放。前端须接收新事件并隐藏继续、重试和入库操作，而不是隐藏候选列表。
+- 重复合同不进入暂停点：`can_continue=false`、`review_expires_at=null`、`continued_at=null`，运行状态为 `duplicate_rejected`。候选 PDF 列表、负责人和理由继续展示，快照及事件保留至普通运行 TTL 到期；保留期内仍进入可恢复运行列表，列表状态为 `blocked`。SSE 发出终态事件后关闭，重连可回放。前端须接收新事件并隐藏继续、重试和入库操作，而不是隐藏候选列表。
 - 非重复（包括仅 `similar`）仍按原流程暂停，此时 `can_continue=true`；成功继续后变为 `false`。重复结果不可人工放行，即使之后删除候选，原任务也不能继续，需要重新上传发起查重。继续、重试和入库入口均在后端校验重复结果并返回 `409`。
 
 ### 阶段对象
@@ -737,7 +743,7 @@ POST /contract/api/contract/extraction-runs/{run_id}/ingestion
 Content-Type: application/json
 ```
 
-八个用户业务阶段全部为 `succeeded` 后，审核用户提交最终展示文件名以及完整 Core、Clause。请求体不接受建议名称、`document_id`、分类、向量、PDF 地址、审核人或入库时间，这些信息均由服务端根据当前运行和登录用户补齐。最终 `file_name` 可以沿用、修改或完全替换自动建议。
+八个用户业务阶段全部为 `succeeded` 后，审核用户提交最终展示文件名以及完整 Core、Clause。请求体不接受建议名称、`document_id`、分类、检索问题、向量、PDF 地址、审核人或入库时间，这些信息均由服务端根据当前运行和登录用户补齐。最终 `file_name` 可以沿用、修改或完全替换自动建议。生成问题原文由服务端保存至 ES `retrieval_questions` 数组，供后续更换模型重算向量，无需前端新增字段。
 
 `core.signing_date` 是入库必填项，必须提供完整合法的签订日期。缺失、`null`、空白或非法日期返回 `422`，不会写入任何正式存储；日期统一规范为 `YYYY-MM-DD`。提取结果仍可能为 `null`，前端需提示审核人依据合同补充日期后再入库，不得自动用当前日期或其他业务日期替代。历史合同查询仍兼容空日期。
 

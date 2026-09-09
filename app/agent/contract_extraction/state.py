@@ -95,9 +95,11 @@ class PreparedPDFPage(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     page_number: int
-    png_bytes: bytes
+    png_bytes: bytes = Field(repr=False, exclude=True)
     width_pixels: int
     height_pixels: int
+    width_points: float = Field(gt=0)
+    height_points: float = Field(gt=0)
     render_scale: float
     visual_tokens: int
     content_sha256: str
@@ -115,13 +117,12 @@ class PreparedPDFPage(BaseModel):
 
 
 class PreparedPDF(BaseModel):
-    """经过检查、动态预算缩放并重新封装后的处理版 PDF。"""
+    """处理版 PDF 的身份、页面 PNG 和尺寸；不驻留整份 PDF 字节。"""
 
     model_config = ConfigDict(frozen=True)
 
     document_id: str
     source_path: Path
-    processed_pdf_bytes: bytes = Field(repr=False, exclude=True)
     source_file_size_bytes: int
     processed_file_size_bytes: int
     page_count: int

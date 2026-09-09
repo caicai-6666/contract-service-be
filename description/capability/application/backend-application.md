@@ -92,12 +92,14 @@ python -m app.main
 
 两个本地 vLLM 服务均通过环境变量配置，API 密钥分别从 `VLLM_MLLM_API_KEY` 和 `VLLM_EMBEDDING_API_KEY` 读取。
 
+`VLLM_MLLM_TOOL_TAG_FILE` 指定 `data/tool-tag` 下的工具格式模板文件名，默认 `qwen3.6-35b-a3b-fp8.txt`。应用启动时校验并加载为进程级共享文本，文件错误会阻止启动，运行期间不热更新；读取入口及工作流接入边界见[模型工具调用格式资产](../infrastructure/vllm-chat-template.md#模型工具调用格式资产)。
+
 | 模型 | 默认地址 | 端点 | 主要职责 |
 | --- | --- | --- | --- |
 | MLLM | `http://127.0.0.1:8000/v1` | `chat_completions` | 合同的 Core、Clause 与 Retrieval Question 生成。 |
 | Embedding | `http://127.0.0.1:8001/v1` | `embeddings` | 字段、合同与候选的向量化。 |
 
-MLLM 的三条业务线路共享 `VLLM_MLLM_MAX_CONCURRENT_REQUESTS=20`。应用使用官方异步 `AsyncOpenAI` 客户端和自定义 `base_url` 对接 vLLM；本地服务没有配置 key 时，适配器仅为满足 SDK 初始化提供非敏感占位值。`VLLM_MLLM_USE_MEDIA_REFERENCES=true` 默认启用 vLLM 0.21+ 的媒体 UUID 协议，使同页首次上传后只传引用；服务版本、缓存失效和回退要求见[vLLM 多模态媒体引用](../infrastructure/vllm-media-reference.md)。严格 JSON 提取必须使用 `VLLM_MLLM_ENABLE_THINKING=false`，不能继承模型默认思考模式。
+单 worker 内所有合同、业务线路与后台任务共享 `VLLM_MLLM_MAX_CONCURRENT_REQUESTS=20`；文本及页面向量化独立共用 `VLLM_EMBEDDING_MAX_CONCURRENT_REQUESTS=10`。节点局部限制继续保留，最终发送由统一客户端执行全局准入；配置与排队边界见[模型全局并发额度](../infrastructure/model-concurrency.md)。应用使用官方异步 `AsyncOpenAI` 客户端和自定义 `base_url` 对接 vLLM；本地服务没有配置 key 时，适配器仅为满足 SDK 初始化提供非敏感占位值。`VLLM_MLLM_USE_MEDIA_REFERENCES=true` 默认启用媒体 UUID 协议，使同页首次上传后只传引用；服务版本、缓存失效和回退要求见[vLLM 多模态媒体引用](../infrastructure/vllm-media-reference.md)。严格 JSON 提取必须使用 `VLLM_MLLM_ENABLE_THINKING=false`，不能继承模型默认思考模式。
 
 MLLM 默认使用 `262144` token 上下文。视觉预算从上下文中扣除 `8192` 最大生成、`4096` 公共提示词和 `10240` 多轮工具历史与安全余量后动态计算；实际视觉预算再随 PDF 页数增长，最大为 `239616`。`VLLM_MLLM_MAX_VISUAL_TOKENS_PER_REQUEST` 留空表示启用动态预算，也可以设置更小的人工上限。
 

@@ -4,7 +4,7 @@
 
 本文是合同正式入库数据的参考契约。合同自动提取流程、内存草稿与 SSE 状态见[合同提取应用运行时](../system/contract-extraction-runtime.md)；Elasticsearch 客户端、索引名称和连接配置见[FastAPI 后端应用骨架](../../capability/application/backend-application.md#elasticsearch-边界)。
 
-> **实现状态：** 应用启动时能够创建正式索引并增量同步 Core mapping；复核后合同正式入库、问题融合向量和 PDF 页面融合向量均已接入应用运行时。
+> **实现状态：** 应用启动时能够创建正式索引并增量同步 Core 与检索问题原文 mapping；复核后合同正式入库、检索问题原文、问题融合向量和 PDF 页面融合向量均已接入应用运行时。
 
 ---
 
@@ -19,7 +19,7 @@ Elasticsearch 主文档只保存复核后的最终合同数据，不保存自动
 - 模型、提示词、目录指纹、运行轮次、token、耗时和工具调用等提取信息。
 - 审核状态、审核版本和审核过程；只保留最终审核人与入库时间。
 - Core 和 Clause 的自动提取状态、证据、推理、失败信息与候选结果。
-- 模拟检索问题、单个问题向量和单页向量。
+- 检索问题的证据、推理与运行审计，单个问题向量和单页向量；问题原文单独保存。
 
 `document_id` 使用处理版 PDF 字节的 SHA-256。`file_uri` 指向同一份处理版 PDF，但 Elasticsearch 不保存该 PDF 的字节；当前本地部署使用 `/<document_id>.pdf`，由加载器解析到 `data/contract/<document_id>.pdf`。
 
@@ -39,6 +39,7 @@ Elasticsearch 主文档只保存复核后的最终合同数据，不保存自动
   "classification": {},
   "core": {},
   "clauses": [],
+  "retrieval_questions": ["本合同的付款条件是什么？"],
   "vectors": {}
 }
 ```
@@ -53,6 +54,7 @@ Elasticsearch 主文档只保存复核后的最终合同数据，不保存自动
 | `classification` | 是 | 复核后的合同分类最终值。 |
 | `core` | 是 | 复核后的固定 Core 最终值。 |
 | `clauses` | 是 | 复核后的最终条款目录和正文。 |
+| `retrieval_questions` | 新入库必填 | 按生成顺序保存的非空问题原文数组，供后续重新向量化。 |
 | `vectors` | 是 | 当前可用的合同级融合向量。 |
 
 根 mapping 应使用 `dynamic: strict`，防止未定义字段静默进入正式索引。
@@ -218,9 +220,33 @@ Core 标量 mapping 由[模型提取对象定义结构](field-definition.md#elas
 
 ---
 
+## 检索问题原文
+
+`retrieval_questions` 保存 Retrieval 分支全部已成功生成的问题原文，来源为 `RetrievalViewOutput.questions.questions[*].question`，不由前端提交或修改。
+
+```json
+{
+  "retrieval_questions": [
+    "本合同的付款条件是什么？",
+    "交付延期时如何承担违约责任？"
+  ]
+}
+```
+
+- 新入库必须至少包含一个非空文本；列表缺失、为空或包含无效元素时，在开始持久化前拒绝。
+- 原样保留生成顺序和文本，不拼接、改写或去重；数组位置表达顺序，不额外存储问题 ID、证据或推理。
+- 保存全部正式生成的问题，包括当次 Embedding 失败的问题。原有 `question_fusion` 仍仅融合当次成功向量，因此部分成功时不能假设数组中所有问题都参与了旧向量。
+- mapping 为 `{"type": "text", "index": false}`，只从 `_source.retrieval_questions` 读取，不增加全文检索能力，也不用于 `exists` 筛选；批量更新程序需读取 `_source` 判断字段是否存在且非空。字符串数组无需独立数组类型，依据 [Elasticsearch 数组说明](https://www.elastic.co/docs/reference/elasticsearch/mapping-reference/array)与 [index 参数说明](https://www.elastic.co/docs/reference/elasticsearch/mapping-reference/mapping-index)。
+
+更换 Embedding 模型时，可读取这些问题，使用新模型对应的输入指令逐条向量化，再按算术平均及 L2 归一化重建 `vectors.question_fusion`，不必重新读取 PDF 或生成问题。不要将整个数组拼成一条输入。页面融合向量仍需要 PDF 页面，不能从问题重建；模型维度变化也需另行规划向量字段/索引迁移，本次未实现重算调度或迁移脚本。
+
+启动同步只为旧索引增加 mapping，不重建索引或修改已有文档。旧合同可能没有该字段；此前丢失的问题无法从融合向量恢复，需要另行从保留产物回填或重新生成，不能用空数组冒充已保存。
+
+---
+
 ## 合同向量
 
-`vectors` 最终只保存两个合同级融合向量，不保存参与融合的模拟问题、单个问题向量或单页向量。
+`vectors` 最终只保存两个合同级融合向量，不保存单个问题向量或单页向量；问题原文位于顶层 `retrieval_questions`。
 
 ```json
 {
@@ -233,7 +259,7 @@ Core 标量 mapping 由[模型提取对象定义结构](field-definition.md#elas
 
 | 字段 | 当前状态 | 来源 |
 | --- | --- | --- |
-| `question_fusion` | 已生成并接入正式入库 | 模拟问题分别向量化后形成的合同级融合向量；问题与单问题向量不入库。 |
+| `question_fusion` | 已生成并接入正式入库 | 生成问题分别向量化后形成的合同级融合向量；问题原文单独保存，单问题向量不入库。 |
 | `page_fusion` | 已生成并接入正式入库 | 处理版 PDF 每页分别执行多模态向量化后形成的合同级融合向量；单页向量不入库。 |
 
 两个字段均使用以下 mapping，其中维度读取 `ELASTICSEARCH_VECTOR_DIMENSIONS`：
@@ -272,7 +298,7 @@ flowchart LR
     projection --> elasticsearch
 ```
 
-投影器接收运行中已经确认的分类与两个合同级向量，以及用户提交的最终 Core、Clause 和展示文件名。写入时由服务端设置 `ingestion.ingested_at`，并使用当前登录且通过运行所有权校验的审核人名称；请求体不能覆盖审核人。
+投影器接收运行中已经确认的分类、检索问题原文与两个合同级向量，以及用户提交的最终 Core、Clause 和展示文件名。写入时由服务端设置 `ingestion.ingested_at`，并使用当前登录且通过运行所有权校验的审核人名称；请求体不能覆盖审核人。
 
 正式写入使用 `ELASTICSEARCH_INDEX_NAME`，并以 `document_id` 执行覆盖式 `index`。服务先在 SQLite 登记 `ingesting`，再按 `data/contract/<document_id>.pdf` 幂等保存处理版 PDF 并写入 ES；SQLite 最终转为 `ready` 后才释放内存运行，失败时保留运行供相同请求重试。轻量目录结构见[合同 SQLite 元数据结构](contract-sqlite-metadata.md)，完整应用边界见[复核后合同正式入库](../../capability/application/contract-ingestion.md)。
 
@@ -296,8 +322,8 @@ flowchart TD
     start["应用启动"]
     probe["探测正式索引"]
     create["创建完整合同 mapping"]
-    compare["比较当前 Core code 与已有 mapping"]
-    add["增量添加缺失 Core mapping"]
+    compare["比较 Core 与检索问题原文 mapping"]
+    add["增量添加缺失字段 mapping"]
     ready["继续启动 API"]
     fail["启动失败"]
 
@@ -309,6 +335,6 @@ flowchart TD
     compare -->|"同路径类型或分析器冲突"| fail
 ```
 
-同步只允许增加缺失的 Core 对象或对象属性，不删除索引中已有字段，也不尝试原地修改已有字段类型与分析器。配置删除不会自动删除历史 mapping；同一个 `code` 的类型或分析器与现有索引不一致时，应用必须启动失败，由显式索引迁移处理。Elasticsearch 不可达、SmartCN 插件缺失或索引元数据操作未确认同样会阻止启动。索引创建不等待活动分片，分片能否分配仍由 Elasticsearch 的磁盘水位和集群策略决定；运行环境必须另外监控索引健康状态。
+同步允许增加缺失的 Core 对象、对象属性及顶层 `retrieval_questions`，不删除索引中已有字段，也不尝试原地修改已有字段类型与分析器。检索问题字段若已存在但不是 `text` 或未关闭索引，则启动失败，要求显式迁移。配置删除不会自动删除历史 mapping；同一个 Core `code` 的类型或分析器与现有索引不一致时，应用必须启动失败。Elasticsearch 不可达、SmartCN 插件缺失或索引元数据操作未确认同样会阻止启动。索引创建不等待活动分片，分片能否分配仍由 Elasticsearch 的磁盘水位和集群策略决定；运行环境必须另外监控索引健康状态。
 
 开发 Elasticsearch 的启动、SmartCN 插件和安全限制见[Elasticsearch 本地开发部署](../../capability/infrastructure/elasticsearch-development.md)。

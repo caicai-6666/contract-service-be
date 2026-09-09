@@ -25,7 +25,7 @@ from app.core.config import get_settings
 from app.infrastructure.contract_index import synchronize_contract_index
 from app.infrastructure.elasticsearch import create_elasticsearch_client
 from app.service.contract_extraction.executor import AgentContractExtractionExecutor
-from app.service.pdf_preparation import AsyncPDFPreparationService
+from app.service.pdf_preparation import AsyncPDFPreparationService, assemble_processed_pdf
 from app.agent.contract_extraction.subgraph.classification.catalog import (
     load_contract_category_catalog,
 )
@@ -121,7 +121,7 @@ async def extract_and_index(
     started = perf_counter()
     prepared = await preparation.prepare(ContractExtractionRequest(pdf_path=path))
     processed_path = processed_dir / f"{prepared.document_id}.pdf"
-    processed_path.write_bytes(prepared.processed_pdf_bytes)
+    processed_path.write_bytes(await assemble_processed_pdf(prepared))
     if not overwrite and await elasticsearch.exists(index=index_name, id=prepared.document_id):
         print(f"{path.name}: skipped id={prepared.document_id}", flush=True)
         return
@@ -181,6 +181,7 @@ async def extract_and_index(
         "classification": classification,
         "core": project_core(core, field_catalog),
         "clauses": projected_clauses,
+        "retrieval_questions": [question.question for question in retrieval.questions.questions],
         "vectors": {
             "question_fusion": list(retrieval.vector.vector),
             "page_fusion": list(page_fusion_vector),

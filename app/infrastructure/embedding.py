@@ -16,6 +16,8 @@ from openai import (
 from openai.types import CreateEmbeddingResponse
 
 from app.core.config import EmbeddingSettings
+from app.infrastructure.model_concurrency import get_model_request_limiter
+from app.infrastructure.png_image import materialize_image_messages
 from app.infrastructure.inference_metrics import (
     build_inference_request_metrics,
     observe_inference_request,
@@ -74,11 +76,14 @@ class EmbeddingClient:
         started_at = datetime.now(UTC)
         request_started_at = perf_counter()
         try:
-            response = await self._client.embeddings.create(
-                model=self._settings.model,
-                input=inputs,
-                encoding_format="float",
-            )
+            async with get_model_request_limiter(
+                "embedding", self._settings.max_concurrent_requests,
+            ):
+                response = await self._client.embeddings.create(
+                    model=self._settings.model,
+                    input=inputs,
+                    encoding_format="float",
+                )
         except (APITimeoutError, APIConnectionError) as exc:
             observe_inference_request(
                 build_inference_request_metrics(
@@ -154,17 +159,21 @@ class EmbeddingClient:
         started_at = datetime.now(UTC)
         request_started_at = perf_counter()
         try:
-            response = await self._client.post(
-                "/embeddings",
-                cast_to=CreateEmbeddingResponse,
-                body={
-                    "messages": messages,
-                    "model": self._settings.model,
-                    "encoding_format": "float",
-                    "continue_final_message": True,
-                    "add_special_tokens": True,
-                },
-            )
+            # 文本和页面请求共用同一配额池；排队时不物化 PNG 的 Base64。
+            async with get_model_request_limiter(
+                "embedding", self._settings.max_concurrent_requests,
+            ):
+                response = await self._client.post(
+                    "/embeddings",
+                    cast_to=CreateEmbeddingResponse,
+                    body={
+                        "messages": materialize_image_messages(messages),
+                        "model": self._settings.model,
+                        "encoding_format": "float",
+                        "continue_final_message": True,
+                        "add_special_tokens": True,
+                    },
+                )
         except (APITimeoutError, APIConnectionError) as exc:
             observe_inference_request(
                 build_inference_request_metrics(

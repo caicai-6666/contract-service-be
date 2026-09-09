@@ -12,7 +12,11 @@ import pymupdf
 from app.agent.contract_extraction.state import PreparedPDF, PreparedPDFPage
 from app.agent.pdf_deduplication.state import PDFDuplicateCandidate
 from app.core.config import MLLMSettings
-from app.tool.pdf_page import PDFPageRenderConfig, compress_pdf_pages
+from app.tool.pdf_page import (
+    PDFPageRenderConfig,
+    compress_pdf_pages,
+    serialized_pdf_operation,
+)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONTRACT_FILE_ROOT = _PROJECT_ROOT / "data/contract"
@@ -50,6 +54,7 @@ class LocalPDFDuplicateCandidateLoader:
         """在线程中读取并校验候选 PDF，但不执行昂贵的页面渲染。"""
         return await asyncio.to_thread(self._read_pdf_bytes_sync, candidate)
 
+    @serialized_pdf_operation
     def _load_sync(self, candidate: PDFDuplicateCandidate) -> PreparedPDF:
         """校验 URI、哈希和页数后，从原文件字节恢复 PreparedPDF。"""
         path = self._resolve_candidate_path(candidate)
@@ -94,6 +99,8 @@ class LocalPDFDuplicateCandidateLoader:
                 png_bytes=page.png_bytes,
                 width_pixels=page.width_pixels,
                 height_pixels=page.height_pixels,
+                width_points=page.width_points,
+                height_points=page.height_points,
                 render_scale=page.render_scale,
                 visual_tokens=page.visual_tokens,
                 content_sha256=sha256(page.png_bytes).hexdigest(),
@@ -104,8 +111,7 @@ class LocalPDFDuplicateCandidateLoader:
         return PreparedPDF(
             document_id=candidate.document_id,
             source_path=path,
-            # 处理版字节原样进入状态；加载过程只恢复页面图像，不重新封装 PDF。
-            processed_pdf_bytes=pdf_bytes,
+            # 保留磁盘文件身份，但释放文件字节；候选资源仍从原文件读取。
             source_file_size_bytes=len(pdf_bytes),
             processed_file_size_bytes=len(pdf_bytes),
             page_count=page_count,
