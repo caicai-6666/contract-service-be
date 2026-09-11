@@ -22,7 +22,7 @@
 | --- | --- |
 | `compress_pdf` | 按视觉预算渲染全部页面，并返回重新封装的 PDF 字节与同源页面缓存。 |
 | `compress_pdf_page` | 渲染指定的一页 PDF，返回 PNG 字节、实际尺寸、渲染比例和 token 数。 |
-| `compress_pdf_pages` | 按原始页序渲染整份或指定页面。 |
+| `compress_pdf_pages` | 按原始页序渲染整份或指定页面；可用 report_page_errors=True 将逐页错误包装为带页码的 PDFPageRenderError，默认异常行为不变。 |
 | `assemble_pdf_pages` | 按连续页码将已有 PNG 封装为 PDF，不再次渲染。 |
 | `estimate_visual_tokens` | 根据图像尺寸与 patch 大小估算视觉 token。 |
 
@@ -43,6 +43,8 @@ min(视觉容量上限, PDF 页数 × 单页视觉上限)
 ---
 
 ## 内存生命周期与按需组装
+
+以下完整 PDF 身份与按需组装流程属于合同提取。Communication 的[文件可读性子图](../../architecture/workflow/contract-communication/file-readability.md)同样复用 compress_pdf_pages、MLLM 动态单页/总预算和 PreparedPDFPage，但仅保存逐页对象，不执行整份 PDF 组装或生成处理版文档 ID；多文件预算按每份 PDF 分别计算。
 
 1. 创建时渲染原始 PDF，得到逐页 PNG，并临时组装一次处理版 PDF，计算权威 `document_id` 和文件大小；随后释放原始文件及整份处理版字节。
 2. 任务仅长期保留同一份页面 PNG、媒体 UUID、内容指纹、像素尺寸和物理尺寸。模型公共上下文共享 PNG 引用，不保存 Base64，详见 [vLLM 多模态媒体引用](../infrastructure/vllm-media-reference.md)。

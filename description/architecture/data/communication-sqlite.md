@@ -6,7 +6,7 @@
 
 已实现建表、会话及空工作区的原子创建、终态任务追加、累计摘要追加、最近摘要边界读取、工作区版本更新和会话所有权校验；已支持记忆加工标记、检索文本/向量与工作区的原子归档。历史不依赖 SSE 缓存过期；数据库重开后记录仍在。
 
-> **接入边界：** 会话创建、历史加载和事件运行时已接通统一驻留轨迹；任务终态后台复制至 SQLite，输入附件注册时保存到 upload。见[历史驻留与备份](../system/communication-history.md)。真实工作流恢复、摘要生成、向量检索、附件资源接口和模型上下文组装仍未实现。
+> **接入边界：** 会话创建、历史加载和事件运行时已接通统一驻留轨迹；任务终态后台复制至 SQLite，附件注册时仅暂存内存，明确准入后随终态备份保存至 upload。见[历史驻留与备份](../system/communication-history.md)。已支持本人已驻留任务的准入附件读取；真实工作流恢复、摘要生成、向量检索和模型上下文组装仍未实现。
 
 ---
 
@@ -87,7 +87,7 @@
 
 ### 任务对象
 
-`kind=task` 时，顶层只保留 `input`、`trace`。不设置版本号或独立的 `messages` 列表，也不重复存储最终答复。
+`kind=task` 时，新任务顶层保存 `input`、`trace`、`events` 和 `event_cursor`。`trace` 为模型使用的有序内部轨迹，`events` 为用户界面恢复使用的精简 SSE 记录，正文允许在两种用途之间重复存储。不设置版本号或独立的 `messages` 列表。以下先展示内部 input/trace 结构，展示事件契约见下文。
 
 ```json
 {
@@ -97,7 +97,10 @@
       {
         "file_id": "a7f83b90-5ac2-4e16-8f92-71677c450dc1",
         "file_name": "采购合同.pdf",
-        "file_path": "/a7f83b90-5ac2-4e16-8f92-71677c450dc1.pdf"
+        "display_name": "生产线设备采购合同",
+        "summary": "约定生产线设备的采购范围、付款节点、交付验收和质保责任。",
+        "file_path": "/a7f83b90-5ac2-4e16-8f92-71677c450dc1.pdf",
+        "admission": "accepted"
       }
     ]
   },
@@ -147,6 +150,16 @@
 - `tool_call` 保存调用 ID、名称、展示标题和非敏感输入摘要；`tool_result` 通过相同 `call_id` 关联此前调用，状态为 `succeeded/failed/interrupted`，中断时 `output_summary` 可为 null。不得虚构成功结果。
 - `references` 始终是列表，每项只包含 `type` 和 `location`，没有引用为 []；具体点击行为见下文。
 
+### 展示事件备份
+
+- `events` 从注册时的 `[]` 开始，保存所有已接受的 `turn.status/task.progress/message.completed/error` 业务事件，不保存 `message.delta`、心跳和连接级错误。
+- 每项为 `sequence/event/data`；`sequence` 是真实 SSE 序号，过滤 delta 后允许缺号。`data` 由与 SSE 相同的编码函数生成，保留正式引用及状态事件的计时，中间事件不增加时间。
+- `event_cursor` 从 0 开始，每条有效事件（包括 delta）更新。用于活跃任务恢复后的订阅续接，不能以 events 最后一项的序号替代。
+- delta 只更新内存累积正文及内部 trace，不逐条进入展示事件。消息正常结束保存 `message.completed(status=completed)`；中断时保存完整累积正文的 `message.completed(status=interrupted)`，随后保存任务终态。
+- 中断收束和终态在共享锁下整批验证、原子更新，不从有界 SSE 缓存事后重建；终态随整个 payload 与工作区一并备份。
+- 内部 `trace` 引用仍为 `type/location`；新 `events.data.references` 原样保留 SSE 的 `document_id/page_number`，不通过旧 trace 反推，避免丢失页码。
+- 只扩展 JSON payload，不新增数据库列或表。旧数据不回填虚构事件；返回用户时按 [用户展示 Payload](../../api/communication.md#用户展示-payload) 执行兼容投影。模型提示词仍只渲染 input/trace，不渲染 events。
+
 ### 结果引用
 
 消息和工具结果共用以下引用结构，不再存储引用标题、文档 ID 或页码：
@@ -177,9 +190,23 @@
 
 ### 文件引用
 
-服务端生成 UUID 作为 `file_id`，磁盘名称为 `{file_id}.pdf`，`file_name` 保留原始展示名称。`file_path` 固定为 `/{file_id}.pdf`，以 `data/communication/upload/` 为逻辑根，不是操作系统绝对路径，也不包含会话子目录。
+服务端生成 UUID 作为 `file_id`，磁盘名称为 `{file_id}.pdf`，`file_name` 保留原始展示名称。新附件增加 `admission` 字段：
 
-写文件采用排他创建，冲突时重新生成 UUID 并重试，禁止覆盖既有文件。读取必须限定在 upload 内并校验会话归属，禁止 `..` 等越界路径，不能仅凭文件 ID 获得其他用户的文件。注册时已执行 UUID 排他文件落盘；资源读取接口与会话删除后的附件清理策略尚未实现。
+| admission | file_path | 含义 |
+| --- | --- | --- |
+| `pending` | null | 内存暂存，尚未取得准入结果；只存在于活动任务。 |
+| `accepted` | `/{file_id}.pdf` | 已允许持久化；实际文件随终态轨迹异步备份，不表示此刻写盘已确认。 |
+| `unavailable` | null | 未通过或未判断就结束；名称与 UUID 仍用于历史展示，不保留可访问路径和文件字节。 |
+
+`input.files` 同时保存后端生成的 `display_name`（内容名称）与 `summary`（内容摘要）。新附件注册时两项为 null；正式门禁返回完整、已校验的摘要批次后，执行层在准入决策和任务终态前调用 `record_file_summaries` 一次性写入。通过原始上传下标及原文件名校验，绑定已有 `file_id`，不改写用户原文、原文件名、上传顺序或 UUID；同名文件不按名称匹配。只复制这两个轻量字段，不复制 reasoning、节点审计、PDF 或图像。
+
+摘要写入与附件准入相互独立：后续相关性拒绝时可以保留已生成的描述供用户历史展示，但附件仍不可用、不落盘；拒绝轮次仍不应进入第二层上下文。门禁返回前取消、摘要失败或未执行时保留 null，不写入部分批次或迟到结果。终态冻结后禁止更新。原有终态备份、归档和历史读取会原样保留两个字段，无需新增 SQLite 列或迁移；旧记录缺字段时保持缺省，不伪造摘要。
+
+模型历史候选可读取上述字段，但第二层提示词组装仍未实现，本次也不改变记忆加工节点的提示词渲染策略。
+
+路径以 `data/communication/upload/` 为逻辑根，不是操作系统绝对路径，也不包含会话子目录。旧记录没有 admission 时保留原契约，不推断旧门禁结论、不迁移或删除其文件。该字段位于 JSON payload，不新增数据库列。
+
+准入接口、终态规则、排他写入、重试与异常边界统一见[附件准入与延迟落盘](../system/communication-history.md#附件准入与延迟落盘)。[资源读取接口](../../api/resource.md#读取已驻留会话任务的-pdf-附件)校验本人已驻留任务和明确准入，优先内存，磁盘回退限定在 upload 内，禁止越界路径；磁盘存在或仅知道 ID 都不构成授权。会话删除后的附件清理策略尚未实现。
 
 ### 摘要对象
 
@@ -196,7 +223,7 @@
 
 ### 与其他状态的分工
 
-会话 ID、轮次 ID、轮次状态、创建时间和会话顺序已在数据库列中，不重复放入 payload。历史 payload 不保存 `supersedes_turn_id` 或 `superseded_by_turn_id`；通过会话逻辑顺序结合 `status=superseded` 表达用户方向调整，不按随机 UUID 排序。
+会话 ID、轮次状态、创建时间和会话顺序以数据库列为准。内部 input/trace 不保存替代关联；通过会话逻辑顺序结合 `status=superseded` 表达用户方向调整，不按随机 UUID 排序。展示 events 原样保留 SSE 中的 turn_id、状态、时间及 superseded_by_turn_id，以保证实时与恢复一致，不作为模型上下文的额外关系字段。
 
 运行接口用于指定替代目标的字段保持不变。`CommunicationSnapshot.messages` 继续用于前端恢复，不属于本次删除的历史 payload 列表。工作区、检索文本和向量独立存储。终态冻结与后台复制规则见[有序轨迹设计](../workflow/contract-communication/turn-trace.md)。
 

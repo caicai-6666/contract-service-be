@@ -9,11 +9,12 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 from pydantic import TypeAdapter, SecretStr
+from app.agent.contract_communication.business_gate.state import FileSummary
 from app.service.communication_trace import ToolCallTrace, ToolResultTrace
 
 from app.schema.communication import (
     TERMINAL_STATUSES, CommunicationEvent, CommunicationSnapshot, ErrorData,
-    EventData, MessageCompletedData, MessageDeltaData,
+    ConversationHistoryRecord, EventData, MessageCompletedData, MessageDeltaData,
     MessageSnapshot, TaskProgressData, TurnStatusData,
 )
 
@@ -32,6 +33,10 @@ class ActivationExpiredError(ValueError):
 
 class CommunicationCapacityError(ValueError):
     """暂存轮次或输入达到进程容量限制。"""
+
+
+class TurnNotInterruptibleError(ValueError):
+    """业务门禁尚未完成，不允许用户改变当前执行任务。"""
 
 
 @dataclass(frozen=True)
@@ -63,6 +68,7 @@ class _Turn:
     active_message_id: str | None = None
     activated_monotonic: float | None = None
     history_registered: bool = False
+    file_admission_resolved: bool = False
 
 
 _EVENT_ADAPTER = TypeAdapter(EventData)
@@ -70,6 +76,14 @@ _EVENT_ADAPTER = TypeAdapter(EventData)
 
 class CommunicationEventService:
     """先提交日志和快照，再唤醒订阅者；慢订阅者不阻塞生产者。"""
+
+    # 通用事件源与独立演示没有门禁；正式执行器必须显式解锁。
+    requires_business_gate = False
+
+    @staticmethod
+    def _require_interruptible(turn: _Turn) -> None:
+        if not turn.snapshot.can_interrupt:
+            raise TurnNotInterruptibleError("当前任务尚未完成业务校验，暂不允许暂停或调整方向，请等待校验完成。")
 
     def __init__(
         self, *, event_buffer_size: int = 128, heartbeat_seconds: float = 15,
@@ -134,6 +148,7 @@ class CommunicationEventService:
                 old_turn = self._get(conversation_id, supersedes_turn_id, owner)
                 if old_turn.snapshot.status in TERMINAL_STATUSES:
                     raise ValueError("旧轮次已经结束，请提交普通新轮次，不得改写历史终态")
+                self._require_interruptible(old_turn)
             active_turns = [
                 turn for k, turn in self._turns.items()
                 if k[0] == conversation_id and turn.snapshot.status not in TERMINAL_STATUSES
@@ -154,6 +169,7 @@ class CommunicationEventService:
                 snapshot=CommunicationSnapshot(
                     conversation_id=conversation_id, turn_id=turn_id,
                     status="pending_activation", last_sequence=0, earliest_sequence=1,
+                    can_interrupt=not self.requires_business_gate,
                     activation_expires_at=now + timedelta(seconds=self._activation_timeout),
                     supersedes_turn_id=supersedes_turn_id,
                 ),
@@ -169,17 +185,24 @@ class CommunicationEventService:
             if old_turn is not None:
                 # 在副本上完成全部校验；新旧任一事件超限时均不改变原轮次。
                 old_copy = replace(old_turn, events=deque(old_turn.events, maxlen=self._buffer_size))
+                old_entries = []
                 self._commit(old_copy, TurnStatusData(
                     status="superseded", superseded_by_turn_id=turn_id,
-                ), record_history=False)
+                ), record_history=False, collected=old_entries)
             if self._history is not None:
-                # 所有注册校验完成后才保存附件和加入共享轨迹；失败不终止旧轮次。
-                await self._history.register_locked(conversation_id, turn_id, secret_key=secret_key, source=staged_input)
+                if old_turn is not None and old_turn.history_registered:
+                    old_history_record = self._history.project_events_locked(
+                        conversation_id, old_turn.snapshot.turn_id, old_entries,
+                    )
+                # 所有注册校验完成后才暂存附件和加入共享轨迹；失败不终止旧轮次。
+                await self._history.register_locked(
+                    conversation_id, turn_id, secret_key=secret_key, source=staged_input,
+                    can_interrupt=turn.snapshot.can_interrupt,
+                )
                 turn.history_registered = True
             if old_turn is not None:
                 if self._history is not None and old_turn.history_registered:
-                    self._history.accept_event_locked(conversation_id, old_turn.snapshot.turn_id,
-                                                      old_copy.events[-1].data, old_copy.snapshot)
+                    self._history.commit_projected_events_locked(conversation_id, old_history_record)
                 # 保留旧对象身份，让已连接订阅者收到真实替代终态并正常关闭。
                 old_turn.snapshot = old_copy.snapshot
                 old_turn.events = old_copy.events
@@ -197,6 +220,8 @@ class CommunicationEventService:
         # 重新校验复制负载，避免可变容器或绕过构造校验的对象进入日志。
         # context_status 是只读派生语义，不接收调用方注入，重新校验时从原始状态重建。
         payload = _EVENT_ADAPTER.validate_json(_EVENT_ADAPTER.dump_json(data, exclude={"context_status"}))
+        if isinstance(payload, MessageCompletedData) and payload.status == "interrupted":
+            raise ValueError("中断消息只能由运行时随任务终态自动生成")
         if isinstance(payload, TurnStatusData) and payload.status in {"superseded", "pending_activation", "processing", "expired"}:
             raise ValueError("注册、激活、过期及替代状态只能由生命周期管理产生")
         async with self._condition:
@@ -205,6 +230,8 @@ class CommunicationEventService:
                 raise ValueError("终态轮次禁止继续发布事件")
             if turn.snapshot.status == "pending_activation":
                 raise ValueError("轮次尚未激活，禁止发布业务事件")
+            if isinstance(payload, TurnStatusData) and payload.status == "cancelled":
+                self._require_interruptible(turn)
             event = self._commit(turn, payload)
             self._condition.notify_all()
             return event
@@ -217,9 +244,23 @@ class CommunicationEventService:
                 return turn.snapshot
             if turn.snapshot.status in TERMINAL_STATUSES:
                 raise ValueError("轮次已结束，不能改写为取消状态")
+            self._require_interruptible(turn)
             # 与激活、替代及发布共用锁，先提交者决定终态；终态阻断迟到结果。
             self._commit(turn, TurnStatusData(status="cancelled"))
             self._condition.notify_all()
+            return turn.snapshot
+
+    async def enable_interruption(self, conversation_id: str, turn_id: str, *, owner: str) -> CommunicationSnapshot:
+        """完整门禁通过并批准附件后开放用户中断；权限、SSE、历史在同一锁内提交。"""
+        async with self._condition:
+            turn = self._get(conversation_id, turn_id, owner)
+            if turn.snapshot.status != "processing":
+                raise ValueError("仅执行中的任务可以开放用户中断")
+            if self.requires_business_gate and not turn.file_admission_resolved:
+                raise ValueError("必须先完成业务门禁与附件准入")
+            if not turn.snapshot.can_interrupt:
+                self._commit(turn, TurnStatusData(status="processing", can_interrupt=True))
+                self._condition.notify_all()
             return turn.snapshot
 
     async def snapshot(self, conversation_id: str, turn_id: str, *, owner: str) -> CommunicationSnapshot:
@@ -278,6 +319,93 @@ class CommunicationEventService:
             if turn.snapshot.status != "processing":
                 raise ValueError("只能读取已激活且仍在处理的轮次输入")
             return turn.staged_input
+
+    async def get_gate_history(
+        self, conversation_id: str, turn_id: str, *, owner: str,
+    ) -> tuple[ConversationHistoryRecord, ...]:
+        """执行层读取可信历史；沿用轮次所有权校验，不接受前端上传历史。"""
+        async with self._condition:
+            turn = self._get(conversation_id, turn_id, owner)
+            if turn.snapshot.status != 'processing':
+                raise ValueError('只能为仍在处理的轮次读取门禁历史')
+            if self._history is None or not turn.history_registered:
+                return ()
+            # 注册已校验会话密钥并加载历史；共享锁内只读取驻留队列，不重复开锁查库。
+            return self._history.get_gate_records_locked(conversation_id, turn_id)
+
+    async def resolve_file_admission(
+        self, conversation_id: str, turn_id: str, *, owner: str, accepted_indices: tuple[int, ...],
+    ) -> None:
+        """执行层提交准入通过的附件下标（从 0 开始）；不是 HTTP 或模型工具接口。
+
+        必须显式提供列表，空元组表示全部剔除。只标记保存资格，不在事件线程写磁盘。
+        """
+        async with self._condition:
+            turn = self._get(conversation_id, turn_id, owner)
+            if turn.snapshot.status != 'processing' or turn.file_admission_resolved:
+                raise ValueError('附件准入只允许在处理中提交一次')
+            if any(m.message_kind == 'final' and m.status == 'completed' for m in turn.snapshot.messages):
+                raise ValueError('最终答复已完成，不得再提交附件准入结果')
+            source = turn.staged_input
+            files = source.files if source else ()
+            if (not isinstance(accepted_indices, tuple)
+                or any(type(i) is not int or not 0 <= i < len(files) for i in accepted_indices)
+                or len(set(accepted_indices)) != len(accepted_indices)):
+                raise ValueError('准入附件下标必须唯一且属于本轮原始文件列表')
+            if self._history is not None and turn.history_registered:
+                self._history.resolve_file_admission_locked(conversation_id, turn_id, accepted_indices)
+            if source is not None:
+                turn.staged_input = replace(source, files=tuple(f for i, f in enumerate(files) if i in accepted_indices))
+            turn.file_admission_resolved = True
+
+    async def record_file_summaries(self, conversation_id, turn_id, *, owner, summaries) -> None:
+        """接收门禁已校验的完整摘要批次；只补充附件描述，不改变原始输入与准入。"""
+        async with self._condition:
+            turn = self._get(conversation_id, turn_id, owner)
+            if turn.snapshot.status != 'processing' or turn.file_admission_resolved:
+                raise ValueError('文件摘要必须在处理中、附件准入提交前写入')
+            if any(m.message_kind == 'final' and m.status == 'completed' for m in turn.snapshot.messages):
+                raise ValueError('最终答复已完成，不得再补充文件摘要')
+            rows = tuple(sorted((FileSummary.model_validate(row) for row in summaries),
+                                key=lambda row: row.file_index))
+            files = turn.staged_input.files if turn.staged_input else ()
+            if (not files or [row.file_index for row in rows] != list(range(len(files)))
+                or any(row.original_file_name != file.file_name for row, file in zip(rows, files))):
+                raise ValueError('摘要必须完整对应本轮上传顺序和原始文件名')
+            if self._history is not None and turn.history_registered:
+                self._history.record_file_summaries_locked(conversation_id, turn_id, rows)
+
+    async def finish_with_message(
+        self, conversation_id: str, turn_id: str, *, owner: str,
+        message_id: str, text: str, status: str,
+    ) -> CommunicationEvent:
+        """在同一锁内完成最终消息与任务终态，防止历史只收到了其中一半。
+
+        增量仍通过 publish 逐段发送；取消或方向调整若先提交，本次收尾不得覆盖它。
+        """
+        if status not in {"completed", "rejected", "failed"}:
+            raise ValueError("消息收尾只支持完成、拒绝或失败")
+        message = MessageCompletedData(message_id=message_id, message_kind="final", text=text)
+        terminal = TurnStatusData(status=status)
+        async with self._condition:
+            turn = self._get(conversation_id, turn_id, owner)
+            if turn.snapshot.status != "processing":
+                raise ValueError("只能结束仍在处理中的轮次")
+            candidate = replace(turn, events=deque(turn.events, maxlen=self._buffer_size))
+            entries = []
+            self._commit(candidate, message, record_history=False, collected=entries)
+            event = self._commit(candidate, terminal, record_history=False, collected=entries)
+            if turn.history_registered and self._history is not None:
+                self._history.accept_events_locked(conversation_id, turn_id, entries)
+            # 保留轮次对象身份，已有订阅者继续观察同一个运行时。
+            turn.snapshot = candidate.snapshot
+            turn.events = candidate.events
+            turn.active_message_id = candidate.active_message_id
+            turn.activated_monotonic = candidate.activated_monotonic
+            turn.touched_at = candidate.touched_at
+            turn.staged_input = candidate.staged_input
+            self._condition.notify_all()
+            return event
 
     async def start(self) -> None:
         """启动过期回收，不依赖客户端再次请求才释放上传资源。"""
@@ -353,10 +481,37 @@ class CommunicationEventService:
                 self._history.accept_tool_locked(conversation_id, turn_id, item)
             turn.touched_at = time.monotonic()
 
-    def _commit(self, turn: _Turn, data: EventData, *, record_history=True) -> CommunicationEvent:
+    def _commit(self, turn: _Turn, data: EventData, *, record_history=True, collected=None) -> CommunicationEvent:
+        # 在副本上校验整批事件，取消/替代即使需要两条事件也不留下半提交状态。
+        candidate = replace(turn, events=deque(turn.events, maxlen=self._buffer_size))
+        entries = []
+        if (isinstance(data, TurnStatusData) and data.status in TERMINAL_STATUSES
+                and data.status != "completed" and candidate.active_message_id is not None):
+            message = next(m for m in candidate.snapshot.messages if m.message_id == candidate.active_message_id)
+            interrupted = self._commit_one(candidate, MessageCompletedData(
+                message_id=message.message_id, message_kind=message.message_kind,
+                text=message.text, references=message.references, status="interrupted",
+            ), internal_interruption=True)
+            entries.append((interrupted, candidate.snapshot))
+        event = self._commit_one(candidate, data)
+        entries.append((event, candidate.snapshot))
+        if record_history and turn.history_registered and self._history is not None:
+            self._history.accept_events_locked(turn.snapshot.conversation_id, turn.snapshot.turn_id, entries)
+        turn.snapshot = candidate.snapshot
+        turn.events = candidate.events
+        turn.active_message_id = candidate.active_message_id
+        turn.activated_monotonic = candidate.activated_monotonic
+        turn.touched_at = candidate.touched_at
+        turn.staged_input = candidate.staged_input
+        if collected is not None:
+            collected.extend(entries)
+        return event
+
+    def _commit_one(self, turn: _Turn, data: EventData, *, internal_interruption=False) -> CommunicationEvent:
         now = datetime.now(timezone.utc)
         monotonic_now = time.monotonic()
         timing = {}
+        first_activation = isinstance(data, TurnStatusData) and data.status == "processing" and turn.snapshot.activated_at is None
         if isinstance(data, TurnStatusData):
             # 时间由运行时统一生成，不信任发布者传入的时间；事件与快照同批提交。
             timing = {
@@ -364,7 +519,7 @@ class CommunicationEventService:
                 "finished_at": None,
                 "processing_duration_ms": None,
             }
-            if data.status == "processing":
+            if first_activation:
                 timing["activated_at"] = now
             elif data.status in TERMINAL_STATUSES:
                 timing["finished_at"] = now
@@ -373,12 +528,18 @@ class CommunicationEventService:
                     max(0, int((monotonic_now - turn.activated_monotonic) * 1000))
                     if turn.activated_monotonic is not None else 0
                 )
+            # processing 可再次发布权限变化，但不能重置激活时间或总耗时起点。
+            timing["can_interrupt"] = (
+                (turn.snapshot.can_interrupt or data.can_interrupt)
+                if data.status == "processing" else False
+            )
             data = data.model_copy(update=timing)
         event = CommunicationEvent(
             sequence=turn.snapshot.last_sequence + 1, turn_id=turn.snapshot.turn_id,
             created_at=now, data=data,
         )
-        if len(event.model_dump_json().encode("utf-8")) > self._max_event_bytes:
+        # 中断正文已受轮次总字符数限制；不能因累积正文大于单事件额度而无法取消。
+        if not internal_interruption and len(event.model_dump_json().encode("utf-8")) > self._max_event_bytes:
             raise ValueError("单个事件超过大小限制")
         updates = dict(timing)
         active_id = turn.active_message_id
@@ -409,7 +570,7 @@ class CommunicationEventService:
             message = MessageSnapshot(
                 message_id=data.message_id, text=text,
                 message_kind=data.message_kind,
-                status="streaming" if isinstance(data, MessageDeltaData) else "completed",
+                status="streaming" if isinstance(data, MessageDeltaData) else data.status,
                 references=data.references if isinstance(data, MessageCompletedData) else (),
             )
             if index is None:
@@ -435,16 +596,13 @@ class CommunicationEventService:
             updates["progress"] = data
         elif isinstance(data, ErrorData):
             updates["error"] = data
-        # 所有校验成功后一次性提交，拒绝的事件不占序号、不污染快照。
-        if record_history and turn.history_registered and self._history is not None:
-            self._history.accept_event_locked(turn.snapshot.conversation_id, turn.snapshot.turn_id,
-                                              data, turn.snapshot.model_copy(update=updates))
+        # 此处仅更新临时副本，外层完成整批历史投影后才提交权威运行状态。
         turn.events.append(event)
         updates.update(last_sequence=event.sequence, earliest_sequence=turn.events[0].sequence)
         turn.snapshot = turn.snapshot.model_copy(update=updates)
         turn.active_message_id = active_id
         turn.touched_at = monotonic_now
-        if isinstance(data, TurnStatusData) and data.status == "processing":
+        if first_activation:
             turn.activated_monotonic = monotonic_now
         if isinstance(data, TurnStatusData) and data.status in TERMINAL_STATUSES:
             turn.staged_input = None

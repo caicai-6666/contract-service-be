@@ -17,6 +17,8 @@ from app.user import ReviewerUser
 from app.router.dependency import AuthenticatedUserDependency
 from app.schema.communication import CommunicationEvent, CommunicationSnapshot, ConversationListItem, ConversationRenameRequest, TurnCreatedResponse, ConversationTaskHistoryResponse
 from app.service.communication_history import ConversationHistoryService, ConversationNotResidentError
+from app.service.communication_display import display_payload
+from app.schema.communication import public_event_data
 from app.service.communication import (
     ActivationExpiredError, CommunicationCapacityError, CommunicationEventService,
     CommunicationNotFoundError, ReplayUnavailableError, StagedPDF, TurnInput,
@@ -111,10 +113,11 @@ async def _load_history(history: ConversationHistoryService, conversation_id: st
     try:
         method = history.refresh if refresh else history.open
         snapshot = await method(conversation_id, secret_key=user.secret_key)
-        # 只过滤对外投影；内部摘要及加载/模型窗口边界不受展示规则影响。
+        # 对外只提供精简展示事件；内部摘要、工具轨迹及模型窗口保持不变。
         return ConversationTaskHistoryResponse(
             **snapshot.model_dump(exclude={"records"}),
-            records=tuple(record.model_dump() for record in snapshot.records if record.kind == "task"),
+            records=tuple({**record.model_dump(), "payload": display_payload(record)}
+                          for record in snapshot.records if record.kind == "task"),
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="会话不存在") from exc
@@ -167,11 +170,7 @@ async def delete_conversation(
 
 
 def _format_event(event: CommunicationEvent) -> str:
-    payload = {
-        "turn_id": event.turn_id,
-        "created_at": event.created_at.isoformat(),
-        **event.data.model_dump(mode="json", exclude={"event_type"}),
-    }
+    payload = public_event_data(event)
     # JSON 编码转义正文中的换行，避免用户文本破坏 SSE 帧边界。
     return (
         f"id: {event.sequence}\nevent: {event.data.event_type}\n"
@@ -186,7 +185,7 @@ def _format_event(event: CommunicationEvent) -> str:
     summary="暂存输入并创建待激活轮次",
     responses={
         404: {"description": "会话或被替代轮次不存在，或不属于当前用户。"},
-        409: {"description": "已有活跃轮次未指定替代，或旧轮次已经结束。"},
+        409: {"description": "已有活跃轮次未指定替代、旧轮次尚未开放中断，或旧轮次已经结束。"},
         413: {"description": "文件数量、文件大小或上传总量超限。"},
         422: {"description": "输入为空、文件为空或文件名不是 PDF。"},
         503: {"description": "内存暂存容量已满，请稍后重试。"},
@@ -293,6 +292,7 @@ async def _submit_turn(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return TurnCreatedResponse(
             conversation_id=conversation_id, turn_id=turn_id,
+            can_interrupt=snapshot.can_interrupt,
             activation_expires_at=snapshot.activation_expires_at,
             supersedes_turn_id=supersedes_turn_id,
         )
@@ -382,14 +382,14 @@ async def get_turn(
     summary="取消对话轮次",
     responses={
         404: {"description": "轮次不存在、已清理或不属于当前用户、会话。"},
-        409: {"description": "轮次已进入非取消终态，不允许改写。"},
+        409: {"description": "轮次尚未开放中断，或已进入非取消终态，不允许改写。"},
     },
 )
 async def cancel_turn(
     conversation_id: ConversationId, turn_id: TurnId,
     service: EventServiceDependency, reviewer_user_name: ConversationOwnerDependency,
 ) -> CommunicationSnapshot:
-    """取消事件轮次并释放输入；实际工作流和模型上下文尚未接入。"""
+    """仅取消已开放中断的轮次；业务门禁期间禁止用户取消。"""
     try:
         return await service.cancel_turn(conversation_id, turn_id, owner=reviewer_user_name)
     except CommunicationNotFoundError as exc:

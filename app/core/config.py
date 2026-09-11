@@ -188,7 +188,7 @@ class Settings(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     app_env: str = "development"
-    communication_demo_enabled: bool = Field(default=False, description="在现有 communication 接口启用展示工作流，仅用于联调。")
+    communication_demo_enabled: bool = Field(default=False, description="在真实 communication 门禁通过后启用模拟问答，仅用于联调，不跳过门禁。")
     communication_database_file: Path = Path("data/communication/communication.db")
     contract_category_definition_dir: Path = Path(
         "data/definition/contract-category"

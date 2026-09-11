@@ -69,6 +69,17 @@ class MLLMToolCompletion:
     tool_calls: tuple[MLLMToolCall, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class MLLMJSONCompletion:
+    """未经业务校验的 JSON 文本响应；原始响应只供私有审计。"""
+
+    content: str | None
+    finish_reason: str | None
+    raw_response: dict[str, Any]
+    has_tool_calls: bool = False
+    refusal: str | None = None
+
+
 class MLLMClient:
     """管理单次工作流中的异步 vLLM HTTP 连接。"""
 
@@ -182,6 +193,48 @@ class MLLMClient:
                 and getattr(response.choices[0], "finish_reason", None) is not None
                 else None
             ),
+        )
+
+    async def create_json_chat_completion(
+        self, *, messages: list[dict[str, Any]], max_completion_tokens: int,
+        json_schema: dict[str, Any],
+        schema_name: str = "visual_readability",
+    ) -> MLLMJSONCompletion:
+        """使用 JSON Schema 约束解码；调用方仍须严格校验业务关系。
+
+        复用媒体 UUID、全局配额与请求观测；原响应不降级为可信 JSON。
+        """
+        if self._settings.endpoint != "chat_completions":
+            raise MLLMRequestError(f"不支持的 MLLM endpoint：{self._settings.endpoint}")
+        started_at, request_started_at = datetime.now(UTC), perf_counter()
+        try:
+            response = await self._create_completion_with_media_references(
+                model=self._settings.model, messages=messages,
+                max_completion_tokens=max_completion_tokens, temperature=0,
+                response_format={"type": "json_schema", "json_schema": {
+                    "name": schema_name, "strict": True, "schema": json_schema,
+                }},
+                seed=self._settings.generation.seed, stream=False,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False},
+                            **({"cache_salt": self._cache_salt} if self._cache_salt else {})},
+            )
+        except (APITimeoutError, APIConnectionError, APIStatusError) as exc:
+            status = getattr(exc, "status_code", None)
+            self._observe_failed_request(started_at=started_at,
+                request_started_at=request_started_at, error=exc, status_code=status)
+            if status is None or status >= 500 or status in {408, 409, 429}:
+                raise MLLMUnavailableError("MLLM 服务暂时不可用") from exc
+            raise MLLMRequestError(f"MLLM 请求被拒绝：HTTP {status}") from exc
+        self._observe_successful_request(started_at=started_at,
+            request_started_at=request_started_at, response=response)
+        if len(response.choices) != 1:
+            raise MLLMRequestError("MLLM JSON 响应必须恰好包含一个 choice")
+        choice = response.choices[0]
+        return MLLMJSONCompletion(
+            content=choice.message.content, finish_reason=choice.finish_reason,
+            raw_response=response.model_dump(mode="json"),
+            has_tool_calls=bool(choice.message.tool_calls),
+            refusal=getattr(choice.message, "refusal", None),
         )
 
     async def create_tool_chat_completion(

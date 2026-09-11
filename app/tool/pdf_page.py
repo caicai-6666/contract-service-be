@@ -80,6 +80,14 @@ PDFSource = Path | str | bytes
 _DEFAULT_RENDER_CONFIG = PDFPageRenderConfig()
 
 
+class PDFPageRenderError(RuntimeError):
+    """可选的逐页错误定位，不携带页面对象或图像。"""
+
+    def __init__(self, page_number: int) -> None:
+        super().__init__(f'PDF 第 {page_number} 页无法渲染')
+        self.page_number = page_number
+
+
 def _open_pdf(source: PDFSource) -> pymupdf.Document:
     """打开路径或内存 PDF；内存来源不会落入临时文件。"""
     if isinstance(source, bytes):
@@ -183,6 +191,7 @@ def compress_pdf_pages(
     *,
     config: PDFPageRenderConfig = _DEFAULT_RENDER_CONFIG,
     page_numbers: Iterable[int] | None = None,
+    report_page_errors: bool = False,
 ) -> tuple[CompressedPDFPage, ...]:
     """按原始页序渲染指定页面；未指定时渲染整份 PDF。"""
     with _open_pdf(pdf_source) as document:
@@ -202,14 +211,16 @@ def compress_pdf_pages(
                 f"页面 {ordered_page_numbers[-1]} 超出 PDF 页数 {document.page_count}"
             )
 
-        return tuple(
-            _compress_open_pdf_page(
-                document[page_number - 1],
-                page_number,
-                config,
-            )
-            for page_number in ordered_page_numbers
-        )
+        pages = []
+        for page_number in ordered_page_numbers:
+            try:
+                pages.append(_compress_open_pdf_page(document[page_number - 1], page_number, config))
+            except (ValueError, RuntimeError, OverflowError) as exc:
+                # 默认保留既有合同提取异常行为；门禁可选择携带首个失败页码。
+                if report_page_errors:
+                    raise PDFPageRenderError(page_number) from exc
+                raise
+        return tuple(pages)
 
 
 @serialized_pdf_operation

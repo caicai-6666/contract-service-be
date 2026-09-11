@@ -1,0 +1,296 @@
+# 文件可读性检查子图
+
+> **当前状态：** 已实现打开检查、按文件 Map-Reduce 渲染与视觉判断、约束解码和尾部汇总熔断，并已接入 Communication SSE 激活。可读性通过不代表业务准入通过；外层已实现加权聚合，但相关性模型判断仍未实现。
+
+本子图作为[业务门禁](business-gate.md)的第一个节点，检查内存中的上传文件并调用配置中的 MLLM，不改变 HTTP、SSE 或文件保存机制。
+
+---
+
+## 包结构与拓扑
+
+节点执行逻辑统一放在 `node.py`，包括视觉判断的约束解码、有限纠错与私有审计；`workflow.py` 只装配节点及连线，不再内嵌节点实现。`schema.py` 和 `prompt/` 分别保留结果校验与提示词职责。本次结构调整不改变节点标识、输入输出、并发和熔断行为。
+
+```text
+business_gate/subgraph/file_readability/
+  __init__.py   导出状态与子图构建入口
+  workflow.py   节点依赖绑定、图装配与连线、并发上限
+  state.py      文件输入、检查结果、页面对象、公共图状态与私有分支状态
+  node.py       全部节点与路由：打开、渲染、视觉判断、分发及汇总熔断
+  schema.py     唯一 JSON Schema、本地严格校验与友好反馈
+  prompt/       视觉可读性规则与统一页面消息构造
+
+START → check_files_openable
+          ├─ 全部打开成功 → Send(check_file，每份文件一个分支)
+          │                  ├─ check_file_renderable
+          │                  ├─ check_file_visual_readability（渲染失败则跳过）
+          │                  └─ finish_file
+          │                → collect_file_results → END
+          ├─ 首个文件失败 → END（rejected）
+          └─ 没有附件     → END（open_check.status=skipped）
+```
+
+`check_files_openable` 按原始上传顺序逐份检查，遇到首个错误立即停止，不再打开后面的文件，也不调用渲染节点。没有附件时直接跳过。每次调用重新生成打开结果，不沿用输入中的旧结论，也不修改输入。
+
+外层门禁收到 rejected 或 failed 后路由至统一拒绝回复节点，不进入摘要或相关性准备；原始检查状态仍保留。有文件且通过时先并发生成文件摘要，再执行 `initialize_business_gate`；无文件则直接初始化。相关性判断与加权聚合已接入；可读性通过仍不能单独作为进入核心智能体或批准附件落盘的依据。
+
+---
+
+## 节点 1：文件打开检查
+
+复用项目已有 PyMuPDF，确定性工具位于 `app/tool/pdf_open.py`，函数为 `inspect_pdf_openable(content: bytes) -> int`。检查顺序为非空内容、能否解析、真实格式是否为 PDF、是否需要打开密码、是否至少包含一页；返回总页数，不加载各页内容、不提取文字、不渲染。
+
+| 错误码 | 拒绝原因 |
+| --- | --- |
+| `empty_file` | 上传字节为空。 |
+| `invalid_pdf` | 无法解析，可能损坏或格式无效。 |
+| `not_pdf` | 可识别并打开，但真实格式不是 PDF，例如将 PNG 改名为 PDF。 |
+| `password_required` | 需要打开密码，当前没有提供密码的输入契约。 |
+| `no_pages` | 可打开但不包含任何页面。 |
+
+只有复制、打印等权限限制、无需打开密码的 PDF 可以通过。文件名只用于反馈，不参与真实类型识别、不作为磁盘路径。未知格式也可能由解析器直接报 invalid_pdf，而不是 not_pdf。
+
+所有文档句柄通过上下文管理及时关闭；不跨节点驻留原生 Document。复用 `serialized_pdf_operation`，与现有 PDF 工具共享进程内锁，不允许 PyMuPDF 多线程同时执行。节点是同步函数；`ainvoke` 由 LangGraph 在线程执行该节点，节点内部不创建文件并发任务，`invoke` 则同步等待。
+
+工具将已知解析错误转为稳定的中文原因；输入类型/Schema 错误、内存不足等非文件业务错误继续抛出，不伪装成用户上传文件损坏。PyMuPDF 能自动修复后打开的 PDF 不因修复本身拒绝；本节点不是严格 PDF 合规检测器，也不能保证所有页面都可渲染。
+
+### 打开失败的 hint 对象
+
+已实现：节点在首个打开失败处生成 `open_check.feedback`，供后续“前台”模型结合用户输入与统一提示词组织自然反馈。这是节点业务日志，不是服务器运行日志，也不是最终用户答复。日志已由外层[统一拒绝与响应](business-gate.md#统一拒绝与响应)消费并生成 SSE 正文；本子图仍保留原始 rejected/failed 检查状态与整轮短路。
+
+```json
+{
+  "node": "文件打开检查",
+  "hint": "本轮上传5份文件。打开检查在第3份文件处停止；前2份文件仅确认可以打开，后2份文件尚未检查。本轮尚未执行页面渲染及后续分析。",
+  "issues": [
+    {
+      "file_index": 3,
+      "file_name": "采购合同.pdf",
+      "hint": "文件需要打开密码，当前无法读取其中的内容。"
+    }
+  ]
+}
+```
+
+- `node` 固定为“文件打开检查”；节点级 `hint` 由程序按上传总数与首错位置生成，不由模型猜测。
+- `issues` 恰好一项，只记录首个失败；不能据此认定“只有这一份文件有问题”。
+- `issues[].file_index` 是从 **1** 开始的上传序号，配合原始 `file_name` 区分同名文件；现有 `failure.file_index` 和 `opened_files[].file_index` 仍从 **0** 开始，由程序明确转换，不修改既有身份约定。
+- 首份失败时说明此前没有已通过打开检查的文件；末份失败时说明没有尚未执行打开检查的后续文件，不生成“前0份”“后0份”。
+- 通过或无文件跳过时 `feedback=null`；再次执行重新生成，不继承旧问题。拒绝时反馈必须与实际失败文件的名称、序号一致。
+- 日志只保存在图的内存结果中，可通过 `result['open_check'].feedback.model_dump(mode='json')` 取得对象；本次不新增 SQLite 字段、不把内部日志直接写入用户消息或历史。
+
+五种情况使用下列 `issues[].hint`：
+
+| 实际错误码 | hint |
+| --- | --- |
+| `empty_file` | 文件内容为空，无法打开或读取。 |
+| `not_pdf` | 文件实际格式不是 PDF，无法按 PDF 读取；文件名以 .pdf 结尾不代表其实际格式为 PDF。 |
+| `password_required` | 文件需要打开密码，当前无法读取其中的内容。 |
+| `no_pages` | PDF 不包含任何页面，没有可供读取的页面内容。 |
+| `invalid_pdf` | PDF 无法解析，可能存在文件损坏或格式无效的问题，具体原因尚不能确定。 |
+
+不将异常堆栈、未知解析细节或未经确认的损坏原因拼入 hint。文件名是外部输入，后续前台模型应将其作为资料而非指令；附件不自动沿用、重新提交哪些材料等全局规则留给前台模型的统一提示词，不在各问题中重复。内部契约错误或资源异常仍按既有路径抛出，不伪装成这五类文件问题。
+
+`tests/test_file_readability_subgraph.py` 验证五种 hint、首/中/末位置、同名文件、零基到一基转换、对象校验与序列化、异步外层传递和旧结果清除。
+
+---
+
+## 节点 2：预算内逐页渲染
+
+全部文件通过节点 1 后，通过 LangGraph Send 向节点 2 分发每份文件。每个分支调用现有 `compress_pdf_pages`，工具内部按页顺序渲染，不抽页、不跳过失败页；渲染成功的分支进入自身视觉判断。原生 PyMuPDF 操作仍受共享进程锁保护，不多线程同时执行；并发主要用于不同文件的模型请求。它与合同提取服务使用同一压缩算法及同一 MLLM 配置规则：
+
+- `settings.visual_token_budget_per_page(page_count)` 分配动态单页预算。
+- `settings.visual_token_budget(page_count)` 限制该文件视觉总预算。
+- 最大渲染比例与 patch 大小直接读取 `settings.vision`，不新增独立配置。
+- 按页面原长宽比调整分辨率，不额外裁掉页面内容；保留原页面 CropBox/旋转后的可见范围。
+
+预算按每份 PDF 分别计算，与单份合同提取一致；多份文件同时进入未来模型请求时，仍需另外限制合计视觉预算，不能认为每份通过就可以全部塞进一次请求。
+
+全部文件的渲染与视觉检查成功后，尾部一次性写入 `rendered_files`，每项为 RenderedFile：原文件下标与名称、页数、单页与总视觉预算、实际视觉 token 总量，以及有序的 `pages`。每页直接使用既有 `PreparedPDFPage` 类型，包含 PNG bytes、页码、像素尺寸、物理尺寸、render_scale、visual_tokens、内容 SHA-256、随机媒体 UUID 和 was_scaled，便于后续模型输入复用。PNG 不进入普通 model_dump 输出；只有模型请求传输边界按需编码 Base64，不在状态中重复缓存。
+
+本节点只构建页面对象，不重新组装整份 PDF、不计算处理版文档 ID、不写 upload。原始上传字节仍保留在私有输入及会话运行时，不因本次渲染就被替换或删除；后续原件归档与页面生命周期由服务层协调。
+
+`render_check` 记录阶段结果：
+
+| status | 含义 |
+| --- | --- |
+| `not_started` | 有附件但尚未完成打开检查，或已在节点 1 拒绝。 |
+| `skipped` | 没有附件。 |
+| `passed` | 全部文件的全部页面已形成预算内 PNG。 |
+| `rejected` | 页面渲染/结果校验失败，或页数超出当前视觉分配容量。 |
+| `failed` | 捕获到 MemoryError/OSError，服务器资源不足或不可用，不声称文件损坏。 |
+
+失败的 `failure` 包含 file_index、file_name、code、reason 和可空 page_number。错误码为 render_failed、visual_budget_exceeded 或 resource_unavailable。工具按需开启 `report_page_errors=True` 定位首个失败页码；既有提取调用默认不改变异常类型。不能定位页面的异常不伪造页码，也不向用户暴露解析堆栈。
+
+任意文件失败时，尾部将 `rendered_files` 置为空元组，不交付部分页面。节点 1 每次启动清空旧结果；图输入仅接收 files，调用方不能注入旧判断或 reducer 结果。尾部清空私有分支容器，外部调用方已持有的旧状态不由节点擅自修改。
+
+### 渲染失败的 hint 对象
+
+已实现：单文件渲染拒绝或失败时，在 `render_check.feedback` 记录问题；尾部汇总将所有渲染问题按上传顺序放入同一对象。保持现有按文件分支执行的拓扑：单份渲染成功即可进入自身视觉判断，不等待整批渲染完成；渲染失败的文件跳过视觉判断，尾部等待所有分支结束后整轮熔断。
+
+```json
+{
+  "node": "页面渲染",
+  "hint": "本轮文件均已通过打开检查。以下文件未能完成页面渲染，因此未进行这些文件的视觉可读性判断。已等待所有文件分支结束；其他文件可能已经完成视觉判断，不能据此认定其全部正常。本轮整体停止，尚未进入文件摘要及后续业务分析。",
+  "issues": [
+    {
+      "file_index": 3,
+      "file_name": "采购合同.pdf",
+      "hint": "文件第3页无法正常渲染，未能生成完整的页面图像，具体原因尚不能确定。"
+    }
+  ]
+}
+```
+
+| 实际情况 | issues 中的 hint | 状态 |
+| --- | --- | --- |
+| 超出视觉处理容量 | 文件页数超出当前可处理范围，未能完成页面渲染。 | rejected |
+| 确知失败页码，以第3页为例 | 文件第3页无法正常渲染，未能生成完整的页面图像，具体原因尚不能确定。 | rejected |
+| 无法定位失败页 | 文件无法按当前页面处理规则完成渲染，未能生成完整的页面图像，具体原因及问题页码尚不能确定。 | rejected |
+| MemoryError / OSError | 服务器资源暂时不足或不可用，未能完成该文件的页面渲染；不能据此认定文件损坏。 | failed |
+
+- `issues[].file_index` 沿用节点1反馈约定，从1开始；内部 `failure.file_index` 仍从0开始。Map 分支的局部下标恢复为原上传下标后再生成反馈，同名文件也不会全部指向第一份。
+- 单文件分支的 `issues` 只有一项，节点级 hint 仅说明打开检查及该文件未进入视觉判断；“所有分支已结束”和“整轮停止”只在尾部汇总后追加，不提前宣称兄弟分支已完成。
+- 汇总 `issues` 可以有多项，按上传序号严格升序、无重复；技术失败仍优先决定整体 failed，但不会覆盖其他文件的渲染问题。旧 `failure` 字段仍只保留代表性错误。
+- 不在渲染日志里断言其他文件通过视觉判断，也不混入节点3的视觉问题；其他文件的具体结果仍保存在 `visual_results` 中。
+- 通过、跳过和尚未开始时 `feedback=null`；重新执行不继承旧反馈。仅包含已确认页码和程序文案，不复制原生异常堆栈或推测文件损坏。
+- 日志保留于内存图结果，已由[统一拒绝与响应](business-gate.md#统一拒绝与响应)消费；检查节点的 `user_hints` 不变，最终 SSE 正文由回复节点生成，拒绝附件仍不可用，无新增持久化字段。
+
+`tests/test_communication_pdf_render.py` 覆盖四类 hint、异步多文件混合失败、同名文件原序号恢复、其他分支继续视觉检查、序列化与校验、旧日志清除及整体状态不变。
+
+---
+
+## 节点 3：约束解码与视觉判断
+
+业务提示词位于 [prompt/visual_readability.py](../../../../app/agent/contract_communication/business_gate/subgraph/file_readability/prompt/visual_readability.py)，版本为 visual-readability-v4。导入不读取模型配置、不发起请求；运行时复用渲染页面、统一阅读前缀、媒体 UUID 和全局 MLLM 并发配额。非空白正则显式允许前后任意字符，兼容约束解码后端的完整匹配语义，避免 `\S` 被解读为只能生成一个字符。
+
+任务以单份文档的有序页面图像及页码为预期输入，采用宽松的视觉可读性标准：主要文字基本可辨认即通过，轻微模糊、局部遮挡和空白页不单独构成拒绝理由；某页主要文字大面积无法辨认则不可读。文字清晰但含义难懂不属于视觉失败，合同属性、内容完整性及业务相关性不在本次判断范围。
+
+提示词约束按“页面证据 → 简洁理由 → 判断”组织结果，不要求逐字 OCR，不允许补写看不清的内容或猜测文件损坏原因；全部无文字时仅描述可见事实，输入图像缺失时不得猜测结果。
+
+模型直接输出四字段对象，不调用 think 或提交工具，不使用 tool-tag。`MLLMClient.create_json_chat_completion` 通过 `response_format={type: json_schema, json_schema: {name, strict: true, schema}}` 启用服务端约束解码，方式遵循 [vLLM Structured Outputs](https://docs.vllm.ai/en/latest/features/structured_outputs/)。Schema 从 `VisualReadabilityJudgment` 生成，并为当前文件补充页码 maximum；服务不支持约束解码时明确执行失败，不降级自然语言。
+
+| 字段 | 契约 |
+| --- | --- |
+| evidence | 非空数组，每项为严格整数 page_number 与非空 description（最长600字符）；页码必须在当前文件范围内。 |
+| reasoning | 非空简短理由，最长1600字符。 |
+| hint | result=true 时必须为 null；result=false 时必须是非空用户提示，最长600字符。 |
+| result | 严格 JSON boolean，不接受字符串、数字或 null。 |
+
+全部字段必填，不允许额外属性；本地额外拒绝重复 JSON 键、代码块、无效 JSON、空白文字、截断或工具调用。`hint/result` 关系由本地业务校验兜底，不能假定约束解码理解语义。页码与字段格式可以确定性校验，但提示是否真实、有帮助仍依赖页面判断，不能声称 Schema 能验证语义正确。
+
+每文件默认最多3次请求（首次加2次纠错），温度0、seed读取配置、enable_thinking=false、生成上限为 min(2048, 配置上限)。HTTP/连接故障直接形成 failed，不把网络错误反馈成文档不可读。
+
+### 视觉检查的 hint 对象
+
+已实现：单文件判断返回 `FileVisualResult.feedback`，尾部按上传顺序汇总到 `visual_check.feedback`，对象仍采用 `node`、`hint`、`issues` 三个字段。只有不可读或执行失败才记录问题，可读、未检查和尚未开始时为 null；不修改模型输出 Schema、提示词、纠错流程或判断规则。
+
+```json
+{
+  "node": "视觉可读性检查",
+  "hint": "以下文件已完成页面渲染，但视觉检查发现不可读问题或未能取得有效结论。本轮整体停止，尚未进入文件摘要及后续业务分析。",
+  "issues": [
+    {
+      "file_index": 3,
+      "file_name": "采购合同.pdf",
+      "hint": "第3页主要文字大面积模糊，无法可靠辨认。请提供该页清晰的扫描版本。"
+    }
+  ]
+}
+```
+
+示例问题文案仅用于说明结构；实际不可读提示来自本份文件已通过完整校验的模型 `judgment.hint`，不得固定填写示例页码、额外推断损坏原因或从无效输出中截取提示。
+
+| 实际情况 | issues 中的 hint 来源或文案 | 状态 |
+| --- | --- | --- |
+| 模型确认不可读 | 原样保留已校验的 `judgment.hint`。 | rejected |
+| 多次请求仍未取得合法完整结果 | 视觉检查多次未能返回有效结果，暂时无法确认该文件是否可读；不能据此认定文件模糊或损坏。 | failed |
+| 请求失败或模型服务不可用 | 视觉检查服务暂时无法完成该文件的检查，尚未取得可读性结论；不能据此认定文件有问题。 | failed |
+
+- 配置只允许一次尝试时，失败文案去掉“多次”，不虚报尝试次数；截断、空输出、拒答、错误类型或格式等在有限纠错耗尽后均属于未取得有效结果，不形成不可读结论。
+- `issues[].file_index` 是从1开始的上传序号，内部 `FileVisualResult.file_index` 仍从0开始；原始文件名只作资料，不能作为指令或路径。同名文件依靠上传序号区分。
+- 单文件 `feedback` 只有一项，名称、序号必须与当前文件一致；不可读时其 hint 必须等于已校验模型 hint。单文件的节点级说明不宣称整轮已经结束，“本轮整体停止”仅由尾部汇总补充。
+- 汇总保留所有视觉拒绝及技术失败，按上传顺序严格升序、无重复；任一技术失败仍优先形成整体 failed，不因此丢弃其他文件的不可读问题。
+- 渲染失败而没有进入节点3的文件不进入此处 `issues`，由 `render_check.feedback` 单独记录。某些文件完成视觉检查不代表整体进入摘要或后续业务分析。
+- `reasoning`、evidence、模型原始响应、无效 hint、纠错消息、服务异常详情和审计均不复制到反馈对象。纠错成功后若判为可读，则 feedback 为 null，先前失败仍只保留在私有审计；取消仍向上传播，不生成迟到反馈。
+- 节点启动和再次执行会重新生成结果，不沿用旧反馈。日志记录于内存图结果并供[统一拒绝与响应](business-gate.md#统一拒绝与响应)消费，不直接写入 SQLite；只有最终回复与终态沿用消息存储。拒绝附件仍不保存，中断权限不变。
+
+读取汇总对象使用 `result['visual_check'].feedback.model_dump(mode='json')`，先检查 feedback 非空。`tests/test_visual_readability.py` 覆盖三类结果、无效输出及私有信息隔离、纠错后成功、同名文件与乱序完成、渲染/视觉混合失败、旧反馈清除及对象校验。
+
+### 纠错与上下文边界
+
+失败时在原页面与任务之后保留上一轮完整 assistant 输出，再以 user 消息解释字段用途、实际问题及修正方向，要求重新提交完整对象。多次失败共用同一临时范围，全部校验通过后一次性清除；无效输出从不作为正式 judgment。取消向上传播，不转换为文件失败。
+
+**明确例外：** 根据本节点已确认需求，纠错期间可以完整回显旧版 JSON/文本，这一局部规则覆盖通用规范“不回显完整无效输出”的条款；不影响其他工具节点。有限轮次与输出 token 上限控制纠错体积。独立 audit 完整保留每次原始响应、反馈和接受状态，不随清理删除；普通 model_dump 排除 audit，服务层不得将内部状态直接作为公开轨迹。
+
+---
+
+## 尾部：并发汇总与熔断
+
+collect_file_results 等待所有分支终态，核验结果完整且唯一，并按原始上传下标排序，同名文件仍彼此独立。打开失败仍立即短路；分发后的单个失败不强行取消其他在途任务，尾部统一结束整轮，不再执行外层剩余门禁。
+
+- 任意执行失败：整体 failed；即便同时存在不可读文件，也不掩盖技术错误。
+- 没有执行失败但存在渲染拒绝或 result=false：整体 rejected。
+- 全部可读：visual_check.status=passed；本子图整体仍为 not_implemented，不代替后续业务相关性聚合。
+- user_hints 按文件顺序携带文件名与提示。视觉不可读时使用已校验 hint；技术失败使用程序友好错误，二者不混用。
+- visual_results 保留每份文件的 passed/rejected/failed/skipped 及已校验 judgment，渲染失败的文件没有模型结论。visual_check 在部分渲染失败且其余视觉通过时为 skipped，表示整轮视觉检查未完整完成。
+
+提示词独立验证方案见 [视觉可读性实验](../../../../experiment/visual-readability/README.md)：用本地五页合同检查单页严重模糊、轻微/局部模糊及空白页，实验副本不修改原合同。该目录按项目规则不纳入 Git；模型原始响应与人工分析保存在各运行目录，不能把接口调用失败算作判断通过，也不代表正式节点已经接入。
+
+---
+
+## 调用方式
+
+```python
+from app.agent.contract_communication.business_gate.subgraph.file_readability import (
+    ReadabilityFile, build_file_readability_subgraph,
+)
+
+graph = build_file_readability_subgraph()
+# pdf_bytes 是调用方已取得的内存 bytes，不需要创建磁盘文件。
+result = await graph.ainvoke({"files": (ReadabilityFile(file_name="合同.pdf", content=pdf_bytes),)})
+if result["status"] in {"rejected", "failed"}:
+    print(result["user_hints"])
+# 异步调用：result = await graph.ainvoke({"files": (...)})
+# 服务装配也可显式传配置：build_file_readability_subgraph(settings=settings.mllm)
+```
+
+`files` 接受 ReadabilityFile 列表/元组或对应字典列表，字段为非空 `file_name` 和严格 bytes 类型的 `content`；未传 files 或空列表表示没有附件，显式 null/错误类型属于内部契约错误。原始字节仅用于私有工作流输入，不应把完整图状态直接存入公开轨迹或发给前端。
+
+输出 `open_check` 为不可变的 FileOpenCheck 对象：
+
+| 字段 | 含义 |
+| --- | --- |
+| `status` | `passed`（全部可打开）、`rejected`（首个失败）、`skipped`（没有附件）。 |
+| `opened_files` | 已打开文件的有序元数据，包含 `file_index/file_name/page_count`；下标从 0 开始，用于区分同名文件。拒绝时只是已检查前缀，不代表部分放行。 |
+| `failure` | 拒绝时必须包含 `file_index/file_name/code/reason`，其他状态为 null；没有实际加载页面，因此不伪造失败页码。 |
+
+子图顶层 `status` 为 rejected、failed 或 not_implemented。没有附件时打开/渲染/视觉阶段均为 skipped，外层继续剩余门禁占位。构建函数可注入 settings、max_concurrency（默认4）、max_attempts（1至3，默认3）以及测试用 client_factory；未注入配置时仅在实际执行时读取 get_settings().mllm。全局 MLLM 请求配额仍生效。同步脚本可以 invoke；服务端使用 ainvoke，原生渲染在线程执行。
+
+---
+
+## 后续实现与边界
+
+- 文件可读性是硬性条件，位于后续相关性评分之前。
+- 可读性通过后先进入[文件摘要前置节点](business-gate.md#文件摘要前置节点)，页面对象供摘要生成复用，不直接传给相关性并行节点。
+- 打开、渲染、视觉判断与尾部汇总已实现，并由 Communication 正式执行器调用；后续加权聚合见[业务门禁](business-gate.md#加权与阈值聚合)，文字相关性已接入，其余相关性判断仍为占位。
+- 任意文件或页面不合格则整轮拒绝，不仅剔除单份文件；返回文件名、原因及可确定的失败页码，不继续评分或核心智能体。
+- 没有附件时跳过可读性检查，继续后续门禁。
+- 技术可渲染不等于文字可辨认；视觉乱码属于节点 3 范围，法律/合同/业务相关性仍不在本子图判断范围。
+- 正式执行器在整轮拒绝后保留用户拒绝记录、本轮附件不落盘；复用[附件准入与延迟落盘](../../system/communication-history.md#附件准入与延迟落盘)，不因可读性通过就提前批准持久化。SSE、提示格式及历史恢复见[门禁拒绝与恢复](../../../api/communication.md#门禁拒绝与恢复)。
+- 已复用视觉预算约束，但尚无多文件总 PNG 内存预算、原生渲染硬超时或独立进程隔离；不能将 token 限制等同于异常 PDF 防护或总内存上限。线程取消无法强制中断正在进行的原生渲染。
+
+---
+
+## 验证与边界
+
+`tests/test_file_readability_subgraph.py` 使用内存生成的 PDF/PNG 样本，覆盖正常页数、同名文件、空内容、损坏和伪装格式、打开密码、仅权限限制、无页面、句柄释放、首错停止及内外层短路、不调用渲染、旧结果重算和非法调用输入。原门禁测试继续覆盖同步/异步、独立构建和嵌套调用。
+
+```bash
+python -m unittest discover -s tests -p 'test_*subgraph.py'
+```
+
+`tests/test_communication_pdf_render.py` 另使用混合尺寸、旋转、CropBox 的内存 PDF，逐页比较与合同提取服务的 PNG、尺寸、哈希和预算完全一致（媒体 UUID 每次新生成，不要求相等），覆盖部分失败不交付、页码定位、资源错误分类、旧页面清理、预算耗尽、异步调用以及不组装 PDF。既有提取压缩默认异常行为保持不变。
+
+本次没有生产 PDF 性能实验，没有接入 stream_turn_events，没有自动发布拒绝事件或释放服务中的附件。图的 rejected/failed 结果仍须由后续执行层接入现有运行时处理；现有上传、持久化和前端契约未改动。
+
+`tests/test_visual_readability.py` 覆盖布尔类型、hint关联、页码、重复键、完整旧输出纠错、成功清理与审计保留、截断、重试耗尽、服务故障、取消、并发隔离/顺序/限额，以及真实客户端发送约束解码参数。正式节点的受控服务冒烟方案见 `experiment/visual-readability-node/README.md`，不替代多合同质量评估。

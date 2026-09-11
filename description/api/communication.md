@@ -2,7 +2,7 @@
 
 > 本文按接口组织。每个接口章节独立提供方法与完整路径、认证、参数、响应、错误码及请求示例；示例中的 login_code、c1、t1、文件路径须替换为实际值。
 
-真实分析工作流尚未接入；默认激活后只有状态和心跳。启用 `COMMUNICATION_DEMO_ENABLED=true` 可通过同一组接口测试模拟输出，见[样式联调说明](../capability/application/communication-ui-demo.md)。
+正式激活后已执行文件可读性、文件摘要、文件与文字业务相关性及文件文字整体判断，并将拒绝提示、任务终态同步至 SSE 与历史；上下文相关性及服务端历史选择已接入，核心问答尚未接入。启用 `COMMUNICATION_DEMO_ENABLED=true` 则在真实门禁通过后，通过同一轮 SSE 输出模拟问答；拒绝或失败不会进入 mock，见[样式联调说明](../capability/application/communication-ui-demo.md)。
 
 ## 接口目录
 
@@ -119,9 +119,46 @@ curl 'http://127.0.0.1:20000/contract/api/communication/conversations' \
 | `has_more` | boolean | 内部驻留最早记录之前是否仍有历史；不按过滤后的任务列表计算。 |
 | `model_context_start_sequence` | integer/null | 最新摘要序号；无摘要时为最早记录序号，无记录为 null。 |
 
-每条 records 包含 `record_id/sequence/kind/turn_id/status/payload/created_at/activated_at/processing_duration_ms`，kind 固定为 task。摘要仅保留在后端内存，不出现在响应记录中。任务内轨迹位于 payload.trace，字段详见 [Payload 契约](../architecture/data/communication-sqlite.md#payload-契约)。不读取或返回 retrieval_text、embedding，不返回密钥或工作区。
+每条 records 包含 `record_id/sequence/kind/turn_id/status/payload/created_at/activated_at/processing_duration_ms`，kind 固定为 task。摘要及内部工具轨迹不出现在响应中；用户恢复界面使用 `payload.events`，不再使用 `payload.trace`。不读取或返回 retrieval_text、embedding，不返回密钥或工作区。
 
-`processing_duration_ms` 为任务从激活到终态的固定总处理时长（非负整数毫秒），例如 12500 表示 12.5 秒；未激活即结束为 0，处理中、旧记录或归档未提供计时为 null，前端应隐藏耗时或显示未知，不将 null 当作 0。不增加中间轨迹时间戳。activated_at 为首次激活 UTC Unix 毫秒，未激活或旧记录未知时为 null；前端可用它显示运行时长。实时任务 status 可为 pending_activation/processing，trace 消息可为 streaming；终态后固定耗时并将未完成片段标为 interrupted。
+`processing_duration_ms` 为任务从激活到终态的固定总处理时长（非负整数毫秒），例如 12500 表示 12.5 秒；未激活即结束为 0，处理中、旧记录或归档未提供计时为 null，前端应隐藏耗时或显示未知，不将 null 当作 0。activated_at 为首次激活 UTC Unix 毫秒，未激活或旧记录未知时为 null。任务状态可以为 pending_activation/processing；活跃半成品见 `payload.streaming_messages`，终态后半成品以 interrupted 消息进入 `payload.events`。
+
+### 用户展示 Payload
+
+| 字段 | 含义 |
+| --- | --- |
+| `input` | 用户原文 `text` 与附件 `files`；新附件含 `file_id/file_name/display_name/summary/file_path/admission`，规则见下方。 |
+| `events` | 完整精简展示记录，按原 SSE 顺序排列，保留所有 `turn.status/task.progress/message.completed/error` 业务事件。 |
+| `streaming_messages` | 仍在生成的消息累积正文，含 `message_id/message_kind/text/status/references`，`status=streaming`；无活跃消息或任务结束时为 `[]`。 |
+| `last_sequence` | 读取时已处理的最后 SSE 序号，包含过滤掉的 delta；旧历史未知时为 `null`。 |
+| `event_source` | `recorded` 表示实际记录；`legacy` 表示从旧轨迹兼容恢复已有消息。 |
+
+附件 `admission` 为 `pending`（待判断）、`accepted`（允许保存）、`unavailable`（不可用）。pending/unavailable 的 `file_path` 为 null，前端只展示名称，禁止打开；accepted 的路径为 `/{file_id}.pdf`，但异步备份完成前磁盘文件可能尚不存在。此时可通过[会话附件读取接口](resource.md#读取已驻留会话任务的-pdf-附件)按 `file_id` 读取内存文件；后端要求当前用户的对应任务轨迹已驻留且附件为 accepted，不自动加载旧任务。旧附件没有 admission 时兼容展示已有路径，但新资源接口不默认授予访问权。详细生命周期见[附件准入与延迟落盘](../architecture/system/communication-history.md#附件准入与延迟落盘)。
+
+附件 `file_name` 始终为原始文件名；`display_name`、`summary` 为后端根据内容生成的名称和摘要，未生成时为 null，旧历史可缺省。前端可优先展示 `display_name`，缺少时回退至 `file_name`。这些字段随 open/refresh 返回的 `payload.input.files` 恢复，不新增 SSE 事件，也不接受前端提交或覆盖；摘要存在不代表附件可打开，仍以准入和资源授权为准。完整写入规则见[文件引用契约](../architecture/data/communication-sqlite.md#文件引用)。
+
+单条展示事件示例：
+
+```json
+{
+  "sequence": 12,
+  "event": "message.completed",
+  "data": {
+    "turn_id": "t1",
+    "message_id": "m1",
+    "message_kind": "intermediate",
+    "text": "目前已经查到两份合同，但尚未完成对比……",
+    "status": "interrupted",
+    "references": []
+  }
+}
+```
+
+`recorded` 记录的 `data` 与实时 SSE 完全一致，直接复用 [SSE 事件契约](#sse-事件契约)。`sequence` 保留原始序号，因过滤 delta 允许不连续；不存 delta、心跳或连接级错误，不重复播放打字过程。`message.completed` 按 `message_id` 覆盖正文和状态，不能再次拼接正文；`task.progress` 覆盖当前进度，遇任务终态停止动画。
+
+恢复时先清空该轮旧展示并按顺序应用 `events`，再用 `streaming_messages` 覆盖对应消息的已生成正文。处理中任务使用 `last_sequence` 作为 `Last-Event-ID` 继续订阅，不能使用最后一个已保存事件的序号替代；游标超出缓存时仍按 SSE 契约读取快照恢复。已结束任务只恢复展示，不重新订阅或执行。
+
+旧任务没有保存事件时，`event_source=legacy`：只按原消息首次出现顺序聚合已有正文，`sequence/last_sequence=null`，引用沿用旧 `type/location`；不伪造进度、错误、页码或 SSE 游标。生命周期以外层任务 `status` 为准。这是只读兼容投影，不重写旧 SQLite 数据。
 
 model_context_start_sequence 仍表示内部模型窗口起点，可能指向未对外返回的摘要。records 为空不代表没有更早历史，前端应根据 has_more 决定是否继续刷新。
 
@@ -190,9 +227,9 @@ curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations/c1
 | `has_more` | boolean | 内部驻留最早记录之前是否仍有历史；不按过滤后的任务列表计算。 |
 | `model_context_start_sequence` | integer/null | 最新摘要序号；无摘要时为最早记录序号，无记录为 null。 |
 
-每条 records 包含 `record_id/sequence/kind/turn_id/status/payload/created_at/activated_at/processing_duration_ms`，kind 固定为 task。摘要仅保留在后端内存，不出现在响应记录中。任务内轨迹位于 payload.trace，字段详见 [Payload 契约](../architecture/data/communication-sqlite.md#payload-契约)。不读取或返回 retrieval_text、embedding，不返回密钥或工作区。
+每条 records 包含 `record_id/sequence/kind/turn_id/status/payload/created_at/activated_at/processing_duration_ms`，kind 固定为 task。响应剔除摘要和内部工具轨迹，`payload` 包含 `input/events/streaming_messages/last_sequence/event_source`；结构、旧数据兼容与前端应用顺序见[用户展示 Payload](#用户展示-payload)。不读取或返回 retrieval_text、embedding，不返回密钥或工作区。
 
-`processing_duration_ms` 为任务从激活到终态的固定总处理时长（非负整数毫秒），例如 12500 表示 12.5 秒；未激活即结束为 0，处理中、旧记录或归档未提供计时为 null，前端应隐藏耗时或显示未知，不将 null 当作 0。不增加中间轨迹时间戳。activated_at 为首次激活 UTC Unix 毫秒，未激活或旧记录未知时为 null；前端可用它显示运行时长。实时任务 status 可为 pending_activation/processing，trace 消息可为 streaming；终态后固定耗时并将未完成片段标为 interrupted。
+`processing_duration_ms` 为任务从激活到终态的固定总处理时长（非负整数毫秒），未知时为 null，未激活即结束为 0。activated_at 为首次激活 UTC Unix 毫秒，未激活或旧记录未知时为 null。活跃半成品通过 `payload.streaming_messages` 恢复；终态后以 interrupted 消息保存在 `payload.events`。
 
 model_context_start_sequence 仍表示内部模型窗口起点，可能指向未对外返回的摘要。records 为空不代表没有更早历史，前端应根据 has_more 决定是否继续刷新。
 
@@ -402,7 +439,7 @@ curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations' \
 
 全部输入校验后才创建会话和空工作区；首轮注册失败会补偿删除本次新建且未产生内容的会话和工作区。数据库与内存不是跨进程事务，强制终止进程时不承诺跨资源原子性。请求暂不支持幂等重试，重复成功提交会创建不同会话。
 
-会话及工作区持久化；首轮输入和有序轨迹立即驻留，附件以 UUID 文件保存到 upload。终态轨迹后台复制到 SQLite。进程重启后已备份历史可通过 open 恢复展示，但旧 SSE 回放和执行不能恢复；未备份数据在异常退出时可能丢失。
+会话及工作区持久化；首轮输入和有序轨迹立即驻留，附件仅分配 UUID 并暂存内存。只有明确通过准入的附件随终态备份保存至 upload；未通过或未判断就结束的附件仅保留不可用元数据，不阻塞轨迹复制至 SQLite。进程重启后已备份历史可通过 open 恢复展示，但旧 SSE 回放和执行不能恢复；未备份数据和附件在异常退出时可能丢失。
 
 ---
 
@@ -430,7 +467,7 @@ curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations' \
 | --- | --- | --- | --- |
 | `text` | string | 否 | 最多 20000 字符，保留原文；纯空白视为无文字。 |
 | `files` | PDF[] | 否 | 重复使用 files 字段；最多 10 份，每份 10 MiB，合计 20 MiB。 |
-| `supersedes_turn_id` | string | 否 | 长度 1～128；补充或调整时指定同会话中需要替代的待激活/处理中轮次。 |
+| `supersedes_turn_id` | string | 否 | 长度 1～128；补充或调整时指定同会话中 `can_interrupt=true` 的处理中轮次。 |
 
 文字和文件至少一项非空。文件名去除目录部分后须以 `.pdf` 结尾且不超过 512 字符，内容不得为空。这里只做上传约束，不验证 PDF 可打开、加密、渲染或合同属性，不代表业务门禁已通过。
 
@@ -455,6 +492,7 @@ curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations' \
 | `conversation_id` | 会话标识，实际由服务端生成 UUID；示例简写为 c1。 |
 | `turn_id` | 本轮标识，实际由服务端生成 UUID；示例简写为 t1。 |
 | `status` | 固定为 `pending_activation`，尚未处理。 |
+| `can_interrupt` | 正式工作流固定为 false；等待完整门禁通过后才允许取消或替代。 |
 | `activation_expires_at` | 首次激活截止时间，UTC ISO 8601，注册后 180 秒。 |
 | `supersedes_turn_id` | 本轮接替的旧轮次；普通新轮次或首轮为空。 |
 
@@ -467,7 +505,7 @@ curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations' \
 | 400 | multipart 格式无法解析。 |
 | 401 | 免登码无效或过期。 |
 | 404 | 会话或被替代轮次不存在、跨用户或跨会话。 |
-| 409 | 已有活跃轮次但未正确指定替代，或被替代轮次已结束。 |
+| 409 | 已有活跃轮次但未正确指定替代、被替代轮次尚未开放中断，或被替代轮次已结束。 |
 | 413 | PDF 数量或大小超限。 |
 | 422 | 输入为空、文件不合法或字段格式错误。 |
 | 503 | 内存容量已满或数据库暂时不可用。 |
@@ -495,7 +533,7 @@ curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations/c1
 
 输入校验或注册失败不替换旧轮次。替代成功后旧轮次变为 `superseded`，其 `context_status=user_goal_adjusted`，旧流关闭；新轮次仍待激活。新轮次过期不会恢复旧轮次。旧轮次已结束时直接创建普通新轮次，不改写旧终态。
 
-不自动继承旧文字或文件，替代后旧运行时输入字节释放，但原文字和文件引用仍保留在同一会话的冻结轨迹中并后台备份。请求暂不具备幂等键；已有活跃轮次时重复提交会冲突。真实工作流中断与模型上下文继承尚未实现，关闭旧 SSE 不等于已停止真实模型调用。
+不自动继承旧文字或文件，替代后旧运行时输入字节释放，但原文字和文件引用仍保留在同一会话的冻结轨迹中并后台备份。请求暂不具备幂等键；已有活跃轮次时重复提交会冲突。正式执行器只允许替代完整门禁通过后的任务，并停止旧后续执行协程、拒收迟到结果；门禁期间返回 `409`，旧任务继续执行且不注册新轮次。新轮门禁读取符合边界的近期历史；第二层上下文继承与旧文件原文复用尚未实现。
 
 ---
 
@@ -535,17 +573,61 @@ curl -N 'http://127.0.0.1:20000/contract/api/communication/conversations/c1/turn
 
 订阅请求可以携带 `Last-Event-ID`，取值是该轮已接收的非负整数序号（最多 20 位），缺省为 `0`。日志事件从 `1` 起单调递增，仅发送大于游标的事件。
 
-五类事件共用 `turn_id` 和带时区的 `created_at`，其余字段如下。字段定义由 `app/schema/communication.py` 维护。
+五类事件共用 `turn_id`，其余字段如下。事件数据由 `app/schema/communication.py` 定义，对外 SSE 封装由 `app/router/communication.py` 维护。
 
 | 事件 | 专属字段 | 含义 |
 | --- | --- | --- |
-| `turn.status` | `status`、`context_status`、`superseded_by_turn_id`、`activated_at`、`finished_at`、`processing_duration_ms` | 状态与时间字段含义同快照；仅 `superseded` 必须关联接替轮次，其余为空。 |
-| `task.progress` | `message` | 用户可见进度，不输出内部推理或伪造百分比。 |
+| `turn.status` | `created_at`、`status`、`can_interrupt`、`context_status`、`superseded_by_turn_id`、`activated_at`、`finished_at`、`processing_duration_ms` | `created_at` 为带时区的状态事件创建时间，其他字段含义同快照；仅 `superseded` 必须关联接替轮次，其余为空。 |
+| `task.progress` | `type`、`message` | 当前用户展示状态；`type` 决定图标和默认文案，`message` 为简短业务说明，两者必填。不输出工具名、调用 ID、内部推理或伪造百分比。 |
 | `message.delta` | `message_id`、`message_kind`、`delta` | 当前消息的文本增量；类型为 `intermediate/final`。 |
-| `message.completed` | `message_id`、`message_kind`、`text`、`references` | 完整文本、消息类型和引用；引用含 `document_id`、可空的 `page_number`（从 1 起）。 |
+| `message.completed` | `message_id`、`message_kind`、`text`、`status`、`references` | 消息收束后的累积正文；`status=completed/interrupted`，分别表示完整输出和中断半成品。引用含 `document_id`、可空的 `page_number`（从 1 起）。 |
 | `error` | `code`、`message`、`retryable` | 用户可见错误，不包含内部堆栈。 |
 
-业务门禁仍是内部独立子图，对外不设置专属事件或阶段状态。校验期间保持 `processing`，通过 `task.progress` 提示“正在校验问题”或“正在校验上传文件”；检查结论使用普通 `message.delta/message.completed` 输出，涉及文件剔除时说明文件名称、保留或剔除结果及原因。结果消息进入快照与历史轨迹，不只保存在临时进度中。需要确认时以 `final` 提问并结束为 `completed`；明确拒绝继续时输出说明并结束为 `rejected`。实际校验子图仍未接入，当前展示执行器遵循此协议。
+`task.progress`、`message.delta`、`message.completed` 和 `error` 不返回 `created_at` 或其他时间字段，`final` 消息同样不携带时间。前端通过事件 `id` 排序及回放，通过 `turn.status` 和快照的激活时间、结束时间与总处理时长展示任务计时，不再依赖中间事件时间。该变更不影响内部事件记录和历史存储，无需迁移数据。
+
+`task.progress.type` 只允许以下三种值，不提供隐式默认值；`message` 为 1～2000 字符的非空文本，执行器应使用简短说明。前端按类型选择图标，并在不展示具体说明时使用下表默认文案，不应解析 `message` 推断类型。
+
+| `type` | 默认文案 | 适用范围 |
+| --- | --- | --- |
+| `local-search` | 正在查阅资料 | 检索合同、读取上传文件、查阅历史记录。 |
+| `online-search` | 正在联网检索 | 搜索网页、读取外部资料。 |
+| `thinking` | 正在思考 | 全部业务校验、理解问题、规划任务、计算分析、对比条款、组织答复。 |
+
+每次进度整体覆盖当前展示，不要求前端逐条堆积。多个内部工具可以共用一个展示状态，无需为每次调用发送开始、执行中和结束通知；内部工具轨迹仍独立保留。`type` 不是轮次生命周期状态，不改变 `processing/completed` 等状态；收到轮次终态后停止进度动画。该新增必填字段同步用于 SSE 和快照 `progress`，旧的只含 `message` 的发布方式不再有效。
+
+```text
+id: 2
+event: task.progress
+data: {"turn_id":"t1","type":"local-search","message":"正在查阅相关采购合同"}
+
+```
+
+业务门禁仍是内部独立子图，对外不设置专属事件或阶段状态。整个校验期间保持 `processing`，统一发送 `task.progress(type="thinking", message="正在思考")`，包括 PDF 打开、渲染和模型视觉判断，不使用 `local-search` 展示内部检查步骤。
+
+#### 门禁拒绝与恢复
+
+正式文件可读性、逐文件命名/摘要、文件与文字业务相关性及文件文字整体判断已接入首次订阅；`COMMUNICATION_DEMO_ENABLED=true` 时只在真实门禁通过后运行展示脚本，不再替换或跳过门禁。纯文字、纯文件或文件加文字，在无历史时均已可聚合为 passed/rejected：拒绝按现有流式提示、rejected 终态与历史同步，通过时若启用演示则继续同轮模拟问答，否则说明核心问答尚未接入并以 completed 结束提示，不伪造真实分析结论。存在有效历史时，服务端从最新累计摘要之后选取最近最多五轮，排除当前轮及其后记录、拒绝、过期和非终态记录，再进行上下文关联判断；不向模型提供累计摘要，不跨摘要补足数量。上下文维度主要承接“继续”“还有补充吗”等依赖历史的请求；有文字时无历史也会判断，明确操作先前文件可判相关，文件定位、可用性核验及必要澄清留待后续服务，不代表文件已找到。只有文件且无历史时跳过该维度。前端无需提交历史或增加请求参数。未启用模拟问答时仍不批准附件落盘；启用时在完整门禁通过后批准附件，保留真实名称与摘要，随本轮终态后台备份。模拟层不会伪造文件拒绝或覆盖准入结果，门禁与模拟共用同一轮事件流和计时。正式门禁所有未放行情况（含判断或摘要执行失败）统一进入拒绝回复节点，并以 rejected 结束；回复明确区分服务故障与材料问题，不把技术失败解释为文件不合格。判断证据、理由、逐文件判断结果及私有审计不新增为公开 HTTP/SSE 或用户历史字段；已生成的 display_name/summary 仍按附件描述契约保留在用户输入中。
+
+文字维度内部使用 related/uncertain/unrelated 三态，由聚合统一计分，详见[加权与阈值聚合](../architecture/workflow/contract-communication/business-gate.md#加权与阈值聚合)。uncertain 不新增为 SSE 或快照的轮次状态；纯文字无法确认业务主题时仍可能因总分不足形成 rejected，并流式提示补充问题。该调整不改变前端接口契约，不能将模型故障归入 uncertain。
+
+上下文内部区分可见业务历史支持与仅引用先前文件，分别计分；明确 unrelated 的文字不能靠其他关联分放行。信息不足的简短追问仍允许上下文补足。依据字段不进入 SSE、快照或用户历史，无需前端新增字段，仍根据最终 rejected 状态展示流式指引。
+
+- 文件校验不通过：`message.delta(message_kind=final)` → `message.completed(message_kind=final, status=completed)` → `turn.status(status=rejected)` → 关闭 SSE。
+- 门禁中的模型服务不可用、结构化输出重试耗尽等已知检查故障，同样通过拒绝回复节点，以 `rejected` 结束，不再要求 `error(code=business_gate_failed)`。回复会说明服务或处理暂不可用，而非认定用户文件不合格。未捕获的程序异常、生命周期失败以及后续问答故障仍可产生 `failed`，前端不能只靠 error 事件判断结束。
+- **前端以 `turn.status.status` 识别拒绝**；`message.completed.status=completed` 只表示提示正文完整，不表示业务成功。恢复时读取任务/快照 `status=rejected`，展示历史 `payload.events` 中同一条最终消息。
+- 最后一条完整消息和终态在同一临界区同步写入快照、SSE 日志和驻留历史，终态触发后台 SQLite 备份；不等待落盘才展示。中间 delta 不落库，完整拒绝正文与终态落库，刷新或重新加载后保持一致。
+- 拒绝后的本轮全部附件释放内存字节，历史保留 `admission=unavailable, file_path=null` 元数据，不落盘。前端应禁用文件查看。
+- 门禁及拒绝回复生成、流式展示期间 `can_interrupt=false`，用户取消或调整方向返回 `409`；系统关闭、会话删除等生命周期清理仍可停止执行，半成品按原规则收束。
+
+提示正文由专门模型根据业务日志生成自然语言；生成完整 JSON 并校验后，只将回复正文按片段发送，不透传证据、推理、JSON 或纠错记录。以下仅为展示示例，不是固定标题或文案契约：
+
+```markdown
+第2份文件「合同.pdf」的第3页主要文字模糊，请提供清晰版本。
+
+本轮尚未开展业务分析。本轮上传的全部文件均不会保存为可用历史附件；请在下一次提交时一并上传需要处理的全部文件。
+```
+
+正常回复由模型统一组织原因、处理停止及重新提交范围，程序不再追加固定说明；回复模型故障或有限纠错耗尽时使用完整兜底文案，仍保持 rejected。仅兜底文案由程序补齐本轮未开展业务分析及全部所需附件的重新提交范围；不暗示其他文件已处理，无附件时不添加上传要求。正文中的 Markdown/HTML 按纯文本转义，前端仍需执行常规安全渲染。内部原始检查状态、日志和审计不新增为接口字段；设计见[统一拒绝与响应](../architecture/workflow/contract-communication/business-gate.md#统一拒绝与响应)。
 
 兼容性变更：已移除旧 `gate.result` 事件和快照 `gate_result` 字段，不保留旧协议兼容分支。前端应移除专属监听、卡片及字段依赖，统一消费进度和消息；历史 Payload 与 SQLite 表结构不变，无需迁移历史数据。
 
@@ -554,24 +636,26 @@ curl -N 'http://127.0.0.1:20000/contract/api/communication/conversations/c1/turn
 ```text
 id: 2
 event: message.delta
-data: {"turn_id":"t1","created_at":"2026-09-08T09:00:00+00:00","message_id":"m1","message_kind":"intermediate","delta":"已完成文件检查。"}
+data: {"turn_id":"t1","message_id":"m1","message_kind":"intermediate","delta":"已完成文件检查。"}
 
 ```
 
-`task.progress` 可以穿插在同一消息的多个 `message.delta` 之间。一轮可以先输出阶段提示、再输出澄清问题或分析结论；每条消息使用独立 `message_id`，同时仅允许一条消息处于生成中。
+`task.progress` 可以穿插在同一消息的多个 `message.delta` 之间。消息只用于有价值的阶段结论、澄清问题或最终答复，不逐步播报内部思考或每个工具操作；没有工具调用时也可以直接输出消息。每条消息使用独立 `message_id`，同时仅允许一条消息处于生成中。
 
 `message_kind` 是必填字段，同一 `message_id` 的全部增量、完成事件和快照保持一致，不提供默认类型：
 
 - `intermediate`：执行中的阶段提示。
 - `final`：本轮最终答复，可以是总结，也可以是澄清或确认请求，不表示用户的整体目标已经完成。
 
-`message.completed` 只完成当前消息，不自动结束轮次。有增量时，其 `text` 必须等于该消息全部增量拼接结果；也支持直接发送一条完整消息。已完成消息不能再次追加，消息类型不能中途改变。
+`message.completed` 表示消息已收束，不保证正文完整，必须读取 `status`。正常发布默认 `completed`；`interrupted` 只能由运行时在任务中断时生成。其 `text` 必须等于已发送增量拼接结果；正常消息也支持没有增量而直接提交全文。前端按 ID 覆盖正文，不能将它追加到已有 delta 后。已收束消息不能再次追加，消息类型不能中途改变。
+
+取消、替代、失败或拒绝时，若有正在生成的消息，运行时先发送 `message.completed(status=interrupted)`，再发送 `turn.status` 终态；两者与内存历史原子提交，正常最终答复仍要求 `status=completed`。没有半成品时不虚构空消息。系统关闭和运行时 TTL 失败冻结也按同一规则保存历史，但连接已失效时不保证客户端收到末尾事件。
 
 正常交付顺序为：`final` 增量（可选）→ `message.completed`（`final`）→ `turn.status`（`completed`）→ 关闭流。轮次标记 `completed` 前必须已完成唯一一条 `final` 消息；最终答复完成后仅接受轮次终态，不允许再发阶段进度、追加消息或发布第二条最终答复。取消、拒绝和失败无需强制生成 `final`。
 
 `completed/cancelled/superseded/rejected/failed/expired` 为轮次终态，终态后拒绝发布迟到事件。已激活轮次的终态发送后关闭流；已收到其终态序号的重连立即结束。未激活过期记录订阅直接返回 `410`，不建立 SSE。取消、被替代、拒绝或失败可以中断正在生成的消息，快照将其标为 `interrupted`。`error` 本身不结束轮次，业务失败仍需另行发布 `turn.status: failed`。
 
-不再使用 `awaiting_confirmation` 轮次状态，该旧值会被 Schema 拒绝。需要用户澄清或文件剔除确认时，以 `final` 提出问题，正常完成本轮并关闭流。用户回复通过同一 `conversation_id` 下的新轮次进入，获得新 `turn_id` 和新事件流；“待用户确认”属于会话或任务上下文，不维持旧 SSE。创建已实现，上下文继承尚未实现。
+不再使用 `awaiting_confirmation` 轮次状态，该旧值会被 Schema 拒绝。需要用户澄清或文件剔除确认时，以 `final` 提出问题，正常完成本轮并关闭流。用户回复通过同一 `conversation_id` 下的新轮次进入，获得新 `turn_id` 和新事件流；“待用户确认”属于会话或任务上下文，不维持旧 SSE。创建及门禁的轻量历史关联已实现，第二层核心问答的上下文继承尚未实现。
 
 处理期间收到用户补充或方向调整时，旧轮次使用 `superseded`（已被替代）而不是 `cancelled`（用户手动终止），并在 `superseded_by_turn_id` 中指向新轮次。新轮次保持同一会话，独立从事件序号 1 开始。旧轮次若已完成则保留原终态，直接创建普通新轮次，不改写历史。
 
@@ -644,6 +728,10 @@ Last-Event-ID: 0
 
 ### 展示快照
 
+`can_interrupt` 为服务端控制的 boolean：待激活、完整业务门禁判断及拒绝提示输出期间均为 false；门禁通过并进入后续执行时为 true；所有终态均为 false。取消按钮和通过补充输入替代当前轮次的入口都应据此启用，不能从 `processing` 或“正在思考”推断权限。收到 `409` 时保留当前流，等待状态更新。
+
+权限开放会追加一次 `turn.status(status=processing, can_interrupt=true)`，即同一轮可收到两次 processing 状态，前端不能按状态值去重；按事件序号处理即可。此次更新保留原 `activated_at`，不重启计时。创建响应和 open/refresh 返回的每个任务条目顶层也包含 `can_interrupt`；刷新时直接采用服务端当前值，不用从轨迹猜测。旧客户端数据缺少字段时按 false 处理。
+
 `GET /conversations/{conversation_id}/turns/{turn_id}` 返回 `CommunicationSnapshot`，包括：
 
 - `conversation_id`、`turn_id`、当前 `status`。
@@ -654,7 +742,7 @@ Last-Event-ID: 0
 - `supersedes_turn_id`：本轮因调整接替的旧轮次；`superseded_by_turn_id`：接替本轮的新轮次。没有关联时为 `null`。
 - `last_sequence`：快照对应的最新事件序号；`earliest_sequence`：缓存最早可用事件序号。
 - `messages`：按生成顺序排列，每条含 `message_id/message_kind/text/status/references`，状态为 `streaming/completed/interrupted`。
-- `progress`、`error`：各自最近一次事件负载，没有则为 `null`，负载保留 `event_type` 标签。校验结论作为普通消息保存在 `messages`，不另设专属字段。
+- `progress`、`error`：各自最近一次事件负载，没有则为 `null`，负载保留 `event_type` 标签。`progress` 包含 `type` 和 `message`，只保存最后一条，不是进度列表；终态仍保留供恢复，但不再表示正在执行。校验结论作为普通消息保存在 `messages`，不另设专属字段。
 
 快照和事件在同一锁内更新，因此快照序号与消息内容一致。快照是用户界面恢复数据，不是模型上下文；取消后展示中的中断文本不代表会继续送给模型。上下文终止语义仍待对话运行时实现。
 
@@ -703,16 +791,17 @@ curl 'http://127.0.0.1:20000/contract/api/communication/conversations/c1/turns/t
 
 ### 成功响应
 
-`200 application/json`，模型 `CommunicationSnapshot`。未激活就取消的完整示例：
+`200 application/json`，模型 `CommunicationSnapshot`。仅已开放中断的任务可以首次取消，下面示例省略消息内容：
 
 ```json
 {
   "conversation_id": "c1",
   "turn_id": "t1",
   "status": "cancelled",
-  "activated_at": null,
+  "can_interrupt": false,
+  "activated_at": "2026-09-08T09:00:00Z",
   "finished_at": "2026-09-08T09:01:00Z",
-  "processing_duration_ms": 0,
+  "processing_duration_ms": 60000,
   "context_status": "user_manually_stopped",
   "activation_expires_at": "2026-09-08T09:03:00Z",
   "supersedes_turn_id": null,
@@ -733,7 +822,7 @@ curl 'http://127.0.0.1:20000/contract/api/communication/conversations/c1/turns/t
 | --- | --- |
 | 401 | 免登码无效或过期。 |
 | 404 | 会话或轮次不存在、跨用户、跨会话或已清理。 |
-| 409 | 已处于 completed、superseded、rejected、failed 或 expired 终态。 |
+| 409 | `can_interrupt=false` 的非终态任务，或已处于 completed、superseded、rejected、failed、expired 终态。 |
 | 422 | 路径参数格式不合法。 |
 | 503 | 会话数据库暂时不可用。 |
 
@@ -750,13 +839,14 @@ curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations/c1
 
 | 当前状态 | 行为 |
 | --- | --- |
-| `pending_activation` | 进入 `cancelled`，释放输入；此后订阅只回放取消终态，绝不激活。 |
-| `processing` | 进入 `cancelled`，释放输入，活跃消息标为 `interrupted`；已连接 SSE 收到终态后关闭。 |
+| `pending_activation` | 返回 `409`，等待订阅激活或自动过期。 |
+| `processing` 且 `can_interrupt=false` | 返回 `409`，旧任务继续执行，不改变状态、文件或轨迹。 |
+| `processing` 且 `can_interrupt=true` | 进入 `cancelled`，释放输入，活跃消息标为 `interrupted`；已连接 SSE 收到终态后关闭。 |
 | `cancelled` | 幂等返回相同快照，不追加事件、不刷新保留时间。 |
 | 其他终态 | 返回 `409`，不覆盖完成、替代、拒绝、失败或过期记录。 |
 | 不存在或跨用户、跨会话 | 返回 `404`，不修改任何状态。 |
 
-认证失败返回 `401`。激活超时已经生效时，取消按 `expired` 返回 `409`；保留期结束后返回 `404`。取消与激活、替代、完成共用锁：激活先发生则取消处理中的轮次，取消先发生则后续不激活；与其他终态竞争时先提交者生效。终态后禁止旧事件继续发布。
+认证失败返回 `401`。激活超时已经生效时，取消按 `expired` 返回 `409`；保留期结束后返回 `404`。中断权限更新与取消、替代、完成共用锁：权限尚未开放时拒绝用户操作；开放后与其他终态竞争时先提交者生效。终态后禁止旧事件继续发布。已取消任务重复取消仍幂等返回原快照。
 
 ```http
 POST /contract/api/communication/conversations/c1/turns/t1/cancel

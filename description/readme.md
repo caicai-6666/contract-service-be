@@ -24,7 +24,7 @@
 | 设计或实现复核后合同的 Elasticsearch 入库 | [合同 Elasticsearch 文档结构](architecture/data/contract-elasticsearch-document.md) |
 | 配置审核用户名称与密钥 | [审核用户 YAML 定义](architecture/data/reviewer-user-definition.md) |
 | 对接审核用户登录与免登码 | [审核用户登录 API](api/auth.md) |
-| 根据 `file_uri` 读取本地正式合同 PDF | [资源文件 API](api/resource.md) |
+| 读取正式合同、提取处理版或已驻留会话任务附件 PDF | [资源文件 API](api/resource.md) |
 | 设计处理版 PDF 的向量召回与多模态查重 | [PDF 查重 Agent 工作流](architecture/workflow/pdf-deduplication/readme.md) |
 | 设计查重前的合同文档类型门禁 | [合同文档识别 Agent 工作流](architecture/workflow/contract-document-detection/readme.md) |
 | 降低并发视觉请求的内存与网络重复载荷 | [vLLM 多模态媒体引用](capability/infrastructure/vllm-media-reference.md) |
@@ -87,7 +87,12 @@ description/
 
 - [轮次有序轨迹设计](architecture/workflow/contract-communication/turn-trace.md)：记录方法调用、阶段说明与最终答复的统一顺序，以及内存存储和压缩边界。
 - [合同沟通智能体](architecture/workflow/contract-communication/readme.md)：工作流入口；已有门禁初始化子图、骨架包、事件及快照，真实业务执行待实现。
-- [业务门禁子图](architecture/workflow/contract-communication/business-gate.md)：说明初始化结构及已确认的相关性、PDF 检查和文件剔除确认规则。
+- [业务门禁子图](architecture/workflow/contract-communication/business-gate.md)：说明文件硬性条件、四维相关性判断与加权阈值聚合。
+- [文字业务相关性判定规范](architecture/workflow/contract-communication/text-business-relevance.md)：业务范围、文字证据边界、三态语义及已接入的约束解码、有限纠错与验证。
+- [文件业务相关性判断](architecture/workflow/contract-communication/file-business-relevance.md)：仅依据展示名与摘要并发判断，支持三态、有限纠错与多文件得分合成。
+- [文件与文字相关性判断](architecture/workflow/contract-communication/file-text-relevance.md)：文字区与有序文件摘要区一次整体判断，支持当前/历史文件指代，严格布尔输出与 1/0 分计分。
+- [上下文相关性判断](architecture/workflow/contract-communication/context-relevance.md)：近 5 轮可信历史选择、轻量渲染、随机四例、严格 JSON 判断与有限纠错，已接入门禁聚合。
+- [文件可读性检查子图](architecture/workflow/contract-communication/file-readability.md)：已实现顺序打开、预算内逐页渲染及失败短路，服务接入待实现。
 - [用户消息与上下文设计](architecture/workflow/contract-communication/user-context.md)：记录手动终止、用户补充和方向调整的模型可见语义。
 
 #### 合同文档识别
@@ -128,7 +133,7 @@ description/
 - [多轮对话 API](api/communication.md)：说明 `/communication` 路由前缀、认证约定和当前未实现边界。
 - [API 参考](api/readme.md)：定义服务入口、全局媒体类型、错误格式、健康检查和业务接口导航。
 - [审核用户登录 API](api/auth.md)：定义仅凭审核用户密钥签发限时免登码的接口。
-- [资源文件 API](api/resource.md)：定义按 SQLite 目录或 ES 候选中的 `file_uri` 安全读取本地正式合同 PDF 的接口。
+- [资源文件 API](api/resource.md)：定义正式合同、提取处理版和本人已驻留任务准入附件的 PDF 读取接口。
 - [合同 API](api/contract.md)：定义 Core 表单目录、PDF 上传、合同文档判断、查重结果、暂停继续、状态与 Core/Clause 查询、SSE 事件、断线续传、失败阶段重试、正式入库、错误码和前端接入顺序。
 
 ---

@@ -40,11 +40,18 @@
 
 ### 应用接口
 
+- Communication 附件可通过资源接口读取：仅授权本人已驻留任务轨迹中的 `accepted` 附件，优先读取内存、归档后回退磁盘，不自动加载未驻留历史，详见[会话附件读取](api/resource.md#读取已驻留会话任务的-pdf-附件)。
+
+- Communication 门禁所有已知未放行结果统一进入拒绝回复节点，依据精简业务日志生成自然反馈；回复故障仍兜底为 rejected，SSE、快照、历史同步且附件不落盘，详见[统一拒绝与响应](architecture/workflow/contract-communication/business-gate.md#统一拒绝与响应)。
+
+- Communication 已通过 `can_interrupt` 同步创建响应、SSE、快照和历史恢复：完整门禁通过并进入后续执行前禁止用户取消或替代，服务端返回 `409` 且不改变旧任务，详见[门禁阶段的用户中断限制](architecture/workflow/contract-communication/user-context.md#门禁阶段的用户中断限制)。
+
+- Communication 用户恢复通过精简 SSE 展示记录读取，不再展示内部工具轨迹；不保存 delta，中断消息收束为 `message.completed(status=interrupted)` 后随任务备份，详见[用户展示 Payload](api/communication.md#用户展示-payload)。
 - Communication 已支持本人会话改名和 SQLite 级联删除，删除时同步驱逐会话轨迹及事件运行时，并与后台备份协调。
 - Communication 已实现 open 按最新摘要加载历史、refresh 向前扩展至更早摘要，模型历史候选始终限定最新摘要及其后记录；不加载检索文本和向量。
 - `GET /communication/conversations` 已支持当前用户全部持久化会话的轻量列表，返回 ID、名称和创建时间，并按密钥隔离。
 - `/communication/conversations` 已支持首次输入与可选名称创建持久化会话、空工作区及待激活首轮；后续轮次须引用存在且归属当前密钥的会话，任务有序轨迹统一驻留，终态后自动后台备份，不阻塞历史展示。
-- `/communication` 已支持表单暂存文字与 PDF、创建或替换待激活轮次；须在 180 秒内首次订阅激活，否则释放输入并返回 `410`。SSE 与快照支持用户隔离、交错输出、`intermediate/final`、回放及终态关闭。已支持幂等主动取消及输入清理，当前激活不调用工作流。
+- `/communication` 已支持表单暂存文字与 PDF、创建或替换待激活轮次；须在 180 秒内首次订阅激活，否则释放输入并返回 `410`。SSE 与快照支持用户隔离、交错输出、`intermediate/final`、回放及终态关闭。正式执行器激活后调用文件可读性门禁，校验统一展示“正在思考”，拒绝提示流式输出，终态同步写入驻留历史并后台备份；支持取消执行及输入清理。
 - 支持审核用户仅凭配置密钥登录，签发带 TTL 的进程内免登码。
 - 除健康检查和登录外，所有 HTTP/SSE 接口统一校验 Bearer 免登码并注入审核人名称。
 - 用户具有三级合同权限，所有等级可查看，1、2 级可新增；1 级可通过正式删除接口清理 ES、PDF 和 SQLite 合同数据。
@@ -85,10 +92,11 @@
 
 ## 3. 当前边界
 
-- 面向用户的[合同沟通智能体](architecture/workflow/contract-communication/readme.md)已有门禁初始化子图、骨架包、输入暂存和创建、激活、取消生命周期；工作流尚未接入，尚未实现实际门禁、上下文继承、记忆、规划或合同查询工具。已确认需求与待定边界见 [Communication 总体设计](architecture/system/contract-communication.md)。
+- 面向用户的[合同沟通智能体](architecture/workflow/contract-communication/readme.md)已有门禁与[文件可读性子图](architecture/workflow/contract-communication/file-readability.md)，已实现顺序打开、按文件 Map-Reduce 渲染与视觉判断、JSON Schema 约束解码、有限纠错及尾部熔断，并已接入正式 Communication 服务。可读性通过后已接入逐文件并发命名与摘要；文件、文字业务相关性、文件与文字整体判断、上下文相关性及加权阈值聚合已实现；服务端选取最新摘要之后最多五轮有效历史并排除拒绝任务。核心问答上下文继承、记忆、规划或合同查询工具仍未实现。已确认需求与待定边界见 [Communication 总体设计](architecture/system/contract-communication.md)。
+- Communication 附件已支持[准入后延迟落盘](architecture/system/communication-history.md#附件准入与延迟落盘)：注册只暂存内存，执行层显式批准后随终态备份保存；拒绝或未判定就结束的附件仅保留不可用元数据。正式门禁不因可读性通过就提前批准附件；启用混合联调时，完整门禁通过后批准附件并串接模拟问答，未启用时仍返回后续能力未接入提示。独立演示脚本保留纯模拟准入。
 - 系统只支持固定 Core 提取，不包含候选字段生成、归并、统计或治理流程。
 - Core 只能来自启动期通过严格校验的固定字段目录；运行时不得创建目录外字段。
-- 合同提取任务的原始 PDF 只在创建请求期间存在；任务长期只保存页面 PNG 与元数据，Base64 和整份处理版 PDF 均按需生成、不写回任务。communication 附件在注册时保存至 upload，原始字节暂留运行时并在终态释放。已备份的会话轨迹可跨进程重启读取；实时 SSE 和尚未备份轨迹不可保证恢复。
+- 合同提取任务的原始 PDF 只在创建请求期间存在；任务长期只保存页面 PNG 与元数据，Base64 和整份处理版 PDF 均按需生成、不写回任务。communication 附件注册时只暂存内存，只有已准入附件随终态备份写入 upload；运行时终态释放输入，已准入字节在历史层保留至记忆归档成功。已备份的会话轨迹可跨进程重启读取；实时 SSE 和尚未备份轨迹、附件不可保证恢复。
 - 当前没有独立的专家编辑版本或审核历史；正式入库接口直接接收有新增权限的任务所有者提交的最终文件名、Core 和 Clause。
 - 当前注册表不跨进程共享，开发热更新会清空任务；合同处理服务必须使用单 worker。
 - 免登校验确认审核人身份，结合三级操作权限和合同任务所有权隔离；免登码缓存和任务注册表均不跨进程共享，重启即清空。

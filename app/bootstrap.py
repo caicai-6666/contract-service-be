@@ -3,6 +3,7 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from functools import partial
 
 from fastapi import FastAPI
 
@@ -34,10 +35,10 @@ from app.infrastructure.pdf_candidate_loader import (
     LocalPDFDuplicateCandidateLoader,
 )
 from app.service.auth import AuthService, LoginCodeCache
-from app.service.communication import CommunicationEventService
+from app.service.communication_workflow import CommunicationWorkflowService
 from app.service.communication_history import ConversationHistoryService
 from app.service.communication_archive import CommunicationArchiveService
-from app.service.communication_demo import DemoEventService
+from app.service.communication_demo import run_demo_workflow
 from app.service.contract_ingestion import ContractIngestionService
 from app.service.contract_extraction import (
     AgentContractDocumentDetectionExecutor,
@@ -115,12 +116,13 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     elasticsearch = create_elasticsearch_client(settings)
     application.state.elasticsearch = elasticsearch
     contract_extraction_service: ContractExtractionService | None = None
-    # 联调仅替换激活后的事件生产者，继续复用当前进程的登录、路由和生命周期。
-    communication_event_service = (
-        DemoEventService() if settings.communication_demo_enabled else CommunicationEventService()
+    # 始终先执行真实门禁；开关只替换门禁通过后的问答层，不能绕过校验。
+    communication_event_service = CommunicationWorkflowService(
+        settings=settings.mllm,
+        after_gate=partial(run_demo_workflow, after_gate=True) if settings.communication_demo_enabled else None,
     )
     if settings.communication_demo_enabled:
-        logger.warning("Communication 展示工作流已启用：输出均为模拟内容，不执行真实合同分析")
+        logger.warning("Communication 混合联调已启用：真实门禁通过后输出模拟问答，不执行真实合同分析")
     application.state.communication_event_service = communication_event_service
     communication_event_service.bind_history(communication_history_service)
     try:

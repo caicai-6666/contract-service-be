@@ -10,6 +10,7 @@ TurnStatus = Literal[
     "pending_activation", "processing", "completed", "cancelled", "superseded", "rejected", "failed", "expired"
 ]
 MessageKind = Literal["intermediate", "final"]
+TaskProgressType = Literal["local-search", "online-search", "thinking"]
 UserContextStatus = Literal["user_goal_adjusted", "user_manually_stopped"]
 TERMINAL_STATUSES = frozenset({"completed", "cancelled", "superseded", "rejected", "failed", "expired"})
 
@@ -24,9 +25,16 @@ class TurnStateModel(CommunicationModel):
     """执行状态与用户控制语义共用唯一映射，避免两个字段发生漂移。"""
 
     status: TurnStatus
+    can_interrupt: bool = Field(default=False, strict=True, description="是否允许用户取消或提交替代轮次；正式工作流仅在完整门禁通过后开放，终态为 false。")
     activated_at: datetime | None = Field(default=None, description="首次成功订阅的 UTC 激活时间；未激活为空，重连不重置。")
     finished_at: datetime | None = Field(default=None, description="进入终态的 UTC 时间；未结束为空。")
     processing_duration_ms: int | None = Field(default=None, ge=0, description="终态固定的总处理时长，单位毫秒，从激活计时；未结束为空，未激活就结束为 0。")
+
+    @model_validator(mode="after")
+    def validate_interruption(self) -> Self:
+        if self.can_interrupt and self.status in TERMINAL_STATUSES:
+            raise ValueError("终态任务不能开放用户中断")
+        return self
 
     @computed_field(description="供后续上下文构造使用：用户目标调整或用户手动终止；其他状态为空。")
     @property
@@ -53,8 +61,11 @@ class TurnStatusData(TurnStateModel):
 
 
 class TaskProgressData(CommunicationModel):
+    """当前用户展示状态，不等同于工具调用或轮次生命周期。"""
+
     event_type: Literal["task.progress"] = "task.progress"
-    message: str = Field(min_length=1, max_length=2000)
+    type: TaskProgressType = Field(description="展示类型：local-search 查阅本地资料；online-search 联网检索；thinking 理解、规划、分析或组织答复。")
+    message: str = Field(min_length=1, max_length=2000, description="简短的用户可见业务说明，不包含内部工具名、调用 ID 或推理过程。")
 
 
 class MessageDeltaData(CommunicationModel):
@@ -76,6 +87,7 @@ class MessageCompletedData(CommunicationModel):
     message_id: str = Field(min_length=1, max_length=128)
     message_kind: MessageKind = Field(description="必须与同一消息的增量类型一致；final 不表示整体业务目标已经完成。")
     text: str = Field(min_length=1)
+    status: Literal["completed", "interrupted"] = Field(default="completed", description="消息结束方式：completed 正常完整输出；interrupted 为运行时在任务中断时收束的半成品。")
     references: tuple[MessageReference, ...] = ()
 
 
@@ -100,6 +112,28 @@ class CommunicationEvent(CommunicationModel):
     data: EventData
 
 
+def public_event_data(event: CommunicationEvent) -> dict:
+    """SSE 与持久化展示记录共用编码，避免两条展示路径发生漂移。"""
+    payload = {"turn_id": event.turn_id, **event.data.model_dump(mode="json", exclude={"event_type"})}
+    if isinstance(event.data, TurnStatusData):
+        payload["created_at"] = event.created_at.isoformat()
+    return payload
+
+
+class DisplayEvent(CommunicationModel):
+    sequence: int | None = Field(ge=1, description="原始 SSE 序号，过滤 delta 后允许不连续；旧轨迹兼容恢复为 null，不作为重连游标。")
+    event: Literal["turn.status", "task.progress", "message.completed", "error"]
+    data: dict = Field(description="与对应 SSE data 相同的公开负载；旧轨迹引用沿用 type/location。")
+
+
+class ConversationDisplayPayload(CommunicationModel):
+    input: dict = Field(description="用户原文和附件列表；附件保留原文件名，display_name、summary 为后端生成的描述，未生成时为 null，旧记录可缺省。")
+    events: tuple[DisplayEvent, ...] = Field(description="按原始事件顺序保存的展示记录，不含 delta、心跳、连接错误或工具轨迹。")
+    streaming_messages: tuple[dict, ...] = Field(description="仍在处理的消息累积正文，覆盖而非追加；任务结束后为空。")
+    last_sequence: int | None = Field(ge=0, description="恢复时已处理的最后 SSE 序号，包含被过滤的 delta；旧轨迹未知时为 null。")
+    event_source: Literal["recorded", "legacy"] = Field(description="recorded 为实际记录的事件；legacy 仅从旧轨迹恢复消息，不虚构进度和错误。")
+
+
 class MessageSnapshot(CommunicationModel):
     message_id: str
     message_kind: MessageKind = Field(description="消息用途：阶段提示 intermediate 或本轮最终答复 final。")
@@ -117,7 +151,7 @@ class CommunicationSnapshot(TurnStateModel):
     last_sequence: int = Field(ge=0)
     earliest_sequence: int = Field(ge=1)
     messages: tuple[MessageSnapshot, ...] = ()
-    progress: TaskProgressData | None = None
+    progress: TaskProgressData | None = Field(default=None, description="最近一次展示状态，后续进度整体覆盖；无进度时为空，终态保留但不再表示正在执行。")
     error: ErrorData | None = None
 
 
@@ -125,6 +159,7 @@ class TurnCreatedResponse(CommunicationModel):
     conversation_id: str
     turn_id: str
     status: Literal["pending_activation"] = "pending_activation"
+    can_interrupt: bool = Field(default=False, strict=True, description="是否允许取消或替代；正式工作流待激活时为 false。")
     activation_expires_at: datetime
     supersedes_turn_id: str | None = None
 
@@ -149,10 +184,17 @@ class ConversationHistoryRecord(CommunicationModel):
     kind: Literal["task", "summary"]
     turn_id: str | None
     status: TurnStatus | None
+    can_interrupt: bool = Field(default=False, strict=True, description="当前驻留任务是否允许取消或替代；持久化终态及摘要为 false。")
     payload: dict
     created_at: int = Field(description="记录创建时间，UTC Unix 毫秒。")
     activated_at: int | None = Field(default=None, description="任务首次激活时间，UTC Unix 毫秒；未激活或旧记录未知时为 null。")
     processing_duration_ms: int | None = Field(default=None, ge=0, strict=True, description="任务从激活到终态的总处理时长，单位毫秒；未激活即结束为 0，旧记录缺失计时或摘要为 null。")
+
+    @model_validator(mode="after")
+    def validate_interruption(self) -> Self:
+        if self.can_interrupt and (self.kind != 'task' or self.status not in {'pending_activation', 'processing'}):
+            raise ValueError("仅非终态任务允许用户中断")
+        return self
 
 
 class ConversationHistoryResponse(ConversationListItem):
@@ -165,6 +207,7 @@ class ConversationTaskRecord(ConversationHistoryRecord):
     """前端可见的历史记录，不允许包含内部摘要。"""
 
     kind: Literal["task"]
+    payload: ConversationDisplayPayload
 
 
 class ConversationTaskHistoryResponse(ConversationHistoryResponse):

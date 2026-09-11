@@ -78,9 +78,9 @@ def project_event(payload: dict, data, snapshot) -> dict:
                     references.append(value)
             if not fragments:
                 trace.append(dict(sequence=len(trace) + 1, type='message', message_id=data.message_id,
-                                  message_kind=data.message_kind, text=data.text, status='completed', references=references))
+                                  message_kind=data.message_kind, text=data.text, status=data.status, references=references))
             for fragment in fragments:
-                fragment.update(status='completed', references=references)
+                fragment.update(status=data.status, references=references)
     if snapshot.status in TERMINAL_STATUSES:
         for item in trace:
             if item['type'] == 'message' and item['status'] == 'streaming':

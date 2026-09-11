@@ -2,13 +2,42 @@
 
 import hashlib
 import os
+import stat
 from pathlib import Path
 from uuid import UUID
+
+from app.schema.communication import TERMINAL_STATUSES
+
+
+def read_uploaded_pdf(directory: Path, file_id: str) -> bytes:
+    """只读取服务端 UUID 对应的普通文件；拒绝符号链接及 FIFO，避免越界或阻塞。"""
+    if str(UUID(file_id)) != file_id:
+        raise ValueError('附件标识不是规范 UUID')
+    descriptor = os.open(directory / f'{file_id}.pdf', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, 'rb') as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise ValueError('附件不是普通文件')
+        content = handle.read()
+    if not content:
+        raise ValueError('附件为空')
+    return content
 
 
 def ensure_uploaded_files(directory: Path, records, retained: dict[str, bytes]) -> None:
     for record in records:
         for file in record.payload.get('input', {}).get('files', []):
+            admission = file.get('admission')
+            if admission in {'pending', 'unavailable'}:
+                if file.get('file_path') is not None:
+                    raise ValueError('未准入附件不得提供文件路径')
+                continue
+            if 'admission' in file:
+                if admission != 'accepted' or record.status == 'rejected':
+                    raise ValueError('附件准入状态无效')
+                # 驱逐检查期间可能出现新活动任务，不得提前保存它的附件。
+                if record.status not in TERMINAL_STATUSES:
+                    continue
+            # 没有 admission 的旧记录沿用原有磁盘文件契约，不迁移或删除历史附件。
             file_id = file.get('file_id')
             if not isinstance(file_id, str) or str(UUID(file_id)) != file_id:
                 raise ValueError('附件标识不是规范 UUID')

@@ -4,11 +4,13 @@ from typing import Annotated
 from urllib.parse import quote
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from fastapi.responses import FileResponse, StreamingResponse
 
 from app.router.contract import ContractExtractionServiceDependency
-from app.router.dependency import ReviewerUserDependency
+from app.router.communication import HistoryDependency
+from app.router.dependency import ReviewerUserDependency, AuthenticatedUserDependency
+from app.service.communication_history import ConversationFileNotFoundError
 from app.service.contract_extraction.registry import RunNotFoundError
 
 from app.infrastructure.contract_file_store import (
@@ -117,6 +119,40 @@ async def get_extraction_pdf(
             "Cache-Control": "private, no-store",
         },
     )
+
+
+@router.get(
+    '/conversations/{conversation_id}/files/{file_id}',
+    response_class=StreamingResponse,
+    summary='读取本人已驻留任务轨迹中获准使用的会话 PDF 附件',
+    responses={
+        200: {'content': {'application/pdf': {}}, 'description': '原始上传 PDF，优先内存，归档后读取磁盘。'},
+        401: {'description': '免登码缺失、无效或过期。'},
+        404: {'description': '附件不存在、所属任务未驻留、不属于本人或附件未获准使用。'},
+        422: {'description': 'conversation_id 长度不合法或 file_id 不是合法 UUID。'},
+    },
+)
+async def get_communication_pdf(
+    conversation_id: Annotated[str, Path(min_length=1, max_length=128, description='文件所属会话 ID，须属于当前用户且已驻留；不自动加载历史。')],
+    file_id: Annotated[UUID, Path(description='会话任务轨迹 input.files 中的 file_id；所属任务必须已驻留且附件已获准使用。')],
+    history: HistoryDependency, user: AuthenticatedUserDependency,
+) -> StreamingResponse:
+    """文件 UUID 只定位资源，密钥归属及驻留准入状态由服务端检查。"""
+    try:
+        name, content = await history.read_file(conversation_id, str(file_id), secret_key=user.secret_key)
+    except ConversationFileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail='会话附件不存在或不可用') from exc
+
+    async def chunks():
+        # 传输不持有会话锁；删除/驱逐后的新请求失败，已授权的在途响应允许结束。
+        for offset in range(0, len(content), 64 * 1024):
+            yield content[offset:offset + 64 * 1024]
+
+    return StreamingResponse(chunks(), media_type='application/pdf', headers={
+        'Content-Disposition': f"inline; filename*=UTF-8''{quote(name, safe='')}",
+        'Content-Length': str(len(content)), 'Cache-Control': 'private, no-store',
+        'X-Content-Type-Options': 'nosniff',
+    })
 
 
 __all__ = ["router"]
