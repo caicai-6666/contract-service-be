@@ -1,6 +1,7 @@
 """多轮合同对话的 HTTP 路由入口，具体接口将在后续逐步实现。"""
 
 import json
+import re
 import sqlite3
 from collections.abc import AsyncIterator
 from typing import Annotated
@@ -12,6 +13,8 @@ from starlette.concurrency import run_in_threadpool
 from anyio import CancelScope
 
 from app.infrastructure.communication_store import SQLiteCommunicationStore
+from app.infrastructure.contract_metadata_store import SQLiteContractMetadataStore, ContractMetadataStatus
+from app.schema.communication import ContractReference
 from app.user import ReviewerUser
 
 from app.router.dependency import AuthenticatedUserDependency
@@ -54,9 +57,38 @@ def get_communication_history(request: Request) -> ConversationHistoryService:
 HistoryDependency = Annotated[ConversationHistoryService, Depends(get_communication_history)]
 
 
+def get_contract_reference_store(request: Request) -> SQLiteContractMetadataStore | None:
+    return getattr(request.app.state, "contract_metadata_store", None)
+
+
+ContractStoreDependency = Annotated[SQLiteContractMetadataStore | None, Depends(get_contract_reference_store)]
+
+
+def resolve_contract_references(store, contract_ids) -> tuple[ContractReference, ...]:
+    """先解析全部引用再注册任务；失败不得创建空会话或替代原任务。"""
+    if len(contract_ids) > 10:
+        raise HTTPException(status_code=422, detail="每轮最多引用 10 份合同")
+    if any(not re.fullmatch(r'[0-9a-f]{64}', value) for value in contract_ids):
+        raise HTTPException(status_code=422, detail="合同 ID 必须是完整的 64 位小写 SHA-256")
+    if contract_ids and store is None:
+        raise HTTPException(status_code=503, detail="合同目录暂时不可用")
+    references = []
+    for document_id in dict.fromkeys(contract_ids):
+        metadata = store.get(document_id)
+        if metadata is None or metadata.status != ContractMetadataStatus.READY:
+            raise HTTPException(status_code=404, detail=f"引用合同不存在或尚未入库：{document_id}")
+        references.append(ContractReference(document_id=metadata.document_id,
+                                            file_name=metadata.file_name, summary=metadata.summary))
+    return tuple(references)
+
+
 async def require_conversation_owner(
     conversation_id: ConversationId, store: StoreDependency, user: AuthenticatedUserDependency,
+    request: Request,
 ) -> str:
+    history = getattr(request.app.state, "communication_history_service", None)
+    if history is not None and await history.owns_ephemeral(conversation_id, secret_key=user.secret_key):
+        return user.name
     try:
         await run_in_threadpool(store.read_conversation, conversation_id, secret_key=user.secret_key)
     except LookupError as exc:
@@ -184,24 +216,25 @@ def _format_event(event: CommunicationEvent) -> str:
     response_model=TurnCreatedResponse,
     summary="暂存输入并创建待激活轮次",
     responses={
-        404: {"description": "会话或被替代轮次不存在，或不属于当前用户。"},
+        404: {"description": "会话或被替代轮次不存在或不属于当前用户，或引用合同不存在、未就绪。"},
         409: {"description": "已有活跃轮次未指定替代、旧轮次尚未开放中断，或旧轮次已经结束。"},
         413: {"description": "文件数量、文件大小或上传总量超限。"},
-        422: {"description": "输入为空、文件为空或文件名不是 PDF。"},
+        422: {"description": "输入为空、合同 ID 格式或数量不合法、文件为空或文件名不是 PDF。"},
         503: {"description": "内存暂存容量已满，请稍后重试。"},
     },
 )
 async def create_turn(
     conversation_id: ConversationId, service: EventServiceDependency,
     reviewer_user_name: ConversationOwnerDependency,
-    user: AuthenticatedUserDependency,
-    text: Annotated[str | None, Form(max_length=20000, description="用户原始文字；与 files 至少提供一项非空输入。")] = None,
+    user: AuthenticatedUserDependency, contract_store: ContractStoreDependency,
+    text: Annotated[str | None, Form(max_length=20000, description="用户原始文字；与 files、contract_ids 至少提供一项非空输入。")] = None,
+    contract_ids: Annotated[list[str] | None, Form(description="可选正式合同 ID 列表，重复提交 contract_ids 字段，最多 10 份；名称与摘要由后端读取。")] = None,
     files: Annotated[list[UploadFile] | None, File(description="可选 PDF 列表；重复使用 files 字段，最多 10 份，每份 10 MiB，总量 20 MiB。")] = None,
     supersedes_turn_id: Annotated[str | None, Form(min_length=1, max_length=128, description="补充或调整执行中请求时，显式指定同会话需要被替代的旧轮次 ID。")] = None,
 ) -> TurnCreatedResponse:
     return await _submit_turn(
         conversation_id, service, reviewer_user_name, text, files, supersedes_turn_id,
-        new_user=user,
+        new_user=user, contract_store=contract_store, contract_ids=contract_ids,
     )
 
 
@@ -209,6 +242,7 @@ async def create_turn(
     "/conversations", status_code=201, response_model=TurnCreatedResponse,
     summary="创建会话并注册首轮待激活任务",
     responses={
+        404: {"description": "引用合同不存在或尚未入库。"},
         413: {"description": "PDF 数量或大小超限。"},
         422: {"description": "名称或首次请求输入不合法。"},
         503: {"description": "内存容量已满或数据库暂时不可用。"},
@@ -216,13 +250,15 @@ async def create_turn(
 )
 async def create_conversation(
     service: EventServiceDependency, store: StoreDependency, user: AuthenticatedUserDependency,
+    contract_store: ContractStoreDependency,
     name: Annotated[str | None, Form(max_length=200, description="可选会话名称；未提供时按北京时间生成年月日时分秒。")] = None,
-    text: Annotated[str | None, Form(max_length=20000, description="首次请求文字，与 files 至少提供一项非空输入。")] = None,
+    text: Annotated[str | None, Form(max_length=20000, description="首次请求文字，与 files、contract_ids 至少提供一项非空输入。")] = None,
+    contract_ids: Annotated[list[str] | None, Form(description="可选正式合同 ID 列表，重复提交 contract_ids 字段，最多 10 份；名称与摘要由后端读取。")] = None,
     files: Annotated[list[UploadFile] | None, File(description="首次请求 PDF 列表，最多 10 份，每份 10 MiB，合计 20 MiB。")] = None,
 ) -> TurnCreatedResponse:
     return await _submit_turn(
         str(uuid4()), service, user.name, text, files, None,
-        new_store=store, new_user=user, name=name,
+        new_store=store, new_user=user, name=name, contract_store=contract_store, contract_ids=contract_ids,
     )
 
 
@@ -231,12 +267,17 @@ async def _submit_turn(
     text: str | None, files: list[UploadFile] | None, supersedes_turn_id: str | None,
     *, new_store: SQLiteCommunicationStore | None = None,
     new_user: ReviewerUser | None = None, name: str | None = None,
+    contract_store: SQLiteContractMetadataStore | None = None, contract_ids: list[str] | None = None,
 ) -> TurnCreatedResponse:
     """只暂存输入及注册事件源；成功返回前不进行 PDF 渲染或模型调用。"""
     uploads = files or []
     staged_files = []
     total_bytes = 0
     try:
+        try:
+            contracts = await run_in_threadpool(resolve_contract_references, contract_store, contract_ids or [])
+        except sqlite3.Error as exc:
+            raise HTTPException(status_code=503, detail="合同目录暂时不可用") from exc
         if len(uploads) > 10:
             raise HTTPException(status_code=413, detail="每轮最多上传 10 份 PDF")
         for upload in uploads:
@@ -255,8 +296,8 @@ async def _submit_turn(
                 raise HTTPException(status_code=422, detail="上传的 PDF 不能为空")
             # 文件名仅作元数据；不将客户端路径用于磁盘读写，内容门禁留待激活后执行。
             staged_files.append(StagedPDF(file_name=file_name, content=b"".join(chunks)))
-        if not (text and text.strip()) and not staged_files:
-            raise HTTPException(status_code=422, detail="请提供文字或至少一份 PDF")
+        if not (text and text.strip()) and not staged_files and not contracts:
+            raise HTTPException(status_code=422, detail="请提供文字、PDF 附件或引用合同")
         if name is not None and not name.strip():
             raise HTTPException(status_code=422, detail="会话名称不能为空白")
         turn_id = str(uuid4())
@@ -272,7 +313,7 @@ async def _submit_turn(
                     snapshot = await service.register_turn(
                         conversation_id, turn_id, owner=owner,
                         supersedes_turn_id=supersedes_turn_id,
-                        staged_input=TurnInput(text=text if text and text.strip() else None, files=tuple(staged_files)),
+                        staged_input=TurnInput(text=text if text and text.strip() else None, files=tuple(staged_files), contracts=contracts),
                         secret_key=new_user.secret_key if new_user else None,
                     )
                 except BaseException:
@@ -399,3 +440,51 @@ async def cancel_turn(
 
 
 __all__ = ["router"]
+
+
+@router.get('/conversations/{conversation_id}/turns/{turn_id}/development-trace',
+            summary='读取本人任务的开发链路（仅开发环境显式启用）')
+async def get_development_trace(
+    conversation_id: ConversationId, turn_id: TurnId, service: EventServiceDependency,
+    reviewer_user_name: ConversationOwnerDependency,
+) -> dict:
+    from app.core.config import get_settings
+    from app.infrastructure.development_trace import safe_value
+    settings = get_settings()
+    if not settings.communication_trace_enabled or settings.app_env != 'development':
+        raise HTTPException(status_code=404, detail='开发链路未启用')
+    try:
+        snapshot = await service.snapshot(conversation_id, turn_id, owner=reviewer_user_name)
+    except CommunicationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {'snapshot': snapshot.model_dump(mode='json'),
+            'nodes': safe_value(getattr(service, '_development_traces', {}).get((conversation_id, turn_id), [])),
+            'audit': safe_value(getattr(service, '_agent_core_audits', {}).get((conversation_id, turn_id), []))}
+
+
+@router.post('/development-turns', response_model=TurnCreatedResponse, status_code=201,
+             summary='创建仅内存的独立展示任务')
+async def create_development_turn(
+    service: EventServiceDependency, history: HistoryDependency, user: AuthenticatedUserDependency,
+    text: Annotated[str, Form(min_length=1, max_length=20000, description='本次独立提问的原始文字。')],
+) -> TurnCreatedResponse:
+    from app.core.config import get_settings
+    settings = get_settings()
+    if not settings.communication_trace_enabled or settings.app_env != 'development':
+        raise HTTPException(status_code=404, detail='开发链路未启用')
+    if not text.strip():
+        raise HTTPException(status_code=422, detail='请输入问题')
+    conversation_id, turn_id = str(uuid4()), str(uuid4())
+    with CancelScope(shield=True):
+        try:
+            await history.create_ephemeral(conversation_id, secret_key=user.secret_key)
+        except ValueError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        try:
+            snapshot = await service.register_turn(conversation_id, turn_id, owner=user.name,
+                secret_key=user.secret_key, staged_input=TurnInput(text=text))
+        except BaseException:
+            await history.delete(conversation_id, secret_key=user.secret_key)
+            raise
+    return TurnCreatedResponse(conversation_id=conversation_id, turn_id=turn_id,
+        activation_expires_at=snapshot.activation_expires_at, can_interrupt=snapshot.can_interrupt)

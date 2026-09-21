@@ -29,9 +29,9 @@ __pycache__/
 /data/abstract/*
 !/data/abstract/.gitkeep
 !/data/template/
-!/data/template/qwen3.6-tools-placement.jinja
+!/data/template/qwen3.8-tools-placement.jinja
 !/data/tool-tag/
-!/data/tool-tag/qwen3.6-35b-a3b-fp8.txt
+!/data/tool-tag/qwen3.8-flash-next-nvfp4.txt
 !/data/definition/
 !/data/definition/field/
 !/data/definition/field/core/
@@ -42,3 +42,8 @@ __pycache__/
 !/data/definition/retrieval-view/**
 !/data/user/
 !/data/user/users.yaml
+
+!/data/template/deepseek-v4.1-flash.jinja
+!/data/tool-tag/deepseek-v4.1-flash.txt
+!/data/template/glm-5.3-flash.jinja
+!/data/tool-tag/glm-5.3-flash.txt

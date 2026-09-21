@@ -25,13 +25,13 @@
 
 ### Agent 工作流
 
-- 会话记忆加工子图已支持批量筛选、并发单任务总结及总结侧向量化，并按原顺序返回包含原轨迹的待入库内容；归档服务已接通十分钟分批扫描、向量落库及空闲会话安全驱逐，查询端尚未实现，详见[会话记忆加工工作流](architecture/workflow/conversation-memory/readme.md)。
-- 创建任务后先通过独立 MLLM Agent 判断处理版 PDF 是否属于合同文档；只有可靠判定为合同时才执行 PDF 查重，非合同形成可见终态并停止后续处理。
+- 会话记忆已切换为用户输入、中途输出和最终输出三入口检索投影：外层确定性筛选、单任务子图并发向量化、中途逐条编码融合、SQLite原子归档与空闲安全驱逐已接通；原始任务/工作区后台备份独立运行。旧综合摘要字段已移除，旧任务在所属会话重新驻留后重新加工；查询端已提供主模型检索与结果翻页工具，详见[会话记忆加工工作流](architecture/workflow/conversation-memory/readme.md)。
+- 创建任务后先通过独立 MLLM Agent 判断处理版 PDF 是否属于合同文档；合同判断通过后进入文件准入与质量检查，独立收束节点统一生成决定与反馈，只有通过才执行 PDF 查重；质量检查已接入原生思考和强制 JSON 输出，非合同仍形成可见终态。
 - PDF 查重包含处理版 PDF 逐页向量化、尾页加权融合、ES Top 3 阈值召回、处理版 SHA-256 精确重复短路、`data/contract` 候选加载、候选并发与失败隔离，以及按视觉 token 与合计页数分流；短 PDF 采用全量双文档判断，长 PDF 采用完整上传合同与候选按页导航判断。
 - 创建请求接收 PDF 字节，校验并按视觉 token 预算逐页渲染；计算处理版 PDF 的 SHA-256 后只驻留页面 PNG，预览与入库时按需重新封装。
 - 发现合同内容单元，为单元建立页码、文字锚点、摘要和视觉位置。
 - 读取启动期不可变类别目录，为每个合同类别并发执行独立判定。
-- 在分类后根据页面、文档结构和分类摘要生成带页面证据的友好建议文件名。
+- 在分类后根据页面、文档结构和分类摘要生成带页面证据的友好建议文件名，并在同一终止工具中提交合同事实摘要；摘要已通过 SSE 与单任务快照公开，正式入库时保存用户确认的摘要至 SQLite。
 - 将分类结果稳定追加到公共模型前缀，供三个下游分支复用。
 - 按固定 Core 定义并发提取字段，校验证据、基数和动态对象 Schema。
 - 顺序发现条款候选，再按候选并发提取完整直接正文。
@@ -54,7 +54,7 @@
 - `/communication` 已支持表单暂存文字与 PDF、创建或替换待激活轮次；须在 180 秒内首次订阅激活，否则释放输入并返回 `410`。SSE 与快照支持用户隔离、交错输出、`intermediate/final`、回放及终态关闭。正式执行器激活后调用文件可读性门禁，校验统一展示“正在思考”，拒绝提示流式输出，终态同步写入驻留历史并后台备份；支持取消执行及输入清理。
 - 支持审核用户仅凭配置密钥登录，签发带 TTL 的进程内免登码。
 - 除健康检查和登录外，所有 HTTP/SSE 接口统一校验 Bearer 免登码并注入审核人名称。
-- 用户具有三级合同权限，所有等级可查看，1、2 级可新增；1 级可通过正式删除接口清理 ES、PDF 和 SQLite 合同数据。
+- 所有已登录用户均可查看、新增和删除共享正式合同及维护注意事项；会话、附件和提取任务仍保留所有者隔离。
 - 合同任务在创建时绑定当前审核人名称；运行列表、快照、SSE、继续和重试只允许任务所有者访问，跨用户请求按任务不存在处理。
 - 支持按正式合同文档的 `file_uri` 安全读取 `data/contract` 中的 PDF。
 - 提取任务快照和运行列表返回处理版 PDF 的 `file_id`，复用任务 UUID；资源接口按所有者鉴权、从内存页面按需组装 PDF，支持任务保留期内恢复预览，任务释放后失效。
@@ -65,11 +65,11 @@
 - 通过 HTTP 上传单份 PDF，并创建进程内合同处理任务。
 - 通过快照接口返回八个用户阶段、合同文档判断、查重审核结果、建议文件名，以及用户必须复核的 Core 与 Clause；请求内 PDF 技术处理不作为用户阶段暴露。
 - 通过 SSE 返回阶段开始、真实离散进度、查重暂停、继续、完成、失败、重试和草稿更新事件。
-- 查重完成后返回重复或相似候选及 PDF 地址；哈希一致或模型判重时直接结束，保留候选展示但禁止继续、重试和入库。无重复时暂停最长 10 分钟，确认后执行结构识别、分类和提取；PDF 仍由独立资源接口读取。
-- 分类完成后先生成建议文件名，再并行运行 Core、Clause 和 Retrieval 三个业务分支；Core 或 Clause 成功后独立更新用户可见提取结果，Retrieval 结果只在内存中供后续入库使用。
+- 查重完成后返回重复或相似候选及 PDF 地址；哈希一致或模型判重时直接结束，保留候选展示但禁止继续、重试和入库。无重复但存在超过阈值的候选时等待用户确认，召回候选为空时自动执行结构识别、分类和提取；PDF 仍由独立资源接口读取。
+- 分类完成后先生成合同概览（建议名称与摘要），再并行运行 Core、Clause 和 Retrieval 三个业务分支；Core 或 Clause 成功后独立更新用户可见提取结果，Retrieval 结果只在内存中供后续入库使用。
 - 合同分类成功事件通过 SSE 及时返回类别 `code`、名称和当前合同场景；同一精简结果持续保存在单任务 GET 快照中供恢复，但不进入可编辑的 Core/Clause 草稿。
-- 建议名称成功事件通过 SSE 返回 `file_name`、命名理由和页面证据；同一结果保存在单任务快照中，运行历史列表保留名称摘要，供断线和重新进入任务时恢复。
-- 八个用户业务阶段失败后均可从失败点重试并复用成功前置结果；任一阶段一旦成功便不允许重跑。
+- 合同概览成功事件通过 SSE 的 `contract_overview` 返回 `file_name`、命名理由、页面证据和 `summary`；同一结果保存在单任务快照的 `run.contract_overview` 中，运行历史列表仅保留名称字符串，供断线和重新进入任务时恢复。
+- 八个用户业务阶段技术失败后可在次数限制内从失败点重试并复用成功前置结果；文件准入业务拒绝禁止原文件重试；任一阶段一旦成功便不允许重跑。
 - 支持审核用户主动取消自己的内存任务，终止后台协程与 SSE，并立即释放处理版 PDF、草稿和中间结果。
 - 正式入库按生成顺序将检索问题原文保存至 ES `retrieval_questions`，供后续更换 Embedding 模型时重算问题融合向量；旧合同不自动回填。
 - 支持任务所有者提交最终展示文件名、完整 Core 和 Clause；服务端补齐分类、两个合同级向量、处理版 PDF 身份和审核信息后，以 SQLite 状态机协调文件与正式 Elasticsearch 写入，并释放对应运行。
@@ -77,9 +77,13 @@
 
 ### 基础设施
 
-- Communication 已提供会话、任务/摘要、工作区的 SQLite 三表及基础读写，启动时初始化；会话同时驻留轨迹与工作区，每批终态轨迹备份在同一事务同步保存工作区，模型整理工作区尚未接入，详见 [Communication SQLite 存储](architecture/data/communication-sqlite.md)。
+- 同级 deploy 已提供 Neo4j Community 镜像构建、Compose 服务及开发端口覆盖，供后续合同关联图使用；后端已提供官方驱动依赖、连接环境配置和通用异步客户端，已接入合同入库、删除及启动对账，关系创建、独立删除及一跳查询接口已实现，详见[Neo4j 部署与开发连接](capability/infrastructure/neo4j-development.md)。
+
+- 合同 SQLite 已初始化单份内容摘要字段 `contracts.summary` 和一对多用户注意事项表 `contract_notes`；注意事项列表、新增、单条删除及合同摘要拉取接口已接入，摘要已在合同概览子图中生成，正式入库已接收用户确认摘要并写入 SQLite，会话请求已支持按 ID 读取合同名称与摘要快照并注入上下文，详见[合同元数据结构](architecture/data/contract-sqlite-metadata.md)。
+
+- Communication 已提供会话、任务/摘要、工作区及独立思考窗口的 SQLite 存储和基础读写，启动时初始化；会话同时驻留轨迹与工作区，每批终态轨迹备份在同一事务同步保存工作区，Agent Core 已接入模型工作区操作、自主整理与自动压缩，详见 [Communication SQLite 存储](architecture/data/communication-sqlite.md)。
 - 应用启动时探测正式 Elasticsearch 索引，不存在时按当前契约创建，存在时增量补齐新增 Core 与检索问题原文 mapping；自动草稿不写入 Elasticsearch，最终审核值及后台检索数据在正式入库时统一写入。
-- 正式合同的轻量文件目录保存在 `data/abstract/contracts.db`；普通文件管理只读取 `ready`，应用启动时对非就绪记录核验处理版 PDF 与 ES 文档。
+- 正式合同的轻量文件目录保存在 `data/abstract/contracts.db`；普通文件管理只读取 `ready`，应用启动时对非就绪记录核验 PDF、ES 并同步 Neo4j；删除中记录自动继续清理，已有正式合同幂等补建图节点。
 - 根目录 Dockerfile 负责后端镜像构建；前端、后端与 Elasticsearch 的 Compose 编排由独立 `contract-service-deploy` 项目维护。
 - 多模态生成和 Embedding 均通过环境变量连接本地 OpenAI 兼容服务。
 - 全部模型客户端在单 worker 内共享两类独立的全局请求配额，默认 MLLM 20、Embedding 10；节点局部限制继续保留，详见[模型全局并发额度](capability/infrastructure/model-concurrency.md)。
@@ -92,8 +96,8 @@
 
 ## 3. 当前边界
 
-- 面向用户的[合同沟通智能体](architecture/workflow/contract-communication/readme.md)已有门禁与[文件可读性子图](architecture/workflow/contract-communication/file-readability.md)，已实现顺序打开、按文件 Map-Reduce 渲染与视觉判断、JSON Schema 约束解码、有限纠错及尾部熔断，并已接入正式 Communication 服务。可读性通过后已接入逐文件并发命名与摘要；文件、文字业务相关性、文件与文字整体判断、上下文相关性及加权阈值聚合已实现；服务端选取最新摘要之后最多五轮有效历史并排除拒绝任务。核心问答上下文继承、记忆、规划或合同查询工具仍未实现。已确认需求与待定边界见 [Communication 总体设计](architecture/system/contract-communication.md)。
-- Communication 附件已支持[准入后延迟落盘](architecture/system/communication-history.md#附件准入与延迟落盘)：注册只暂存内存，执行层显式批准后随终态备份保存；拒绝或未判定就结束的附件仅保留不可用元数据。正式门禁不因可读性通过就提前批准附件；启用混合联调时，完整门禁通过后批准附件并串接模拟问答，未启用时仍返回后续能力未接入提示。独立演示脚本保留纯模拟准入。
+- 面向用户的[合同沟通智能体](architecture/workflow/contract-communication/readme.md)已有门禁与[文件可读性子图](architecture/workflow/contract-communication/file-readability.md)，已实现顺序打开、按文件 Map-Reduce 渲染与视觉判断、JSON Schema 约束解码、有限纠错及尾部熔断，并已接入正式 Communication 服务。可读性通过后已接入逐文件并发命名与摘要；摘要披露独立无关内容时经主题冲突节点直接熔断反馈；文件、文字业务相关性、文件与文字整体判断、上下文相关性及加权阈值聚合已实现；服务端选取最新摘要之后最多五轮有效历史并排除拒绝任务。门禁后已接入动态上下文装配：读取驻留工作区、最新结构化摘要及其后任务并追加当前请求；核心问答模型循环、完整请求预算、工作区即时提交、摘要按压缩边界插入与原子备份已实现；文件查看工具已注册并接入正式循环，支持已落盘附件和已有标识的合同页面，资源按会话/全局池管理；记忆检索及结果翻页工具、外部专家求助与追问工具已接入；规划或合同查询工具仍未接入。已确认需求与待定边界见 [Communication 总体设计](architecture/system/contract-communication.md)。
+- Communication 附件已支持[准入后延迟落盘](architecture/system/communication-history.md#附件准入与延迟落盘)：注册只暂存内存，执行层显式批准后随终态备份保存；拒绝或未判定就结束的附件仅保留不可用元数据。正式门禁不因可读性通过就提前批准附件；完整门禁通过后批准附件并进入正式 Agent Core，附件随终态备份保存。
 - 系统只支持固定 Core 提取，不包含候选字段生成、归并、统计或治理流程。
 - Core 只能来自启动期通过严格校验的固定字段目录；运行时不得创建目录外字段。
 - 合同提取任务的原始 PDF 只在创建请求期间存在；任务长期只保存页面 PNG 与元数据，Base64 和整份处理版 PDF 均按需生成、不写回任务。communication 附件注册时只暂存内存，只有已准入附件随终态备份写入 upload；运行时终态释放输入，已准入字节在历史层保留至记忆归档成功。已备份的会话轨迹可跨进程重启读取；实时 SSE 和尚未备份轨迹、附件不可保证恢复。
@@ -143,12 +147,12 @@ flowchart TD
     detection["合同文档识别<br/>是合同 / 不是合同"]
     rejected["非合同终态<br/>停止后续处理"]
     dedup["页面向量融合、Top-3 召回<br/>与逐候选判断"]
-    pause["SSE 返回结果并暂停<br/>最长 10 分钟"]
+    pause["SSE 返回候选并等待确认"]
     continue["前端处理后继续"]
     understanding["合同结构识别与视觉定位"]
     base_context["组装基础公共前缀"]
     classification["按权威类别目录<br/>并发分类"]
-    file_name["生成证据化建议文件名"]
+    file_name["生成合同概览：建议名称与摘要"]
     prefill_context["追加分类结果<br/>形成最终公共前缀"]
 
     subgraph parallel_branches["三个并行业务分支"]
@@ -165,10 +169,13 @@ flowchart TD
     sse["SSE 阶段状态、进度<br/>与结果更新通知"]
 
     pdf --> preparation --> detection
-    detection -->|是合同| dedup
+    detection -->|是合同| preliminary["文件准入与质量检查"]
+    preliminary --> admission["统一收束结果与反馈"]
+    admission -->|通过| dedup
+    admission -->|拒绝或技术失败| quality_failure["检查失败：停止处理"]
     dedup -->|重复| duplicate_end["重复终态：保留候选展示"]
-    dedup -->|无重复| pause --> continue --> understanding --> base_context --> classification --> file_name --> prefill_context
-    detection -->|不是合同| rejected
+    dedup -->|有候选且无重复| pause --> continue --> understanding --> base_context --> classification --> file_name --> prefill_context
+    detection -->|不是合同或技术失败| admission
     prefill_context --> core
     prefill_context --> clause
     prefill_context --> retrieval
@@ -182,6 +189,7 @@ flowchart TD
     understanding -.-> sse
     detection -.-> sse
     dedup -.-> sse
+    dedup -->|无候选| understanding
     pause -.-> sse
     classification -.-> sse
     file_name -.-> sse
@@ -191,7 +199,7 @@ flowchart TD
     review_result -.-> sse
 ```
 
-分类与建议名称生成是三个业务分支的串行公共前置阶段；建议名称不进入三个分支的模型上下文。Core、Clause 和 Retrieval 分支只读同一份最终公共前缀，彼此不消费对方结果，也不共享可变模型上下文。应用服务按分支独立提交结果；Core 或 Clause 完成后即可供调用方查看，Retrieval 结果只留在内存中供后续入库使用。
+分类与合同概览生成是三个业务分支的串行公共前置阶段；合同概览不进入三个分支的模型上下文。Core、Clause 和 Retrieval 分支只读同一份最终公共前缀，彼此不消费对方结果，也不共享可变模型上下文。应用服务按分支独立提交结果；Core 或 Clause 完成后即可供调用方查看，Retrieval 结果只留在内存中供后续入库使用。
 
 ---
 

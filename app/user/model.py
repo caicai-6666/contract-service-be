@@ -22,8 +22,6 @@ ReviewerName = Annotated[
     StringConstraints(strip_whitespace=True, min_length=1, max_length=100),
 ]
 
-PermissionLevel = Annotated[int, Field(strict=True, ge=1, le=3)]
-
 
 class ReviewerUserModel(BaseModel):
     """审核用户配置使用的不可变严格基类。"""
@@ -37,9 +35,6 @@ class ReviewerUser(ReviewerUserModel):
     name: ReviewerName
     # SecretStr 避免对象被日志或异常直接打印时泄漏密钥明文。
     secret_key: SecretStr = Field(min_length=1)
-    permission_level: PermissionLevel = Field(
-        description="权限等级：1 可新增、查看和删除；2 可新增和查看；3 只可查看。"
-    )
 
     @field_validator("secret_key")
     @classmethod
@@ -137,7 +132,6 @@ class ReviewerUserCatalog(ReviewerUserModel):
 
 
 __all__ = [
-    "PermissionLevel",
     "ReviewerUser",
     "ReviewerUserCatalog",
     "ReviewerUserFile",

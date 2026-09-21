@@ -1,0 +1,185 @@
+{# deepseek-v4.1-flash-template-v3；依据官方 encoding.py，许可见本文件末尾注释。
+   工具历史 arguments 必须由服务层解析为对象；不在 Jinja 中猜测或解析 JSON 字符串。
+   默认在任务之后注入工具；system 模式保留官方布局。锚点使用原始 messages 索引。 #}
+{%- set mode = thinking_mode | default('thinking' if enable_thinking | default(true) else 'chat') %}
+{%- if mode not in ['thinking', 'chat'] %}{{ raise_exception('thinking_mode must be thinking or chat') }}{% endif %}
+{%- set effort = reasoning_effort | default('high') %}
+{%- if effort is none %}{% set effort = 'high' %}{% endif %}
+{%- set aliases = {'low': 50, 'medium': 75, 'high': 75, 'max': 100, 'xhigh': 100} %}
+{%- if effort is string and effort in aliases %}{% set effort = aliases[effort] %}{% endif %}
+{%- if effort is not integer or effort is sameas true or effort is sameas false or effort < 1 or effort > 100 %}
+    {{- raise_exception('reasoning_effort must be 1..100 or low/high/max (project aliases medium=75/xhigh=100)') }}
+{%- endif %}
+{%- if not messages %}{{ raise_exception('messages must not be empty') }}{% endif %}
+{%- macro content(value) -%}
+    {%- if value is string %}{{ value }}
+    {%- elif value is none or value is undefined %}{{ '' }}
+    {%- elif value is sequence and value is not mapping %}
+        {%- for block in value %}
+            {%- if not loop.first %}{{ '\n\n' }}{% endif %}
+            {%- if block.type == 'text' %}{{ block.text }}
+            {%- elif block.type in ['image', 'image_url'] %}{{ '<｜deepseek_image｜>' }}
+            {%- else %}{{ raise_exception('Unsupported content block; only text and image are supported') }}{% endif %}
+        {%- endfor %}
+    {%- else %}{{ raise_exception('Unsupported message content') }}{% endif %}
+{%- endmacro %}
+{%- macro tools_block(items) -%}
+{{- "## Tools\n\nYou have access to a set of tools to help answer the user's question. You can invoke tools by writing a \"<｜DSML｜ calls>\" block like the following:\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"$TOOL_NAME\">\n<｜DSML｜ parameter name=\"$PARAMETER_NAME\" string=\"true|false\">$PARAMETER_VALUE</｜DSML｜ parameter>\n...\n</｜DSML｜ invoke>\n<｜DSML｜ invoke name=\"$TOOL_NAME2\">\n...\n</｜DSML｜ invoke>\n</｜DSML｜ calls>\n\nString parameters should be specified as is and set `string=\"true\"`. For all other types (numbers, booleans, arrays, objects), pass the value in JSON format and set `string=\"false\"`.\n\nIf thinking_mode is enabled (triggered by <think>), you MUST output your complete reasoning inside <think>...</think> BEFORE any tool calls or final response.\n\nOtherwise, output directly after </think> with tool calls or final response.\n\n### Available Tool Schemas\n\n" }}
+{%- for tool in items %}
+{%- if tool.get('namespace') or tool.function.get('namespace') %}{{ raise_exception('Namespaces are not supported by the project template') }}{% endif %}
+{{- tool.function | tojson(ensure_ascii=false) }}{{ '\n' if not loop.last else '' }}
+{%- endfor %}
+{{- "\n\nYou MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.\n" }}
+{%- endmacro %}
+{%- set tool_placement = tool_placement | default('after_task') %}
+{%- if tool_placement not in ['before_task', 'after_task', 'system'] %}
+    {{- raise_exception('tool_placement must be before_task, after_task or system') }}
+{%- endif %}
+{%- set definitions = tools | default([], true) %}
+{%- if not definitions and messages[0].role == 'system' %}
+    {%- set definitions = messages[0].get('tools', []) %}
+{%- endif %}
+{%- set anchor = namespace(index=-1) %}
+{%- for message in messages %}
+    {%- if message.role == 'user' %}
+        {%- set value = content(message.content) | trim %}
+        {%- if not (value.startswith('<tool_response>') and value.endswith('</tool_response>')) %}
+            {%- set anchor.index = loop.index0 %}
+        {%- endif %}
+    {%- endif %}
+{%- endfor %}
+{%- if tool_task_index is defined and tool_task_index is not none %}
+    {%- if tool_task_index is not integer or tool_task_index is boolean or tool_task_index < 0 or tool_task_index >= messages|length %}
+        {{- raise_exception('tool_task_index must be a valid user message index') }}
+    {%- endif %}
+    {%- if messages[tool_task_index].role != 'user' %}
+        {{- raise_exception('tool_task_index must reference a user message') }}
+    {%- endif %}
+    {%- set anchor.index = tool_task_index %}
+{%- endif %}
+{%- if definitions and tool_placement != 'system' and anchor.index < 0 %}
+    {{- raise_exception('No user task found for tool placement') }}
+{%- endif %}
+{# 保留原始消息索引，避免连续 user/tool 合并后锚点漂移。 #}
+{%- set ns = namespace(groups=[], calls=[], last_user=-1, has_tools=definitions|length > 0) %}
+{%- if definitions and messages[0].role != 'system' and tool_placement == 'system' %}
+    {%- set ns.groups = [dict(role='system', content='', tools=definitions)] %}
+{%- endif %}
+{%- for message in messages %}
+    {%- if message.get('task') or message.get('response_format') or message.get('content_blocks') %}
+        {{- raise_exception('Pre-normalize task/response_format/content_blocks before this project template') }}
+    {%- endif %}
+    {%- if message.role in ['user', 'tool'] %}
+        {%- set index = namespace(value=0, found=false) %}
+        {%- if message.role == 'tool' %}
+            {%- for call in ns.calls %}
+                {%- if call.id == message.tool_call_id %}{% set index.value = loop.index0 %}{% set index.found = true %}{% endif %}
+            {%- endfor %}
+            {%- if not index.found %}{{ raise_exception('Tool result does not match preceding assistant tool_calls') }}{% endif %}
+        {%- endif %}
+        {%- set block = dict(role=message.role, content=content(message.content), order=index.value, source_index=loop.index0) %}
+        {%- if ns.groups and ns.groups[-1].role == 'user' %}
+            {%- set ns.groups = ns.groups[:-1] + [dict(role='user', blocks=ns.groups[-1].blocks + [block])] %}
+        {%- else %}{% set ns.groups = ns.groups + [dict(role='user', blocks=[block])] %}{% endif %}
+    {%- elif message.role == 'system' %}
+        {%- set defs = definitions if loop.first and definitions else message.get('tools', []) %}
+        {%- if tool_placement != 'system' %}
+            {%- if not loop.first and defs %}{{ raise_exception('Positioned tools must be request tools or first system tools') }}{% endif %}
+            {%- set defs = [] %}
+        {%- endif %}
+        {%- set ns.groups = ns.groups + [dict(role='system', content=content(message.content), tools=defs)] %}
+    {%- elif message.role in ['assistant', 'latest_reminder'] %}
+        {%- set ns.groups = ns.groups + [message] %}
+        {%- if message.role == 'assistant' %}{% set ns.calls = message.get('tool_calls', []) %}{% endif %}
+    {%- else %}{{ raise_exception('Unsupported message role') }}{% endif %}
+{%- endfor %}
+{%- for group in ns.groups %}
+    {%- if group.role == 'user' or (group.role == 'system' and not loop.first) %}{% set ns.last_user = loop.index0 %}{% endif %}
+    {%- if group.get('tools') %}{% set ns.has_tools = true %}{% endif %}
+{%- endfor %}
+{%- set drop = (drop_thinking | default(true)) and not ns.has_tools %}
+{{- '<｜begin▁of▁sentence｜>' }}
+{%- for group in ns.groups %}
+    {%- set idx = loop.index0 %}
+    {%- if loop.first and (group.role == 'system' or mode == 'thinking') %}{{ '<｜System｜>' }}{% endif %}
+    {%- if loop.first and mode == 'thinking' %}
+        {{- 'Reasoning Effort: ' ~ effort ~ ' (range 1-100, the higher the value, the more thorough the reasoning)\n\n' }}
+    {%- endif %}
+    {%- if group.role == 'system' %}
+        {%- if not loop.first %}{{ '<｜System｜>' }}{% endif %}
+        {{- group.content }}
+        {%- if group.tools %}{{ '\n\n' }}{{ tools_block(group.tools) }}{% endif %}
+    {%- elif group.role == 'user' %}
+        {{- '<｜User｜>' }}
+        {%- set ordered = group.blocks | selectattr('role', 'equalto', 'tool') | sort(attribute='order') | list %}
+        {%- set cursor = namespace(value=0) %}
+        {%- for block in group.blocks %}
+            {%- if not loop.first %}{{ '\n\n' }}{% endif %}
+            {%- if block.role == 'tool' %}
+                {{- '<tool_result>' ~ ordered[cursor.value].content ~ '</tool_result>' }}
+                {%- set cursor.value = cursor.value + 1 %}
+            {%- else %}
+                {%- if definitions and block.source_index == anchor.index and tool_placement == 'before_task' %}
+                    {{- tools_block(definitions) }}{{ '\n\n' }}
+                {%- endif %}
+                {{- block.content }}
+                {%- if definitions and block.source_index == anchor.index and tool_placement == 'after_task' %}
+                    {{- '\n\n' }}{{ tools_block(definitions) }}
+                {%- endif %}
+            {%- endif %}
+        {%- endfor %}
+    {%- elif group.role == 'latest_reminder' %}{{ '<｜latest_reminder｜>' ~ content(group.content) }}
+    {%- elif group.role == 'assistant' %}
+        {%- if mode == 'thinking' and (not drop or idx > ns.last_user) %}
+            {{- group.get('reasoning_content', group.get('reasoning', '')) or '' }}{{ '</think>' }}
+        {%- endif %}
+        {{- content(group.content) }}
+        {%- if group.get('tool_calls') %}
+            {{- '\n\n<｜DSML｜ calls>\n' }}
+            {%- for call in group.tool_calls %}
+                {%- set fn = call.function %}
+                {%- if fn.arguments is not mapping %}{{ raise_exception('Historical tool arguments must be decoded JSON objects before Jinja rendering') }}{% endif %}
+                {%- if call.get('namespace') or fn.get('namespace') %}{{ raise_exception('Namespaces are not supported by the project template') }}{% endif %}
+                {%- if not loop.first %}{{ '\n' }}{% endif %}
+                {{- '<｜DSML｜ invoke name="' ~ fn.name ~ '">\n' }}
+                {%- for key, value in fn.arguments.items() %}
+                    {%- if not loop.first %}{{ '\n' }}{% endif %}
+                    {{- '<｜DSML｜ parameter name="' ~ key ~ '" string="' ~ ('true' if value is string else 'false') ~ '">' }}
+                    {{- value if value is string else value | tojson(ensure_ascii=false) }}
+                    {{- '</｜DSML｜ parameter>' }}
+                {%- endfor %}
+                {{- '\n</｜DSML｜ invoke>' }}
+            {%- endfor %}
+            {{- '\n</｜DSML｜ calls>' }}
+        {%- endif %}
+        {%- if not group.get('wo_eos', false) %}{{ '<｜end▁of▁sentence｜>' }}{% endif %}
+    {%- endif %}
+    {%- if group.role == 'user' or (group.role == 'system' and idx > 0) %}
+        {%- if (not loop.last and ns.groups[idx+1].role in ['assistant', 'latest_reminder']) or (loop.last and add_generation_prompt | default(true)) %}
+            {{- '<｜Assistant｜>' }}{{ '<think>' if mode == 'thinking' and (not drop or idx >= ns.last_user) else '</think>' }}
+        {%- endif %}
+    {%- endif %}
+{%- endfor %}
+{#
+MIT License
+
+Copyright (c) 2023 DeepSeek
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+#}

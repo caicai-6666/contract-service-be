@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-InferenceProvider = Literal["mllm", "embedding"]
+InferenceProvider = Literal["mllm", "embedding", "deepseek"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,7 +98,7 @@ def build_inference_request_metrics(
     """从 OpenAI 兼容响应构造稳定、无正文的观测记录。"""
     usage = getattr(response, "usage", None) if response is not None else None
     prompt_details = (
-        getattr(usage, "prompt_tokens_details", None)
+        getattr(usage, "prompt_tokens_details", None) or getattr(usage, "input_tokens_details", None)
         if usage is not None
         else None
     )
@@ -128,7 +128,7 @@ def build_inference_request_metrics(
         status_code=status_code,
         error_type=type(error).__name__ if error is not None else None,
         prompt_tokens=(
-            getattr(usage, "prompt_tokens", None) if usage is not None else None
+            getattr(usage, "prompt_tokens", getattr(usage, "input_tokens", None)) if usage is not None else None
         ),
         cached_tokens=(
             getattr(prompt_details, "cached_tokens", None)
@@ -136,7 +136,7 @@ def build_inference_request_metrics(
             else None
         ),
         completion_tokens=(
-            getattr(usage, "completion_tokens", None)
+            getattr(usage, "completion_tokens", getattr(usage, "output_tokens", None))
             if usage is not None
             else None
         ),

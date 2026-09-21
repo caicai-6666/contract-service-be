@@ -13,7 +13,7 @@
 | [PDF 准备与文档结构理解](document-understanding.md) | 定义工作流外的 PDF 准备，以及文档结构理解子图入口。 |
 | [文档结构发现](document-structure.md) | 定义合同内容单元发现与并发视觉定位。 |
 | [合同分类](classification.md) | 定义逐类别并发判断和紧凑分类结果。 |
-| [建议文件名生成](file-name-generation.md) | 定义分类后如何组装命名上下文并生成证据化友好名称。 |
+| [合同概览生成](contract-overview-generation.md) | 定义分类后如何组装合同概览上下文并生成建议名称与合同摘要。 |
 | [最终公共前缀组装](final-context-assembly.md) | 定义分类结果如何进入三个并行分支共享的稳定上下文。 |
 | [Core 字段提取](field-extraction.md) | 定义固定 Core 目录选择与逐字段并行提取。 |
 | [条款提取](clause-extraction.md) | 定义候选发现、上下文组装和逐条款并发提取。 |
@@ -44,9 +44,9 @@ flowchart TD
         assemble_classification --> classify
     end
 
-    subgraph file_name_subgraph["建议文件名生成子图"]
-        assemble_file_name["组装命名上下文"]
-        generate_file_name["生成证据化建议名称"]
+    subgraph file_name_subgraph["合同概览生成子图"]
+        assemble_file_name["组装合同概览上下文"]
+        generate_file_name["生成建议名称与合同摘要"]
         assemble_file_name --> generate_file_name
     end
 
@@ -91,7 +91,7 @@ flowchart TD
     merge --> result["合同 OCR 结果包络"]
 ```
 
-应用服务在创建请求内异步形成 `PreparedPDF`，Agent 工作流从该不可变输入开始构造页面提示词上下文、发现结构并完成逐单元视觉定位。主图随后组装“页面图像 + 文档结构”基础前缀并执行分类，再生成建议文件名；最终前缀组装节点将分类结果追加到基础前缀末尾。字段、条款和检索问题生成三个子图随后并行执行，合并节点只在三者均结束后运行。
+应用服务在创建请求内异步形成 `PreparedPDF`，Agent 工作流从该不可变输入开始构造页面提示词上下文、发现结构并完成逐单元视觉定位。主图随后组装“页面图像 + 文档结构”基础前缀并执行分类，再生成建议名称与摘要；最终前缀组装节点将分类结果追加到基础前缀末尾。字段、条款和检索问题生成三个子图随后并行执行，合并节点只在三者均结束后运行。
 
 ---
 
@@ -123,9 +123,9 @@ flowchart TD
 
 ---
 
-## 建议文件名生成子图
+## 合同概览生成子图
 
-分类完成后，主图调用 `assemble_file_name_context → generate_suggested_file_name`。子图复用 `ContractBaseContext` 的页面与文档结构，并以友好 Markdown 追加紧凑分类摘要；正式结果包含建议 `file_name`、命名理由和页面证据，不包含扩展名。该结果不写入 `ContractPrefillContext`，因此不会改变 Core、Clause 或 Retrieval 的任务上下文。完整规则见[合同建议文件名生成子图](file-name-generation.md)。
+分类完成后，主图调用 `assemble_contract_overview_context → generate_contract_overview`。子图复用 `ContractBaseContext` 的页面与文档结构，并以友好 Markdown 追加紧凑分类摘要；正式结果包含建议 `file_name`、命名理由、页面证据及合同内容 `summary`；名称不包含扩展名，摘要尚未接入正式入库写入。该结果不写入 `ContractPrefillContext`，因此不会改变 Core、Clause 或 Retrieval 的任务上下文。完整规则见[合同概览生成子图](contract-overview-generation.md)。
 
 ---
 
@@ -155,11 +155,11 @@ flowchart TD
 
 ## 合并与输出
 
-`merge_extraction_results` 汇集分类、建议文件名、文档结构、字段、条款、检索问题、逐问题向量与合同融合向量，形成单一合同结果包络。后续实现应在此处保留节点级错误、模型与提示词版本、字段目录版本和原始证据索引，而非直接丢弃失败分支。
+`merge_extraction_results` 汇集分类、合同概览、文档结构、字段、条款、检索问题、逐问题向量与合同融合向量，形成单一合同结果包络。后续实现应在此处保留节点级错误、模型与提示词版本、字段目录版本和原始证据索引，而非直接丢弃失败分支。
 
-当前异步 PDF 准备、结构单元发现、基础前缀组装、合同并行分类、建议文件名生成、最终公共前缀组装、Core 字段提取、条款三节点子图、检索问题生成、逐问题向量化和合同向量融合已经可用；合并结果仍属于自动提取草稿，正式入库以用户审核后的提交值为准。
+当前异步 PDF 准备、结构单元发现、基础前缀组装、合同并行分类、合同概览生成、最终公共前缀组装、Core 字段提取、条款三节点子图、检索问题生成、逐问题向量化和合同向量融合已经可用；合并结果仍属于自动提取草稿，正式入库以用户审核后的提交值为准。
 
-HTTP 应用不会用主图末尾的三路汇合等待用户查看结果。服务层复用相同节点和子图完成公共前置处理，在分类后串行生成建议文件名并通过 SSE、快照与历史列表公开，再独立调用 Core、Clause 与 Retrieval 分支：任一路成功即可原子提交增量草稿，失败阶段可从断点重试。这是应用交互与容错编排，不改变 Agent 子图内部职责；完整状态机见[合同提取应用运行时](../../system/contract-extraction-runtime.md)，外部协议见[合同 API](../../../api/contract.md)。
+HTTP 应用不会用主图末尾的三路汇合等待用户查看结果。服务层复用相同节点和子图完成公共前置处理，在分类后串行生成建议名称与摘要并通过 SSE 与快照公开完整概览，历史列表仅展示名称字符串，再独立调用 Core、Clause 与 Retrieval 分支：任一路成功即可原子提交增量草稿，失败阶段可从断点重试。这是应用交互与容错编排，不改变 Agent 子图内部职责；完整状态机见[合同提取应用运行时](../../system/contract-extraction-runtime.md)，外部协议见[合同 API](../../../api/contract.md)。
 
 ---
 
@@ -172,3 +172,24 @@ HTTP 应用不会用主图末尾的三路汇合等待用户查看结果。服务
 5. 使用测试合同验证 Core 字段准确率、放弃边界、并发稳定性和公共前缀缓存命中率。
 6. 使用真实查询评估合同融合向量的召回质量，并实现 Elasticsearch 投影。
 7. 最后实现合并后的结果契约、失败隔离和专家审核。
+
+HTTP 提取流程在查重成功且召回候选为空时自动进入结构识别；无重复但有超过阈值的候选时，等待用户确认后继续。重复合同仍终止，技术失败仍通过原失败阶段重试。详见[应用运行时](../../system/contract-extraction-runtime.md)。
+
+
+---
+
+## 原生思考配置
+
+合同提取全链路显式开启原生思考，包括合同识别、文件质量判断、全量/按页查重、文档结构与视觉定位、分类及未映射类别说明、合同概览、Core 字段、条款发现与提取、问题关注点和问题生成。
+
+`VLLM_MLLM_EXTRACTION_REASONING_EFFORT=low` 独立控制这些节点，允许 `low / medium / xhigh`，默认 `low`。Qwen直接使用三档；GLM映射为 `low / high / max`；DeepSeek映射为 `50 / 75 / 100`。不允许 `none` 或模型原生别名；非法值在配置加载时失败。全局 `VLLM_MLLM_ENABLE_THINKING=false` 不关闭提取思考，`VLLM_MLLM_REASONING_EFFORT` 继续控制 Agent Core 等节点的默认强度，会话门禁另用 `VLLM_MLLM_BUSINESS_GATE_REASONING_EFFORT`。
+
+节点使用 `MLLMSettings.for_contract_extraction()` 构建不可变配置副本，在创建客户端之前选择强度；统一客户端和分词入口仍复用既有模型协议适配。不会修改缓存的全局配置或影响并发会话。Embedding不受影响。
+
+单轮思考与正式输出共用 `VLLM_MLLM_MAX_COMPLETION_TOKENS`，取消旧的局部1K/2K/4K截顶；页面视觉预算已预留同一全局输出额度。输出上限不是每轮必然消耗量，仍需关注复杂文档的生成耗时和截断。
+
+已有显式 `think` 工具、工具状态机、临时错误清理及业务输出结构保持。合同识别、查重和概览的 `think.reasoning` 按2000字符限制内容，最多连续成功调用两次，不再误用含原生推理的整轮 token 数判定内容超限。原生推理不作为工具参数或正式提取字段，证据、类型、页码和业务校验仍针对正式提交内容。
+
+修改环境变量后需要后端重新加载配置；本次不自动重启服务，也不切换当前部署模型。离线验证入口为 `tests/test_extraction_thinking.py`，覆盖强度隔离、协议映射、请求参数及工具内容边界。
+
+本次相关离线测试31项通过，包含提取配置、三模型协议适配、多轮纠错后的有效工具调用、字段约束及GLM模板。全量测试运行1135项，报告12项断言失败及18项错误，涉及会话历史/引用、FIFO、并发测试和旧版本断言等，本次未修改这些测试或宣称全量通过。尚未针对当前改动进行真实模型提取质量与耗时评测。

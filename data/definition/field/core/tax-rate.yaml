@@ -16,5 +16,10 @@ properties:
     aliases: []
     type: number
     required: true
+    constraints:
+      minimum: 1
+      maximum: 100
+      multiple_of: 1
+    extraction_rule: 仅提取适用于整体合同金额的单一明确税率。13% 转为 13，百分之一转为 1；只允许 1～100 的整数值。零税率、小数税率、多税率且无统一税率时不提交该对象；禁止四舍五入、截断或凑值。
     meaning: 适用于合同整体总金额的单一明确税率数值。
     excludes: 不包括税额、金额或仅适用于局部明细的税率。

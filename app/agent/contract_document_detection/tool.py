@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.infrastructure.model_json import load_model_json, validate_model_payload
 import json
 from typing import Any, Final, TypeAlias
 
@@ -23,7 +24,7 @@ class StrictContractDocumentDetectionToolModel(BaseModel):
 
 
 CONTRACT_DOCUMENT_DETECTION_TOOL_VERSION: Final = (
-    "contract-document-detection-tool-v2"
+    "contract-document-detection-tool-v3"
 )
 
 
@@ -57,11 +58,11 @@ class ThinkArguments(StrictContractDocumentDetectionToolModel):
     """单轮 think 的真实推理工作空间。"""
 
     reasoning: str = Field(
+        max_length=2000,
         description=(
             "实际分析与推理；用于综合全部可用页面、核对相对方关系和实质性"
             "权利义务、排除仅有标题或签章等弱线索，并选择下一步动作。"
-            "应保持简洁，使包含工具结构在内的整轮响应不超过 1024 completion "
-            "tokens；这里不提交最终是否为合同的决定。"
+            "应保持简洁，reasoning 最多 2000 个字符；这里不提交最终是否为合同的决定。"
         ),
     )
 
@@ -151,8 +152,7 @@ THINK_TOOL: Final[dict[str, Any]] = (
         name="think",
         description=(
             "提供一次真实推理空间，用于综合页面证据和检验合同判断假设；"
-            "应保持简洁，使包含工具结构在内的整轮响应不超过 1024 completion "
-            "tokens。该动作不提交正式结果。"
+            "应保持简洁，reasoning 最多 2000 个字符。该动作不提交正式结果。"
         ),
         arguments_model=ThinkArguments,
     )
@@ -184,21 +184,6 @@ _ARGUMENT_MODELS: Final[
 }
 
 
-def _decode_embedded_json(value: Any) -> Any:
-    """兼容 Qwen XML parser 把嵌套对象编码成 JSON 字符串。"""
-    if isinstance(value, str) and value.lstrip().startswith(("{", "[")):
-        try:
-            decoded = json.loads(value)
-        except json.JSONDecodeError:
-            return value
-        return _decode_embedded_json(decoded)
-    if isinstance(value, list):
-        return [_decode_embedded_json(item) for item in value]
-    if isinstance(value, dict):
-        return {key: _decode_embedded_json(item) for key, item in value.items()}
-    return value
-
-
 def parse_contract_document_detection_tool_arguments(
     name: str,
     raw_arguments: str,
@@ -210,10 +195,10 @@ def parse_contract_document_detection_tool_arguments(
         raise ValueError(f"未知的合同文档识别工具：{name}") from exc
 
     try:
-        payload = json.loads(raw_arguments)
+        payload = load_model_json(raw_arguments)
     except json.JSONDecodeError as exc:
         raise ValueError(f"工具 {name} 的参数不是有效 JSON") from exc
-    return arguments_model.model_validate(_decode_embedded_json(payload))
+    return validate_model_payload(arguments_model, payload)
 
 
 def validation_error_feedback(

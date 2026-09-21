@@ -313,7 +313,7 @@ async def discover_document_units(
         state["prompt_context"].pages,
     )
 
-    settings = get_settings().mllm
+    settings = get_settings().mllm.for_contract_extraction()
     generation = settings.generation
     scope: DocumentScope | None = None
     units: list[DocumentUnit] = []
@@ -345,7 +345,7 @@ async def discover_document_units(
                 presence_penalty=generation.presence_penalty,
                 repetition_penalty=generation.repetition_penalty,
                 seed=generation.seed,
-                enable_thinking=False,
+                enable_thinking=True,
                 # 首轮 summary 工具与后续发现工具不同，工具 Schema 必须位于
                 # 稳定的 PDF 与结构发现任务之后，避免在公共前缀之前分叉。
                 tool_placement="after_task",

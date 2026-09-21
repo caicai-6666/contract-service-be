@@ -21,12 +21,12 @@ from app.agent.pdf_deduplication.prompt.relation_standard import (
 )
 
 FullDocumentJudgmentPromptVersion = Literal[
-    "full-document-relation-judgment-v4"
+    "full-document-relation-judgment-v5"
 ]
 
 FULL_DOCUMENT_JUDGMENT_PROMPT_VERSION: Final[
     FullDocumentJudgmentPromptVersion
-] = "full-document-relation-judgment-v4"
+] = "full-document-relation-judgment-v5"
 
 # 工具必须紧随最后一条候选页面任务消息，由 vLLM 的聊天模板渲染真实
 # Pydantic function schema；不能把 schema 手工复制进提示词。
@@ -47,7 +47,7 @@ FULL_DOCUMENT_JUDGMENT_STRATEGY_PROMPT: Final = """本次比较严格使用共�
 
 FULL_DOCUMENT_TOOL_INSTRUCTION_PROMPT: Final = f"""工具使用：
 1. 每轮必须且只能调用一个当前提供的工具，不得输出普通文本或用代码块、工具名加 JSON 等文本模拟工具调用。
-2. think 是允许进行实际分析和推理的工作空间。你可以在 reasoning 中比较证据、建立和排除关系假设、分析版本连续性与冲突，并判断下一步动作；包含工具结构在内的整轮响应最多使用 1024 completion tokens，think 不提交正式关系。
+2. think 是允许进行实际分析和推理的工作空间。你可以在 reasoning 中比较证据、建立和排除关系假设、分析版本连续性与冲突，并判断下一步动作；reasoning 最多 2000 个字符，think 不提交正式关系。
 3. think 可以按需调用，不要求为了形式固定调用。不得连续调用超过两次；完成思考后应根据证据调用终止工具，而不是无界继续推理。
 4. 能够可靠判断时，调用 submit_contract_relation。提交内容必须依次给出跨文档页面证据、简洁推理摘要和 duplicate、similar、different 中唯一一个最终关系。
 5. duplicate 的证据必须支持合同身份连续、文件同源或版本替代，不能只依赖版式相似。similar 的证据必须同时说明两份文件为何相关或高度相似，以及为何仍应独立保存。different 的证据必须说明支持合同身份、交易事项或文件范围独立的关键差异。

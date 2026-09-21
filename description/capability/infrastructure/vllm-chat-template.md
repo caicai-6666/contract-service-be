@@ -1,12 +1,14 @@
 # vLLM 自定义聊天模板
 
-> **用途：** 本文说明项目自有 Qwen3.6 多模态 chat template 的位置、工具布局契约、vLLM 启动方式和接入边界。图片重复传输与媒体缓存由独立的[vLLM 多模态媒体引用](vllm-media-reference.md)负责。
+> **用途：** 本文说明项目自有 Qwen3.8-Flash-Next 多模态 chat template 的位置、工具布局契约、vLLM 启动方式和接入边界。图片重复传输与媒体缓存由独立的[vLLM 多模态媒体引用](vllm-media-reference.md)负责。
+
+DeepSeek V4.1 Flash 已支持相同的 before_task/after_task 与 tool_task_index 扩展，另保留 system 布局；详见 [V4.1 模板说明](deepseek-v41-template.md)。GLM-5.3-Flash 同类适配见 [GLM 模板](glm53-template.md)。下文模板默认值、编码细节与启动示例针对 Qwen。
 
 ---
 
 ## 模板定位
 
-模板位于 [`data/template/qwen3.6-tools-placement.jinja`](../../../data/template/qwen3.6-tools-placement.jinja)，以本地 `Qwen3.6-35B-A3B-FP8` 模型附带的 `chat_template.jinja` 为基线，保留其多模态占位符、system 约束、thinking 控制、assistant 工具调用和 tool response 历史格式，只改变请求工具定义的渲染位置。
+模板位于 [`data/template/qwen3.8-tools-placement.jinja`](../../../data/template/qwen3.8-tools-placement.jinja)，当前用于 `Qwen3.8-Flash-Next-NVFP4`。模板最初以 `Qwen3.6-35B-A3B-FP8` 附带的 `chat_template.jinja` 为基线，当前版本 `qwen3.8-tools-placement-v2` 保留多模态占位符、工具前后置布局及历史格式，并按照 Qwen3.8 官方模板补齐推理强度指令。
 
 vLLM 使用 Jinja chat template 将 OpenAI `messages`、`tools` 和特殊 token 转换为模型输入。官方服务支持通过 `--chat-template` 指定文件路径，并通过 `chat_template_kwargs` 向服务器拥有的模板传递扩展变量；本项目不启用客户端提交任意模板的 `--trust-request-chat-template`。完整接口见 [vLLM Chat Template](https://docs.vllm.ai/en/stable/serving/openai_compatible_server/#chat-template) 和 [vLLM Serve 参数](https://docs.vllm.ai/en/latest/cli/serve/)。
 
@@ -14,13 +16,13 @@ vLLM 使用 Jinja chat template 将 OpenAI `messages`、`tools` 和特殊 token 
 
 ## 模型工具调用格式资产
 
-当前 `.env` 与 `.env.example` 的生成模型为 `qwen3.6-35b-a3b-fp8`，对应独立提示词模板为 [`data/tool-tag/qwen3.6-35b-a3b-fp8.txt`](../../../data/tool-tag/qwen3.6-35b-a3b-fp8.txt)。当前资产版本为 `qwen3.6-tool-tag-v2`，仅在本文记录版本，不向模板正文增加文字。Embedding 模型不生成工具调用，因此不建立对应模板。
+当前 `.env` 与 `.env.example` 的生成模型为 `qwen38-flash-next`，对应独立提示词模板为 [`data/tool-tag/qwen3.8-flash-next-nvfp4.txt`](../../../data/tool-tag/qwen3.8-flash-next-nvfp4.txt)。当前资产版本为 `qwen3.8-tool-tag-v1`，仅在本文记录版本，不向模板正文增加文字。Embedding 模型不生成工具调用，因此不建立对应模板。
 
 该文件直接复制 [`TOOL_CALL_XML_INSTRUCTION`](../../../app/agent/contract_extraction/tool_protocol.py) 的既有原文，不增加标题、规则或示例；与代码常量相比仅多文本文件的末尾换行。后续以 UTF-8 读取并移除一个末尾换行，即可得到与原常量完全相同的文本。它不是服务端 Jinja 模板，也不是工具 JSON Schema。
 
 模板说明 XML 标签结构、必填参数和调用结束后不得追加文本的要求。单轮必须且只能调用一个工具等规则继续由节点任务提示词和程序校验承担；实际工具名称及参数定义通过 OpenAI `tools` 提供。提示词不能保证输出合法，仍需服务端 `qwen3_xml` 解析、客户端协议及业务校验和有限次数纠错。
 
-使用 `VLLM_MLLM_TOOL_TAG_FILE=qwen3.6-35b-a3b-fp8.txt` 指定模板文件名，对应 `settings.mllm.tool_tag_file`。只能填写文件名，不接受绝对路径或子目录；路径固定解析到项目根目录的 `data/tool-tag`，不受启动工作目录影响，也不允许符号链接指向目录之外。未设置时使用上述默认值。
+使用 `VLLM_MLLM_TOOL_TAG_FILE=qwen3.8-flash-next-nvfp4.txt` 指定模板文件名，对应 `settings.mllm.tool_tag_file`。只能填写文件名，不接受绝对路径或子目录；路径固定解析到项目根目录的 `data/tool-tag`，不受启动工作目录影响，也不允许符号链接指向目录之外。未设置时使用上述默认值。
 
 `app.bootstrap.lifespan` 在初始化数据库和外部客户端之前调用 `initialize_mllm_tool_tag(settings.mllm)`，以 UTF-8 读取并检查非空，将文本保存到 `app.core.tool_tag` 的进程级全局变量。文件缺失、不可读、编码错误或空白内容均阻止启动，不静默回退。运行期间不再读盘，修改文件或配置需要重启；每个进程独立加载。公共读取方式如下：
 
@@ -74,24 +76,30 @@ assistant/tool：短期记忆
 
 ## 启动方式
 
-从项目根目录启动 vLLM 时显式指定模板，并保留 OpenAI 多模态内容格式：
+以下同步当前部署命令；从项目根目录执行，并将应用的 `VLLM_MLLM_BASE_URL` 指向 `http://127.0.0.1:6006/v1`。远程部署需同步模板文件并改为实际绝对路径；本次文件更名不自动替换远端文件或重启 vLLM：
 
 ```bash
-vllm serve /root/autodl-tmp/model/Qwen3.6-35B-A3B-FP8 \
-    --trust-remote-code \
-    --quantization fp8 \
-    --gpu-memory-utilization 0.58 \
+conda activate vllm-new
+export OMP_NUM_THREADS=4
+
+CUDA_VISIBLE_DEVICES=0 vllm serve /root/autodl-tmp/model/Qwen3.8-Flash-Next-NVFP4 \
+    --served-model-name qwen38-flash-next \
+    --host 127.0.0.1 \
+    --port 6006 \
+    --tensor-parallel-size 1 \
+    --quantization modelopt \
+    --engram-config '{"cpu_offload":true}' \
+    --gpu-memory-utilization 0.99 \
     --max-model-len 262144 \
-    --max-num-seqs 512 \
+    --max-num-seqs 16 \
+    --max-num-batched-tokens 4096 \
+    --compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE"}' \
+    --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
     --enable-prefix-caching \
+    --reasoning-parser qwen3 \
     --enable-auto-tool-choice \
     --tool-call-parser qwen3_xml \
-    --host 0.0.0.0 \
-    --port 8000 \
-    --served-model-name qwen3.6-35b-a3b-fp8 \
-    --chat-template data/template/qwen3.6-tools-placement.jinja \
-    --chat-template-content-format openai \
-    --structured-outputs-config '{"backend":"xgrammar"}'
+    --chat-template data/template/qwen3.8-tools-placement.jinja
 ```
 
 修改模板后必须重启 vLLM。应用继续通过 OpenAI `tools`、`tool_choice` 和 `parallel_tool_calls` 传递机器工具契约；模板只控制模型看到的 token 顺序，不替代 vLLM 的 structured outputs 或项目 Pydantic 二次校验。
@@ -123,3 +131,26 @@ await client.chat.completions.create(
 - 非法 `tool_placement` 会在模板渲染阶段失败。
 
 正式启用前还必须使用真实 vLLM 对照验证工具调用成功率、strict 参数首次通过率、重试轮数、prompt/cached token 和首 token 延迟。缓存指标不能替代分类或提取准确性验证。
+
+
+---
+
+## 全局推理强度
+
+`VLLM_MLLM_REASONING_EFFORT=xhigh` 对应 `settings.mllm.generation.reasoning_effort`，作为本地 vLLM MLLM 节点的默认强度；合同提取全链路使用独立的 `VLLM_MLLM_EXTRACTION_REASONING_EFFORT`，详见[提取配置](../../architecture/workflow/contract-extraction/readme.md#原生思考配置)。会话业务门禁使用独立的 `VLLM_MLLM_BUSINESS_GATE_REASONING_EFFORT`，默认 `xhigh`，详见[门禁配置](../../architecture/workflow/contract-communication/business-gate.md#原生思考与输出预算)。普通文本、强制 JSON、工具调用（含流式调用）都从所属流程的配置副本读取；客户端不再接受单次调用覆盖 reasoning_effort。FIFO 摘要两个节点也不再固定 xhigh，其审计记录实际配置值。外部 DeepSeek 专家继续使用独立的 DEEPSEEK_REASONING_EFFORT。
+
+各节点的 enable_thinking 仍决定是否开启思考；关闭时不发送强度，开启时经 chat_template_kwargs 传入统一值。聊天 token 计数使用同一配置，避免遗漏模板插入的指令长度。
+
+| 模板 | 可选值 | 行为 |
+| --- | --- | --- |
+| Qwen3.8 | low、medium、xhigh | 原样传入；low/xhigh 向初始 system 加入官方强度指令，medium 不增加指令。 |
+| DeepSeek V4.1 | low、medium、xhigh | 分别转换为 50、75、100，兼容原生编码器与项目 Jinja。 |
+| GLM-5.3-Flash | low、medium、xhigh | 分别转换为 low、high、max；不支持通过项目模板关闭思考，详见 GLM 专题。 |
+
+配置层只接受统一三档，默认 xhigh；整数、high、max 等模型专属值不再作为环境配置接受。MLLMSettings.thinking_template_kwargs 是生成与分词共用的转换入口，以 VLLM_MLLM_TOOL_TAG_FILE=deepseek-v4.1-flash.txt 明确选择 DS 协议，不根据可任意命名的 served-model-name 猜测模型。glm-5.3-flash.txt 选择 GLM 映射，其他工具格式沿用三档原值。更换模型时同步选择匹配的 tool-tag，推理强度配置无须改变。
+
+DS Jinja 自身也接受统一三档，便于直接模板调用；请求层提前转换，是为了兼容绕过 Jinja 的原生编码器。三档只统一使用意图，不承诺不同模型相同的推理 token 消耗。Qwen 定义依据[官方模板](https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/main/chat_template.jinja)。
+
+修改环境变量后需重启后端。首次部署本次 Qwen 模板更新，还需同步 Jinja 到模型服务器并重启 vLLM；旧模板不消费 reasoning_effort。当前只完成代码及离线验证，没有重启运行中的服务。
+
+验证见 `tests/test_mllm_reasoning_effort.py`：配置校验、两种模型三类生成请求的开关/档位、DS 三档数值转换与分词一致性、Qwen 三档与两种工具布局。关闭思考不代表所有节点都关闭：显式开启思考的专用节点继续使用所属流程的推理强度。

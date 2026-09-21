@@ -38,7 +38,7 @@ class StageCode(StrEnum):
     PDF_DEDUPLICATION = "pdf_deduplication"
     CONTRACT_STRUCTURE_RECOGNITION = "contract_structure_recognition"
     CONTRACT_CLASSIFICATION = "contract_classification"
-    FILE_NAME_GENERATION = "file_name_generation"
+    CONTRACT_OVERVIEW_GENERATION = "contract_overview_generation"
     CORE_EXTRACTION = "core_extraction"
     CLAUSE_EXTRACTION = "clause_extraction"
     RETRIEVAL_PREPARATION = "retrieval_preparation"
@@ -135,11 +135,11 @@ class ContractDocumentDetectionView(ContractExtractionViewModel):
 
 
 class DeduplicationCandidateView(ContractExtractionViewModel):
-    """一份被判定为重复或相似的 Top-3 召回候选。"""
+    """一份超过召回相似度阈值的 Top-3 候选及其实际判断。"""
 
     rank: int = Field(ge=1, le=3)
     cosine_similarity: float = Field(ge=-1, le=1)
-    relation: Literal["duplicate", "similar"]
+    relation: Literal["duplicate", "similar", "different"]
     document_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     file_name: str = Field(
         min_length=1,
@@ -163,7 +163,7 @@ class DeduplicationReviewView(ContractExtractionViewModel):
     status: Literal["unique", "duplicate", "failed"]
     candidates: tuple[DeduplicationCandidateView, ...] = Field(max_length=3)
     review_expires_at: datetime | None
-    can_continue: bool = Field(description="是否允许确认后继续；重复合同固定为 false。")
+    can_continue: bool = Field(description="有候选且无重复、等待用户确认时为 true；无候选自动推进和重复拒绝均为 false。")
     continued_at: datetime | None = None
 
 
@@ -192,7 +192,7 @@ class ProcessingRunSnapshot(ContractExtractionViewModel):
     document_detection: ContractDocumentDetectionView | None = None
     deduplication: DeduplicationReviewView | None = None
     classification: ContractClassificationView | None = None
-    suggested_file_name: SuggestedFileNameView | None = None
+    contract_overview: ContractOverviewView | None = None
 
 
 class ContractExtractionRunSummary(ContractExtractionViewModel):
@@ -229,7 +229,7 @@ class ContractClassificationView(ContractExtractionViewModel):
     unmapped_type_description: str | None = None
 
 
-class SuggestedFileNameEvidenceView(ContractExtractionViewModel):
+class ContractOverviewEvidenceView(ContractExtractionViewModel):
     """支持建议名称的一条可由前端回到页面核对的证据。"""
 
     page_number: int = Field(
@@ -243,8 +243,8 @@ class SuggestedFileNameEvidenceView(ContractExtractionViewModel):
     )
 
 
-class SuggestedFileNameView(ContractExtractionViewModel):
-    """前端可采用或修改的证据化建议展示名称。"""
+class ContractOverviewView(ContractExtractionViewModel):
+    """前端可采用或修改的建议名称及页面事实摘要。"""
 
     file_name: str = Field(
         min_length=1,
@@ -256,10 +256,16 @@ class SuggestedFileNameView(ContractExtractionViewModel):
         max_length=2000,
         description="页面事实与分类摘要如何支持当前建议名称的简洁理由。",
     )
-    evidence: tuple[SuggestedFileNameEvidenceView, ...] = Field(
+    evidence: tuple[ContractOverviewEvidenceView, ...] = Field(
         min_length=1,
         max_length=10,
         description="按页面阅读顺序排列的命名依据。",
+    )
+
+    summary: str = Field(
+        min_length=1,
+        max_length=3000,
+        description="根据合同页面生成的内容摘要；与建议名称同时通过校验后返回，不是命名理由或法律评价。",
     )
 
 
@@ -350,7 +356,7 @@ class ContractExtractionEvent(ContractExtractionViewModel):
     document_detection: ContractDocumentDetectionView | None = None
     deduplication: DeduplicationReviewView | None = None
     classification: ContractClassificationView | None = None
-    suggested_file_name: SuggestedFileNameView | None = None
+    contract_overview: ContractOverviewView | None = None
     occurred_at: datetime
 
 
@@ -382,6 +388,6 @@ __all__ = [
     "StageProgress",
     "StageSnapshot",
     "StageStatus",
-    "SuggestedFileNameEvidenceView",
-    "SuggestedFileNameView",
+    "ContractOverviewEvidenceView",
+    "ContractOverviewView",
 ]

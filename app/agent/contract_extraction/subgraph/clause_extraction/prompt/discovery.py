@@ -16,7 +16,7 @@ from app.agent.contract_extraction.subgraph.clause_extraction.tool import (
 )
 from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
 
-CLAUSE_DISCOVERY_PROMPT_VERSION: Final = "clause-discovery-v14"
+CLAUSE_DISCOVERY_PROMPT_VERSION: Final = "clause-discovery-v15"
 CLAUSE_DISCOVERY_TOOL_PLACEMENT: Final = "before_task"
 
 _CLAUSE_DISCOVERY_TASK_BASE = """你已获得当前合同按原始顺序排列的页面图像、文档导航结构和分类结果。当前任务是按合同原始阅读顺序发现全部待提取条款候选，只记录具有自身直接正文的主条款和各级子条款。你只需确定条款身份、层级和精简起止锚点，不提取完整正文；已确认锚点将用于逐条提取详细原文。
@@ -67,6 +67,12 @@ _CLAUSE_DISCOVERY_TASK_BASE = """你已获得当前合同按原始顺序排列�
 3. document_path 从原合同最外层条款开始，逐级列到当前候选自身；最后一项必须与当前 identifier/title_hint 一致。没有自身直接正文的纯编号、标题和分组父级不生成候选，但必须作为路径项保留，禁止把其下条款提升为顶层。
 4. parent_candidate_id 只用于关联 document_path 上最近的已记录正文祖先：有则必须引用该 candidate_id；若路径中的所有父级都因没有直接正文而未记录，则传 null，即使当前 level 大于 1。candidate_id 和 order 由程序生成，模型不得提交。
 5. 不得重复工作区已有候选，不得跳过尚未检查的内部子层级，也不得按语义主题重新排序原文。
+
+编号与标题分工：
+1. 当前候选及 document_path 每一层都遵守同一规则：有原始编号时 identifier 只填编号及原有编号标点，标题放入 title_hint；不得把完整的“编号 + 标题”同时放进 identifier。
+2. 无编号时，identifier 可以使用简短原文标题或稳定描述；title_hint 不得为了填满字段而创造标题。无独立标题且无法可靠概括时传 null。
+3. 标题“六、交货安排”应拆为 identifier="六、"、title_hint="交货安排"。其子项原文若为“1.”，identifier 就是“1.”，不得生成“六-1”或“6.1”；只有页面原文确实写有组合编号时才原样保留。父子关系通过 document_path、level 和 parent_candidate_id 表达，不通过改写编号表达。
+4. 提交前逐层核对编号与页面一致、title_hint 不含编号、同一标题没有被重复放入编号字段。主题概括不得被当成原始编号或原文标题。
 
 工具、记忆与工作区：
 1. 每轮必须且只能调用当前提供的一个工具，禁止输出普通文本。

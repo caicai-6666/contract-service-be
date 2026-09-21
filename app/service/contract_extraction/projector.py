@@ -19,8 +19,8 @@ from app.agent.contract_extraction.subgraph.field_extraction.core.state import (
 from app.agent.contract_extraction.subgraph.field_extraction.definition import (
     FieldCardinality,
 )
-from app.agent.contract_extraction.subgraph.file_name_generation.state import (
-    SuggestedFileNameResult,
+from app.agent.contract_extraction.subgraph.contract_overview_generation.state import (
+    ContractOverviewResult,
 )
 from app.service.contract_extraction.executor import RetrievalViewOutput
 from app.service.contract_extraction.model import (
@@ -30,8 +30,8 @@ from app.service.contract_extraction.model import (
     CoreDraftData,
     ResultStatus,
     RetrievalViewDraftData,
-    SuggestedFileNameEvidenceView,
-    SuggestedFileNameView,
+    ContractOverviewEvidenceView,
+    ContractOverviewView,
 )
 
 
@@ -66,19 +66,21 @@ def project_classification(
     )
 
 
-def project_suggested_file_name(
-    result: SuggestedFileNameResult,
-) -> SuggestedFileNameView:
-    """隐藏模型工具轨迹，只公开可核对的建议名称、理由和证据。"""
+def project_contract_overview(
+    result: ContractOverviewResult,
+) -> ContractOverviewView:
+    """隐藏模型工具轨迹，只公开建议名称、理由、证据和合同摘要。"""
     if result.status != "generated":
         raise UnusableBranchResultError("建议名称没有形成可用结果")
     assert result.file_name is not None
     assert result.reasoning is not None
-    return SuggestedFileNameView(
+    assert result.summary is not None
+    return ContractOverviewView(
         file_name=result.file_name,
+        summary=result.summary,
         reasoning=result.reasoning,
         evidence=tuple(
-            SuggestedFileNameEvidenceView(
+            ContractOverviewEvidenceView(
                 page_number=item.page_number,
                 content=item.content,
             )
@@ -152,6 +154,21 @@ def project_core(result: BaseModel) -> ProjectedSection:
     )
 
 
+def render_clause_path_segment(identifier: str, title_hint: str | None) -> str:
+    """合并路径编号与标题；旧结果已带完整标题时避免重复追加。"""
+    identifier = identifier.strip()
+    if not title_hint or not title_hint.strip():
+        return identifier
+    title = title_hint.strip()
+    # 只比较完整标题的精确后缀（忽略版式空白），不改写编号或推测同义标题。
+    # 无编号时 identifier 本身可用标题标识，因此同名也是正常输入。
+    normalized_identifier = "".join(identifier.split())
+    normalized_title = "".join(title.split())
+    if normalized_identifier.endswith(normalized_title):
+        return identifier
+    return f"{identifier} {title}"
+
+
 def project_clause(result: ClauseExtractionResult) -> ProjectedSection:
     """按 ES clauses 形状投影成功条款，去除候选、证据与审计。"""
     if result.status == "failed":
@@ -167,9 +184,7 @@ def project_clause(result: ClauseExtractionResult) -> ProjectedSection:
             "order": candidate.order,
             "identifier": candidate.identifier,
             "path": [
-                " ".join(
-                    filter(None, (segment.identifier, segment.title_hint))
-                )
+                render_clause_path_segment(segment.identifier, segment.title_hint)
                 for segment in candidate.document_path
             ],
             "level": candidate.level,
@@ -231,5 +246,5 @@ __all__ = [
     "project_clause",
     "project_core",
     "project_retrieval_view",
-    "project_suggested_file_name",
+    "project_contract_overview",
 ]

@@ -8,7 +8,7 @@ from .context_rendering import render_context_relevance_input
 from .context_examples import sample_context_relevance_examples, render_context_relevance_examples
 
 
-CONTEXT_RELEVANCE_PROMPT_VERSION: Final[str] = "context-relevance-v11"
+CONTEXT_RELEVANCE_PROMPT_VERSION: Final[str] = "context-relevance-v12"
 
 CONTEXT_RELEVANCE_SYSTEM_PROMPT: Final[str] = """## 任务描述
 

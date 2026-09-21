@@ -66,14 +66,10 @@ FULL_DOCUMENT_NODE = "judge_full_documents"
 PAGE_NAVIGATION_AGENT_NODE = "judge_with_page_navigation_agent"
 
 _FULL_DOCUMENT_MAXIMUM_ROUNDS = 8
-_FULL_DOCUMENT_MAXIMUM_COMPLETION_TOKENS = 4096
 _FULL_DOCUMENT_MAXIMUM_CONSECUTIVE_THINKS = 2
-_FULL_DOCUMENT_THINK_MAXIMUM_TOKENS = 1024
 
 _PAGE_NAVIGATION_MAXIMUM_ROUNDS = 24
-_PAGE_NAVIGATION_MAXIMUM_COMPLETION_TOKENS = 4096
 _PAGE_NAVIGATION_MAXIMUM_CONSECUTIVE_THINKS = 2
-_PAGE_NAVIGATION_THINK_MAXIMUM_TOKENS = 1024
 _PAGE_NAVIGATION_MAXIMUM_INSPECTIONS = 6
 _PAGE_NAVIGATION_MAXIMUM_UNIQUE_PAGES = 12
 
@@ -375,7 +371,7 @@ async def judge_full_documents(
         uploaded_pdf,
         candidate_pdf,
     )
-    settings = get_settings().mllm
+    settings = get_settings().mllm.for_contract_extraction()
     generation = settings.generation
     audits: list[PDFCandidateToolCallAudit] = []
     protocol_recovery = ToolProtocolRecovery()
@@ -391,18 +387,14 @@ async def judge_full_documents(
                     messages=messages,
                     tools=list(FULL_DOCUMENT_JUDGMENT_TOOLS),
                     tool_choice=FULL_DOCUMENT_JUDGMENT_TOOL_CHOICE,
-                    max_completion_tokens=min(
-                        generation.max_completion_tokens,
-                        _FULL_DOCUMENT_MAXIMUM_COMPLETION_TOKENS,
-                    ),
+                    max_completion_tokens=generation.max_completion_tokens,
                     temperature=generation.temperature,
                     top_p=generation.top_p,
                     top_k=generation.top_k,
                     presence_penalty=generation.presence_penalty,
                     repetition_penalty=generation.repetition_penalty,
                     seed=generation.seed,
-                    # 显式 think 工具承担可审计推理，不启用模型私有思考块。
-                    enable_thinking=False,
+                    enable_thinking=True,
                     tool_placement=FULL_DOCUMENT_TOOL_PLACEMENT,
                 )
             except (MLLMRequestError, MLLMUnavailableError) as exc:
@@ -491,26 +483,7 @@ async def judge_full_documents(
 
             if arguments is not None:
                 if isinstance(arguments, ThinkArguments):
-                    completion_tokens = completion.completion_tokens
-                    if completion_tokens is None:
-                        feedback = PDFCandidateToolFeedback(
-                            ok=False,
-                            message=(
-                                "reasoning：本轮响应没有返回 completion_tokens，"
-                                "无法验证 think 的 1024 completion tokens 上限；"
-                                "请重新简短思考。"
-                            ),
-                        )
-                    elif completion_tokens > _FULL_DOCUMENT_THINK_MAXIMUM_TOKENS:
-                        feedback = PDFCandidateToolFeedback(
-                            ok=False,
-                            message=(
-                                f"reasoning：本轮完整工具响应使用 {completion_tokens} "
-                                "completion tokens，超过 think 的 1024 tokens 上限；"
-                                "请压缩推理后重新调用 think，或直接提交终止决定。"
-                            ),
-                        )
-                    elif (
+                    if (
                         consecutive_thinks
                         >= _FULL_DOCUMENT_MAXIMUM_CONSECUTIVE_THINKS
                     ):
@@ -690,7 +663,7 @@ async def judge_with_page_navigation_agent(
     if tuple(candidate_pages) != tuple(range(1, candidate_pdf.page_count + 1)):
         raise ValueError("候选 PreparedPDF 页面必须从 1 开始连续排列")
 
-    settings = get_settings().mllm
+    settings = get_settings().mllm.for_contract_extraction()
     generation = settings.generation
     available_candidate_visual_tokens = (
         settings.visual_token_ceiling - uploaded_pdf.total_visual_tokens
@@ -749,17 +722,14 @@ async def judge_with_page_navigation_agent(
                     messages=messages,
                     tools=list(PAGE_NAVIGATION_JUDGMENT_TOOLS),
                     tool_choice=PAGE_NAVIGATION_JUDGMENT_TOOL_CHOICE,
-                    max_completion_tokens=min(
-                        generation.max_completion_tokens,
-                        _PAGE_NAVIGATION_MAXIMUM_COMPLETION_TOKENS,
-                    ),
+                    max_completion_tokens=generation.max_completion_tokens,
                     temperature=generation.temperature,
                     top_p=generation.top_p,
                     top_k=generation.top_k,
                     presence_penalty=generation.presence_penalty,
                     repetition_penalty=generation.repetition_penalty,
                     seed=generation.seed,
-                    enable_thinking=False,
+                    enable_thinking=True,
                     tool_placement=PAGE_NAVIGATION_TOOL_PLACEMENT,
                 )
             except (MLLMRequestError, MLLMUnavailableError) as exc:
@@ -1052,7 +1022,6 @@ def _validate_and_apply_navigation_action(
     uploaded_page_count: int,
     candidate_pages: dict[int, PreparedPDFPage],
     available_candidate_visual_tokens: int,
-    completion_tokens: int | None,
     accepted_thinks: int,
     consecutive_thinks: int,
 ) -> tuple[
@@ -1247,28 +1216,6 @@ def _validate_and_apply_navigation_action(
         )
 
     if isinstance(arguments, ThinkArguments):
-        if completion_tokens is None:
-            return (
-                PDFCandidateToolFeedback(
-                    ok=False,
-                    message=(
-                        "reasoning：本轮没有 completion_tokens，"
-                        "无法验证 1024 tokens 上限。"
-                    ),
-                ),
-                None,
-            )
-        if completion_tokens > _PAGE_NAVIGATION_THINK_MAXIMUM_TOKENS:
-            return (
-                PDFCandidateToolFeedback(
-                    ok=False,
-                    message=(
-                        f"reasoning：本轮使用 {completion_tokens} completion tokens，"
-                        "超过 1024 tokens 上限；请压缩推理。"
-                    ),
-                ),
-                None,
-            )
         if consecutive_thinks >= _PAGE_NAVIGATION_MAXIMUM_CONSECUTIVE_THINKS:
             return (
                 PDFCandidateToolFeedback(

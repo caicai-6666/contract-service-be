@@ -1,6 +1,7 @@
 """文件可读性子图全部节点与路由：打开、渲染、视觉判断及汇总熔断。"""
 
 import asyncio
+import logging
 from hashlib import sha256
 
 from langgraph.graph import END
@@ -17,12 +18,14 @@ from app.agent.contract_communication.business_gate.subgraph.file_readability.st
 )
 from app.agent.contract_extraction.state import PreparedPDFPage
 from app.core.config import MLLMSettings, get_settings
-from app.infrastructure.mllm import MLLMClient, MLLMRequestError, MLLMUnavailableError
+from app.infrastructure.mllm import MLLMProviderNotReadyError, MLLMClient, MLLMRequestError, MLLMUnavailableError
 from .prompt.visual_readability import build_visual_readability_messages, VISUAL_READABILITY_PROMPT_VERSION
 from .schema import judgment_json_schema, validate_judgment, JudgmentValidationError, build_validation_feedback
 from app.tool.pdf_open import PDFOpenError, inspect_pdf_openable
 from app.tool.pdf_page import PDFPageRenderConfig, PDFPageRenderError, compress_pdf_pages
 
+
+logger = logging.getLogger(__name__)
 
 _FILES = TypeAdapter(tuple[ReadabilityFile, ...])
 
@@ -143,6 +146,9 @@ def check_files_renderable(
                 del raw_pages, pages
                 continue
             except PDFPageRenderError as exc:
+                # 对外保留安全页码提示；底层原因留在服务端，便于区分原文件和渲染器故障。
+                logger.warning("会话附件页面渲染失败：file_index=%s page=%s",
+                               index, exc.page_number, exc_info=True)
                 page_number = exc.page_number
                 code, reason, status = 'render_failed', f'第 {page_number} 页无法正常渲染，本次处理已停止', 'rejected'
             except (MemoryError, OSError):
@@ -181,11 +187,13 @@ async def inspect_visual_readability(
     failure_hint = ('视觉检查' + ('多次' if max_attempts > 1 else '')
                     + '未能返回有效结果，暂时无法确认该文件是否可读；不能据此认定文件模糊或损坏。')
     try:
+        settings = settings.for_business_gate()
         async with client_factory(settings) as client:
             for attempt in range(1, max_attempts + 1):
                 response = await client.create_json_chat_completion(
                     messages=messages, json_schema=judgment_json_schema(file.page_count),
-                    max_completion_tokens=min(2048, settings.generation.max_completion_tokens),
+                    enable_thinking=True,
+                    max_completion_tokens=settings.generation.max_completion_tokens,
                 )
                 record = {"attempt": attempt, "prompt_version": VISUAL_READABILITY_PROMPT_VERSION,
                           "response": response.raw_response, "accepted": False,
@@ -214,6 +222,9 @@ async def inspect_visual_readability(
                     feedback=None if judgment.result else _visual_failure_feedback(file, judgment.hint),
                     audit=tuple(audit))
             failure = "文件视觉检查多次返回无效结果，暂时无法完成校验，请稍后重试。"
+    except MLLMProviderNotReadyError:
+        # 服务入口故障直接交给会话层，不能转换为业务判断或再次请求反馈模型。
+        raise
     except (MLLMRequestError, MLLMUnavailableError) as exc:
         # 约束解码不受支持等 HTTP 错误不降级到无约束请求，也不指责文件损坏。
         audit.append({"error_type": type(exc).__name__, "accepted": False})

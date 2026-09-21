@@ -48,7 +48,6 @@ from app.infrastructure.mllm import (
     MLLMUnavailableError,
 )
 
-_MAXIMUM_COMPLETION_TOKENS = 4096
 _MAXIMUM_CONSECUTIVE_THINKS = 2
 
 
@@ -180,7 +179,7 @@ async def discover_question_focuses(
     if prepared_pdf.document_id != context.document_id:
         raise ValueError("关注点发现输入 PDF 与提问指南上下文的 document_id 不一致")
 
-    settings = get_settings().mllm
+    settings = get_settings().mllm.for_contract_extraction()
     generation = settings.generation
     hidden_limit = context.maximum_questions
     started_at = perf_counter()
@@ -209,17 +208,14 @@ async def discover_question_focuses(
                     messages=messages,
                     tools=list(tools),
                     tool_choice=QUESTION_FOCUS_DISCOVERY_TOOL_CHOICE,
-                    max_completion_tokens=min(
-                        generation.max_completion_tokens,
-                        _MAXIMUM_COMPLETION_TOKENS,
-                    ),
+                    max_completion_tokens=generation.max_completion_tokens,
                     temperature=generation.temperature,
                     top_p=generation.top_p,
                     top_k=generation.top_k,
                     presence_penalty=generation.presence_penalty,
                     repetition_penalty=generation.repetition_penalty,
                     seed=generation.seed,
-                    enable_thinking=False,
+                    enable_thinking=True,
                     tool_placement=QUESTION_FOCUS_DISCOVERY_TOOL_PLACEMENT,
                 )
             except (MLLMRequestError, MLLMUnavailableError) as exc:

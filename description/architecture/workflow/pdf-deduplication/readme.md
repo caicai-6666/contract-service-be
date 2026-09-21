@@ -139,9 +139,9 @@ flowchart TD
 
 ### 全量查看策略提示词
 
-`judge_full_documents` 使用版本为 `full-document-relation-judgment-v4` 的专属策略提示词。它追加在“上传页面阅读前缀 + 共同关系标准”之后，再次确认 A 是前面已经提供的上传合同、B 是随后提供的候选合同，只规定两份文档当前包含的全部页面图像一次性提供时如何核对，不重复三分类定义。完整文本和确定性追加函数位于 `app.agent.pdf_deduplication.prompt.full_document`。
+`judge_full_documents` 使用版本为 `full-document-relation-judgment-v5` 的专属策略提示词。它追加在“上传页面阅读前缀 + 共同关系标准”之后，再次确认 A 是前面已经提供的上传合同、B 是随后提供的候选合同，只规定两份文档当前包含的全部页面图像一次性提供时如何核对，不重复三分类定义。完整文本和确定性追加函数位于 `app.agent.pdf_deduplication.prompt.full_document`。
 
-该策略要求按两份文档各自物理页码核对全部可用页面图像，不把“全部可用”误解为原始合同必然无缺页，并禁止请求未提供的额外页面。每轮只允许一个工具动作：`think` 提供真实分析与推理空间，包含工具结构在内的整轮响应最多使用 `1024 completion tokens`，并且最多连续调用两次；证据充分时使用 `submit_contract_relation`；只有材料本身无法支持任何关系且至少完成一次 `think` 核对后，才能使用 `report_unable_to_determine_relation`。工具调用必须遵循项目统一 XML 协议。
+该策略要求按两份文档各自物理页码核对全部可用页面图像，不把“全部可用”误解为原始合同必然无缺页，并禁止请求未提供的额外页面。每轮只允许一个工具动作：`think` 提供真实分析与推理空间，reasoning 最多2000字符，并且最多连续调用两次；证据充分时使用 `submit_contract_relation`；只有材料本身无法支持任何关系且至少完成一次 `think` 核对后，才能使用 `report_unable_to_determine_relation`。工具调用必须遵循项目统一 XML 协议。
 
 模型可见内容严格按以下顺序排列：
 
@@ -151,17 +151,17 @@ flowchart TD
 4. `候选合同 B 结束` 分隔线和 `可用工具与输出协议` 分隔线，随后是工具使用行为规则。
 5. vLLM 聊天模板以 `tool_placement="after_task"` 渲染真实函数工具定义。
 
-提示词不解释 Pydantic、vLLM 或工具 Schema 的实现方式。三个函数工具由 `candidate_judgment.tool` 中的 Pydantic 模型单一生成：`think` 接收真实推理，并要求整轮工具响应不超过 `1024 completion tokens`；`submit_contract_relation` 按“跨文档证据、推理摘要、最终关系”顺序提交成功决定；`report_unable_to_determine_relation` 提交材料不足的失败出口。所有模型可见属性都具有字段级 `description`，服务端工具采用 non-strict 自动选择，本地仍执行 strict Pydantic 校验。
+提示词不解释 Pydantic、vLLM 或工具 Schema 的实现方式。三个函数工具由 `candidate_judgment.tool` 中的 Pydantic 模型单一生成：`think` 接收真实推理，并限制 reasoning 最多2000字符；`submit_contract_relation` 按“跨文档证据、推理摘要、最终关系”顺序提交成功决定；`report_unable_to_determine_relation` 提交材料不足的失败出口。所有模型可见属性都具有字段级 `description`，服务端工具采用 non-strict 自动选择，本地仍执行 strict Pydantic 校验。
 
 上传合同的页面图像及其后稳定任务在同一候选集合内保持字节一致；候选页面开始后才产生候选专属分叉。
 
-全量执行循环最多进行 `8` 轮，每轮最多生成 `4096 tokens`，并始终关闭模型私有思考模式。程序只接受恰好一个工具调用：连续三轮未形成单工具协议时安全失败，Pydantic 参数错误、证据页码越界和动作状态错误会得到有限纠错反馈。单次 `think` 只有在响应提供 `completion_tokens` 且包含工具结构在内的整轮响应不超过 `1024 completion tokens` 时才被接受；连续第三次 `think` 会被拒绝。无法判断出口还要求此前至少存在一次已接受的 `think`。
+全量执行循环最多进行 `8` 轮，全量与按页导航均开启原生思考，使用[提取专用强度与统一输出预算](../contract-extraction/readme.md#原生思考配置)。程序只接受恰好一个工具调用：连续三轮未形成单工具协议时安全失败，Pydantic 参数错误、证据页码越界和动作状态错误会得到有限纠错反馈。单次 `think.reasoning` 最多2000字符，不以包含原生思考的整轮 token 数判断工具长度；连续第三次 `think` 会被拒绝。无法判断出口还要求此前至少存在一次已接受的 `think`。
 
 每个候选的成功动作和失败动作都写入 `PDFCandidateToolCallAudit`，包含轮次、工具名、原始参数、有限 assistant 普通文本、反馈、耗时、响应 ID 与 token 用量。协议或参数失败只在连续纠错期间进入模型上下文；后续动作通过全部校验后会清除整段失败轨迹，但审计不会删除。正式终态只写入通过校验的三分类决定；无法判断、请求失败、协议超限或轮次耗尽均形成 `FailedPDFCandidateJudgment`，不会把半成品关系传给下游。
 
 ### 候选页面导航提示词
 
-长文档路线使用版本为 `candidate-page-navigation-judgment-v4` 的专属提示词，完整文本、确定性组装函数和逐轮上下文构造函数位于 `app.agent.pdf_deduplication.prompt.page_navigation`。候选页面查看和观察记录工具使用独立 Pydantic 契约，候选指南、证据工作区及有限执行循环已经接入 `judge_with_page_navigation_agent`。
+长文档路线使用版本为 `candidate-page-navigation-judgment-v5` 的专属提示词，完整文本、确定性组装函数和逐轮上下文构造函数位于 `app.agent.pdf_deduplication.prompt.page_navigation`。候选页面查看和观察记录工具使用独立 Pydantic 契约，候选指南、证据工作区及有限执行循环已经接入 `judge_with_page_navigation_agent`。
 
 该路线采用不对称查看：上传合同 A 的全部可用页面始终位于共同关系标准之前，候选合同 B 不一次性提供全部视觉页面，而是先提供确定性 JSON 导航指南。当前指南只包含文档标识、页数、各页尺寸、方向、视觉 token 及首页、尾页和四分位回退位置；尚未接入复核后 Core、条款页定位或页面摘要。指南只具有导航作用，未实际查看的候选页面不能进入正式页面证据。
 
@@ -175,13 +175,13 @@ flowchart TD
 
 首次动作必须查看候选合同的身份页和文件边界页：指南已经可靠定位时按指南选页，否则查看 B 首页和尾页。后续根据当前关系假设选择页面：`duplicate` 必须继续覆盖交易事实、版本关系、关键条款、签章或文件边界，并至少查看一个正文内部位置；`similar` 必须同时核对关联证据和独立保存依据；`different` 优先验证至少两个独立核心差异。指南没有定位能力时退回首页、尾页和正文四分位覆盖，发现断页、附件起点或条款跳转时查看必要相邻页。
 
-提示词为工具循环约定五类互斥动作：`inspect_candidate_pages` 查看 B 页面，`record_candidate_page_observations` 把当前视觉批次的精简双侧观察提交到证据工作区，`think` 在单轮 `1024 completion tokens` 与最多连续两次的限制内推理，以及复用 `submit_contract_relation` 和 `report_unable_to_determine_relation` 形成终态。固定五工具集合及解析入口位于 `candidate_judgment.navigation_tool`，版本为 `candidate-page-navigation-tool-v2`。
+提示词为工具循环约定五类互斥动作：`inspect_candidate_pages` 查看 B 页面，`record_candidate_page_observations` 把当前视觉批次的精简双侧观察提交到证据工作区，`think` 在reasoning 最多2000字符 与最多连续两次的限制内推理，以及复用 `submit_contract_relation` 和 `report_unable_to_determine_relation` 形成终态。固定五工具集合及解析入口位于 `candidate_judgment.navigation_tool`，版本为 `candidate-page-navigation-tool-v3`。
 
 `inspect_candidate_pages` 只接收升序且不重复的 `page_numbers`、具体 `purpose` 和可空的 `revisit_reason`，单批最多三页。`record_candidate_page_observations` 保持最小结构，只接收可为空的跨文档 `observations` 和非空 `next_focus`；跨文档观察直接复用终态的 `ContractRelationEvidence`。模型不重复填写页面状态、查看次数或隐藏动作，这些事实由后续执行器根据当前工作区维护。
 
 页面观察通过检查点后，执行器隐藏旧候选页面图像，并在工作区保留“已查看、当前隐藏”的页面状态、查看次数和通过校验的精简双侧观察。隐藏页的既有观察仍可用于终态；新增或修改视觉细节必须携带 `revisit_reason` 重新打开该页。终态若引用隐藏页，证据的 A 页码、B 页码和观察文本必须与工作区记录完全一致。
 
-执行循环最多 `24` 轮、查看 `6` 个页面批次和 `12` 个不同候选页，单批最多 `3` 页。每批 B 页面的视觉 token 总量不能超过“全量 A 常驻后”的剩余视觉预算；若完整 A 已无法为任一 B 页面留出空间，当前候选直接安全失败。第一次有效动作必须是查看页面；`think` 单轮仍受 `1024 completion tokens` 和最多连续两次限制。工具或动作失败仅在连续纠错期间进入下一轮输入，后续动作通过校验后清除该纠错段；页面状态和已接受观察不受影响。
+执行循环最多 `24` 轮、查看 `6` 个页面批次和 `12` 个不同候选页，单批最多 `3` 页。每批 B 页面的视觉 token 总量不能超过“全量 A 常驻后”的剩余视觉预算；若完整 A 已无法为任一 B 页面留出空间，当前候选直接安全失败。第一次有效动作必须是查看页面；`think` 单轮仍受 reasoning 最多2000字符 和最多连续两次限制。工具或动作失败仅在连续纠错期间进入下一轮输入，后续动作通过校验后清除该纠错段；页面状态和已接受观察不受影响。
 
 ---
 

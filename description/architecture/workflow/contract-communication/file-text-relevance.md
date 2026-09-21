@@ -56,7 +56,7 @@ schema.py 中的 FileTextRelevanceGeneration 为唯一机器契约：非空 reas
 
 node.py 提供 check_file_text_relevance_async(state, settings, max_attempts=3)，同步入口为 check_file_text_relevance。图装配使用 RunnableLambda 绑定同步与原生异步实现，输入 Schema 保留 file_summaries/text 的隔离；本节点不再接受局部 max_concurrency。其他相关性分支以及文件摘要、文件业务判断的并发不变。
 
-一次整体判断使用一个客户端和一套消息，正常仅调用模型一次；最多三次尝试是同一完整输入的顺序纠错，不是逐文件调用。复用私有 JSON 执行器，继续受全局 MLLM 配额限制。strict=true、temperature=0、enable_thinking=false，输出上限为配置值与 1024 token 的较小值。本地拒绝非标准、重复/缺失/额外字段、空理由、非布尔结果、截断、工具调用和拒答。
+一次整体判断使用一个客户端和一套消息，正常仅调用模型一次；最多三次尝试是同一完整输入的顺序纠错，不是逐文件调用。复用私有 JSON 执行器，继续受全局 MLLM 配额限制。strict=true、temperature=0、enable_thinking=true，思考与最终 JSON 共用全局 max_completion_tokens，不再另设 1024 上限。本地拒绝非标准、重复/缺失/额外字段、空理由、非布尔结果、截断、工具调用和拒答。
 
 错误原响应只进入私有审计，最小反馈顺序追加；全部校验通过或取消时清除整段反馈。取消向外传播并关闭客户端，不发布迟到结果。服务异常或重试耗尽返回 failed，不伪装成 false。超出模型输入容量时不静默截摘要、不分批投票，按请求失败处理；一次性输入的容量边界仍需真实多文件测试。
 
@@ -75,7 +75,7 @@ node.py 提供 check_file_text_relevance_async(state, settings, max_attempts=3)�
 
 结果仍交给 aggregate_relevance 统一计分；双模态阈值保持 3，不随文件数增加。此节点与其他相关性分支仍可并行，只有本节点内部逐文件并发被取消。
 
-正式服务继续显示“正在思考”，拒绝或失败的提示流式输出并同步 SSE、快照及历史。核心问答尚未接入，通过时仍只返回未接入提示，不批准附件落盘。历史文件指代规则不等于历史读取、文件定位或上下文节点已经接入。
+正式服务继续显示“正在思考”，拒绝或失败的提示流式输出并同步 SSE、快照及历史。完整门禁通过后批准附件并进入[主助手生成循环](agent-runtime.md)，由其读取最新驻留上下文并输出结果；历史文件指代判断不代表文件已被定位或逐页核验。
 
 ---
 

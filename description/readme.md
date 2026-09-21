@@ -79,12 +79,29 @@ description/
 
 ### 工作流任务包
 
-- [会话记忆加工工作流](architecture/workflow/conversation-memory/readme.md)：批量筛选、Send并发总结与向量化、待入库数据汇总及已接入的归档边界。
-- [会话记忆待入库数据](architecture/workflow/conversation-memory/pending-records.md)：节点2编码、节点3原轨迹与向量的成对组装、失败隔离及Service接入责任。
+- [会话记忆加工工作流](architecture/workflow/conversation-memory/readme.md)：单任务三入口建模、并发编码、中途向量融合及尾部收束；外层负责筛选与归档。
 - [会话历史检索向量化契约](architecture/workflow/conversation-memory/retrieval-embedding.md)：已选定的双侧场景化指令、输入格式及后续查询端接入约定，尚未实现正式向量检索。
 
 #### 合同沟通智能体
 
+- [按问题检索合同](architecture/workflow/contract-communication/contract-question-search.md)：根据合同能够回答的问题召回，支持已有结果集限定范围，已接入主循环。
+
+- [合同图像相似检索](architecture/workflow/contract-communication/contract-image-search.md)：全文件图像融合检索、结果集引用与分页查看，已接入主循环。
+
+
+- [外部专家求助工具](architecture/workflow/contract-communication/external-expert.md)：专家职责、DeepSeek 联网与多轮会话池；已接入主循环及资源生命周期。
+
+- [工作区管理子图](architecture/workflow/contract-communication/workspace-management.md)：输入输出、容量分支与可注入依赖的执行骨架。
+- [记忆检索子图](architecture/workflow/contract-communication/memory-retrieval.md)：当前会话任务检索的输入输出、节点骨架与未实现边界。
+- [FIFO 按主题摘要子图](architecture/workflow/contract-communication/fifo-summary.md)：主题规划与并发生成骨架。
+- [Agent Core 上下文预算](architecture/workflow/contract-communication/context-budget.md)：统一预算契约、3:7 分配与配置适配。
+- [FIFO 管理提示词设计](architecture/workflow/contract-communication/fifo-management.md)：任务轨迹容量、完整任务压缩边界与管理子图骨架。
+
+- [工作区管理工具](architecture/workflow/contract-communication/workspace-tools.md)：供模型调用的替换、新增和删除工具。
+
+- [Agent Core 主助手设计](architecture/workflow/contract-communication/agent-core.md)：六部分上下文结构、角色定位及系统交互提示词初稿与实现边界。
+- [原生思考 FIFO 窗口](architecture/workflow/contract-communication/reasoning-window.md)：可配置 K 轮与 token 限额、原响应位置回注、独立落盘及重载。
+- [页面内容折叠与资源建模](architecture/workflow/contract-communication/page-content-management.md)：待实现设计；一轮展示、工具与外层职责、会话资源释放及文件重建。
 - [轮次有序轨迹设计](architecture/workflow/contract-communication/turn-trace.md)：记录方法调用、阶段说明与最终答复的统一顺序，以及内存存储和压缩边界。
 - [合同沟通智能体](architecture/workflow/contract-communication/readme.md)：工作流入口；已有门禁初始化子图、骨架包、事件及快照，真实业务执行待实现。
 - [业务门禁子图](architecture/workflow/contract-communication/business-gate.md)：说明文件硬性条件、四维相关性判断与加权阈值聚合。
@@ -97,7 +114,7 @@ description/
 
 #### 合同文档识别
 
-- [合同文档识别 Agent 工作流](architecture/workflow/contract-document-detection/readme.md)：已实现查重前合同文档类型门禁、权威定义提示词、有限工具循环、私有审计和 SSE 合同/非合同分流。
+- [合同文档识别 Agent 工作流](architecture/workflow/contract-document-detection/readme.md)：已实现合同类型门禁及 SSE 分流；通过后执行文件质量检查和质量检查，原生思考加严格 JSON，收束节点统一生成反馈与放行决定。
 
 #### PDF 查重
 
@@ -110,8 +127,9 @@ description/
 - [PDF 准备服务与文档结构理解子图](architecture/workflow/contract-extraction/document-understanding.md)：定义工作流外的 PDF 检查与动态渲染，以及基于标准页面的结构理解。
 - [文档结构发现节点](architecture/workflow/contract-extraction/document-structure.md)：定义合同主题、宏观内容单元和精确边界表示。
 - [合同分类子图](architecture/workflow/contract-extraction/classification.md)：定义分类公共上下文、逐类别并发判定、结果和失败边界。
+- [主助手生成循环](architecture/workflow/contract-communication/agent-runtime.md)：工具循环、上下文预算和驻留提交。
 - [最终公共前缀组装节点](architecture/workflow/contract-extraction/final-context-assembly.md)：定义分类结果的稳定追加和三个下游分支的统一上下文契约。
-- [合同建议文件名生成子图](architecture/workflow/contract-extraction/file-name-generation.md)：定义分类后的两节点命名流程、工具协议、SSE 投影与运行恢复边界。
+- [合同概览生成子图](architecture/workflow/contract-extraction/contract-overview-generation.md)：定义分类后的两节点命名流程、工具协议、SSE 投影与运行恢复边界。
 - [字段提取子图](architecture/workflow/contract-extraction/field-extraction.md)：定义 Core 目录选择、公共任务组装及逐定义并行提取边界。
 - [条款提取子图](architecture/workflow/contract-extraction/clause-extraction.md)：定义候选顺序发现、详情公共上下文确定性组装，以及逐候选并发内容提取。
 - [检索问题生成子图](architecture/workflow/contract-extraction/retrieval-view-generation.md)：定义动态问题规划、按规划并发生成、逐问题向量化和合同向量融合。
@@ -120,6 +138,7 @@ description/
 
 - [Communication SQLite 存储](architecture/data/communication-sqlite.md)：定义会话、任务/摘要和独立工作区三表，以及摘要恢复边界与密钥归属。
 - [合同 SQLite 元数据结构](architecture/data/contract-sqlite-metadata.md)：定义文件管理目录、入库状态及 SQLite、PDF、ES 三处一致性边界。
+- [合同关联图存储契约](architecture/data/contract-graph.md)：定义合同节点、不可修改的无向关系边、创建人和创建时间，以及删除重建规则。
 - [合同 Elasticsearch 文档结构](architecture/data/contract-elasticsearch-document.md)：定义复核后合同的正式索引结构、启动创建及 Core mapping 增量同步边界。
 - [模型提取对象定义结构](architecture/data/field-definition.md)：定义单值或多值扁平对象的 YAML 结构、稳定索引代码、分词策略、基本类型及禁止嵌套约束。
 - [合同交易类别定义结构](architecture/data/contract-category-definition.md)：定义一类一文件的交易类别 YAML、类别边界与后续加载约束。
@@ -142,19 +161,24 @@ description/
 
 ### 应用能力
 
-- [Communication 样式联调服务](capability/application/communication-ui-demo.md)：独立模拟服务，使用真实路由测试流式输出、确认、拒绝、失败、取消、替换与回放。
 - [FastAPI 后端应用骨架](capability/application/backend-application.md)：说明应用分层、启动生命周期、Elasticsearch 索引同步、运行方式和环境配置。
 - [Agent 工作流包](capability/application/agent-workflow.md)：说明 `app.agent` 与 API、服务层和基础设施的调用边界。
 - [复核后合同正式入库](capability/application/contract-ingestion.md)：说明最终审核值校验、处理版 PDF 保存、正式 ES 投影、失败重试和运行释放。
 
 ### 基础设施能力
 
+- [模型结构化输出兼容](capability/infrastructure/model-json.md)：说明所有模型结构化解析入口的嵌套 JSON 转换、文本保真和严格校验边界。
+
+- [SQLite 中文全文检索依赖](capability/infrastructure/sqlite-fts.md)：Lindera Jieba的固定源码构建、配置、连接加载与验证。
 - [SQLite 向量支持](capability/infrastructure/sqlite-vector.md)：提供按连接加载的向量扩展、普通表距离查询及镜像构建检查。
 - [后端 Docker 镜像](capability/infrastructure/docker-deployment.md)：说明项目内镜像构建、运行契约及独立部署项目的编排职责。
 
 - [Elasticsearch 本地开发部署](capability/infrastructure/elasticsearch-development.md)：说明单节点 Docker Compose、应用连接、启动索引同步、数据卷和本机安全边界。
+- [Neo4j 部署与开发连接](capability/infrastructure/neo4j-development.md)：说明合同关联图基础设施、开发端口、认证及持久化边界。
 - [开发合同入库脚本](capability/infrastructure/development-contract-ingestion.md)：调用正式提取流程并为开发测试写入带双融合向量的合同文档。
-- [vLLM 自定义聊天模板](capability/infrastructure/vllm-chat-template.md)：说明 Qwen3.6 工具调用格式资产、工具前后置布局、启动参数和接入边界。
+- [GLM-5.3-Flash 模板](capability/infrastructure/glm53-template.md)：说明 GLM 工具协议、三档映射、工具位置及思考开关边界。
+- [DeepSeek V4.1 Flash 模板](capability/infrastructure/deepseek-v41-template.md)：说明 DSML、思考强度、模板边界及官方编码器对照验证。
+- [vLLM 自定义聊天模板](capability/infrastructure/vllm-chat-template.md)：说明 Qwen3.8-Flash-Next 工具调用格式资产、工具前后置布局、启动参数和接入边界。
 - [vLLM 多模态媒体引用](capability/infrastructure/vllm-media-reference.md)：说明页面首次填充、UUID-only 引用、并发协调和 cache-miss 自动重填。
 - [模型推理指标观察能力](capability/infrastructure/inference-observability.md)：说明任务局部的 MLLM、Embedding 请求耗时、token 与 vLLM 逐请求指标采集。
 - [模型全局并发额度](capability/infrastructure/model-concurrency.md)：说明跨合同、跨节点共享的 MLLM 与 Embedding 请求限制、取消回收及排队边界。
@@ -166,6 +190,8 @@ description/
 ---
 
 ## 实验
+
+- [Agent Core 真实运行验证](../experiment/agent-core-live/README.md)：真实页面、长短任务轨迹、工作区整理和摘要后连续执行。
 
 - [会话记忆筛选质量实验](../experiment/conversation-memory-selection/README.md)：24轮合成业务对话，默认准备输入，可显式调用节点1评估任务筛选与提取边界。
 
@@ -209,3 +235,19 @@ description/
 4. 移动或重命名文档时，应同步更新所有相对链接和本导航页，并检查文档内锚点。
 
 5. 文档命名、结构、排版和审查要求统一遵循[文档撰写风格手册](documentation.md)。
+
+- [用户备注混合检索](architecture/workflow/contract-communication/contract-note-search.md)：BM25 与向量召回、合同归并及命中备注分页。
+
+- [合同摘要混合检索](architecture/workflow/contract-communication/contract-summary-search.md)：向量＋BM25、RRF 排名、范围限制与共享分页，已接入主循环。
+
+- [合同名称检索](architecture/workflow/contract-communication/contract-name-search.md)：以“xxx合同”式名称进行 BM25 检索，复用范围与分页，已注册进入主循环。
+
+- [合同关系检索](architecture/workflow/contract-communication/contract-relation-search.md)：可选起点筛选、关系描述 BM25＋向量、边结果集及两端合同分页。
+
+- [合同类型筛选工具](architecture/workflow/contract-communication/contract-category-search.md)：类型从definition编译为枚举，精确筛选并保留候选排名。
+- [动态 Core 筛选工具](architecture/workflow/contract-communication/contract-core-search.md)：根据权威字段目录编译多条件 Schema 和 ES 查询，保持父候选排名。
+- [合同候选查询子图](architecture/workflow/contract-communication/contract-retrieval.md)：五种文本查询及动态 Core 筛选已接入内部工具；主模型使用 `search_contracts` 获取最终结果集引用，再用 `view_contract_candidates` 分页查看，内部只回显池引用与数量。图片和关系工具保持独立。
+
+- [独立开发链路观察接口](api/development-trace.md)
+
+- [合同库统计工具](architecture/workflow/contract-communication/contract-statistics.md)：按可选入库时间一键统计合同、类别、审核人、注意事项和关联覆盖。

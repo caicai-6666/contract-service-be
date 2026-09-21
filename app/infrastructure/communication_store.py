@@ -27,17 +27,31 @@ CREATE TABLE IF NOT EXISTS conversation_records (
     created_at INTEGER NOT NULL,
     activated_at INTEGER,
     processing_duration_ms INTEGER CHECK(processing_duration_ms IS NULL OR (kind = 'task' AND typeof(processing_duration_ms) = 'integer' AND processing_duration_ms >= 0)),
-    retrieval_text TEXT,
-    embedding BLOB,
     memory_processed_at INTEGER CHECK(memory_processed_at IS NULL OR (kind = 'task' AND typeof(memory_processed_at) = 'integer' AND memory_processed_at >= 0)),
     UNIQUE(conversation_id, sequence),
     CHECK((kind = 'task' AND turn_id IS NOT NULL AND length(turn_id) > 0 AND status IS NOT NULL)
-       OR (kind = 'summary' AND turn_id IS NULL AND status IS NULL)),
-    CHECK((embedding IS NULL AND retrieval_text IS NULL)
-       OR (typeof(embedding) = 'blob' AND length(embedding) > 0 AND length(embedding) % 4 = 0
-           AND retrieval_text IS NOT NULL AND length(trim(retrieval_text)) > 0))
+       OR (kind = 'summary' AND turn_id IS NULL AND status IS NULL))
 );
 """
+
+
+# 每个区域各自成对，缺少输出时保持NULL；同一任务最多一份检索投影。
+_RETRIEVAL_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS conversation_task_retrievals (
+    record_id TEXT PRIMARY KEY NOT NULL REFERENCES conversation_records(record_id) ON DELETE CASCADE,
+    user_input_text TEXT,
+    user_input_embedding BLOB,
+    intermediate_output_text TEXT,
+    intermediate_output_embedding BLOB,
+    final_output_text TEXT,
+    final_output_embedding BLOB,
+    created_at INTEGER NOT NULL CHECK(typeof(created_at) = 'integer' AND created_at >= 0),
+""" + ',\n'.join(
+    f"    CHECK(({p}_text IS NULL AND {p}_embedding IS NULL) OR "
+    f"({p}_text IS NOT NULL AND typeof({p}_text) = 'text' AND length(trim({p}_text)) > 0 "
+    f"AND {p}_embedding IS NOT NULL AND typeof({p}_embedding) = 'blob' AND length({p}_embedding) = 16384))"
+    for p in ('user_input', 'intermediate_output', 'final_output')
+) + '\n);'
 
 
 _SCHEMA = f"""
@@ -55,6 +69,11 @@ CREATE INDEX IF NOT EXISTS records_summary_boundary
     ON conversation_records(conversation_id, sequence) WHERE kind = 'summary';
 CREATE INDEX IF NOT EXISTS records_time
     ON conversation_records(conversation_id, created_at);
+
+CREATE TABLE IF NOT EXISTS conversation_reasoning_windows (
+    conversation_id TEXT PRIMARY KEY NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+    payload TEXT NOT NULL CHECK(json_valid(payload) AND json_type(payload) = 'object')
+);
 
 CREATE TABLE IF NOT EXISTS conversation_workspaces (
     conversation_id TEXT PRIMARY KEY NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
@@ -111,15 +130,23 @@ class SQLiteCommunicationStore:
                     "CHECK(processing_duration_ms IS NULL OR (kind = 'task' "
                     "AND typeof(processing_duration_ms) = 'integer' AND processing_duration_ms >= 0))"
                 )
-            self._remove_embedding_model(connection)
             columns = {row['name'] for row in connection.execute('PRAGMA table_info(conversation_records)')}
             if 'memory_processed_at' not in columns:
                 connection.execute("ALTER TABLE conversation_records ADD COLUMN memory_processed_at INTEGER "
                                    "CHECK(memory_processed_at IS NULL OR (kind = 'task' "
                                    "AND typeof(memory_processed_at) = 'integer' AND memory_processed_at >= 0))")
-            # 旧库中已有有效检索对的任务已加工；空向量不能代表已筛选跳过。
-            connection.execute("UPDATE conversation_records SET memory_processed_at = ? "
-                               "WHERE kind = 'task' AND memory_processed_at IS NULL AND embedding IS NOT NULL", (_now(),))
+            self._remove_legacy_retrieval(connection)
+            # 必须先迁移父表再创建子表，避免DROP父表触发新检索行级联删除。
+            connection.execute(_RETRIEVAL_TABLE_SQL)
+            for operation in ('INSERT', 'UPDATE OF record_id'):
+                suffix = 'insert' if operation == 'INSERT' else 'update'
+                connection.execute(f"CREATE TRIGGER IF NOT EXISTS retrieval_task_{suffix} "
+                    f"BEFORE {operation} ON conversation_task_retrievals "
+                    "WHEN NOT EXISTS (SELECT 1 FROM conversation_records WHERE record_id = NEW.record_id AND kind = 'task') "
+                    "BEGIN SELECT RAISE(ABORT, 'retrieval requires task'); END")
+            connection.execute("CREATE TRIGGER IF NOT EXISTS retrieval_parent_kind BEFORE UPDATE OF kind ON conversation_records "
+                "WHEN NEW.kind != 'task' AND EXISTS (SELECT 1 FROM conversation_task_retrievals WHERE record_id = OLD.record_id) "
+                "BEGIN SELECT RAISE(ABORT, 'retrieval requires task'); END")
             connection.execute("CREATE INDEX IF NOT EXISTS records_memory_pending "
                                "ON conversation_records(conversation_id, sequence) "
                                "WHERE kind = 'task' AND memory_processed_at IS NULL")
@@ -135,18 +162,17 @@ class SQLiteCommunicationStore:
                                        (_default_name(row["created_at"]), row["conversation_id"]))
 
     @staticmethod
-    def _remove_embedding_model(connection: sqlite3.Connection) -> None:
+    def _remove_legacy_retrieval(connection: sqlite3.Connection) -> None:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(conversation_records)")}
-        if "embedding_model" not in columns:
+        if not columns.intersection({"embedding_model", "retrieval_text", "embedding"}):
             return
-        # 旧 CHECK 引用了待删除列，不能直接 DROP COLUMN；同一事务重建并保留其余字段。
+        # 旧综合摘要不能拆成三入口，清除旧索引及加工标记，保留全部原任务等待重新加工。
         connection.execute(_RECORD_TABLE_SQL.replace("IF NOT EXISTS conversation_records", "conversation_records_new"))
-        retained = "record_id, conversation_id, sequence, kind, turn_id, status, payload, created_at, activated_at, processing_duration_ms, retrieval_text, embedding"
-        if 'memory_processed_at' in columns:
-            retained += ', memory_processed_at'
+        retained = "record_id, conversation_id, sequence, kind, turn_id, status, payload, created_at, activated_at, processing_duration_ms, memory_processed_at"
         connection.execute(
             f"INSERT INTO conversation_records_new ({retained}) SELECT {retained} FROM conversation_records"
         )
+        connection.execute("UPDATE conversation_records_new SET memory_processed_at = NULL")
         connection.execute("DROP TABLE conversation_records")
         connection.execute("ALTER TABLE conversation_records_new RENAME TO conversation_records")
         connection.execute(
@@ -192,6 +218,8 @@ class SQLiteCommunicationStore:
             raise ValueError("会话标识不能为空")
         if not isinstance(secret_key, SecretStr) or not secret_key.get_secret_value().strip():
             raise ValueError("必须提供已认证用户的非空密钥")
+        from app.schema.communication_workspace import empty_workspace_payload
+
         now = _now()
         # 默认名称是创建时生成的固定文本，不随读取、重启或改名刷新。
         name = _default_name(now) if name is None else self._name(name)
@@ -202,7 +230,7 @@ class SQLiteCommunicationStore:
             )
             connection.execute(
                 "INSERT INTO conversation_workspaces VALUES (?, ?, 0, ?)",
-                (conversation_id, _json({"achieved_goals": [], "known_information": [], "next_tasks": []}), now),
+                (conversation_id, _json(empty_workspace_payload()), now),
             )
 
     def rename_conversation(self, conversation_id: str, *, secret_key: SecretStr, name: str) -> dict:
@@ -268,6 +296,16 @@ class SQLiteCommunicationStore:
         return self._append(conversation_id, secret_key=secret_key, kind="task",
                             turn_id=turn_id, status=status, payload=payload,
                             processing_duration_ms=processing_duration_ms)
+
+    def append_topic_summary(self, conversation_id: str, *, secret_key: SecretStr,
+                             summary: dict, expected_sequence: int) -> int:
+        """保存最新版累计主题摘要；复用有序记录和乐观尾部检查，不另建摘要表。"""
+        from app.agent.contract_communication.agent_core.subgraph.fifo_management.fifo_summary.schema import FIFOTopicSummary
+        payload = FIFOTopicSummary.model_validate(summary).model_dump(mode='json')
+        if type(expected_sequence) is not int or expected_sequence < 1:
+            raise ValueError('摘要覆盖尾部必须为正整数')
+        return self._append(conversation_id, secret_key=secret_key, kind='summary',
+                            payload=payload, expected_sequence=expected_sequence)
 
     def append_summary(self, conversation_id: str, *, secret_key: SecretStr,
                        text: str, expected_sequence: int) -> int:
@@ -366,8 +404,11 @@ class SQLiteCommunicationStore:
         from app.schema.communication import ConversationHistoryRecord
 
         item = ConversationHistoryRecord.model_validate(record)
-        if item.kind != 'task' or item.status not in TERMINAL_STATUSES or not item.turn_id:
-            raise ValueError('只能备份冻结的终态任务')
+        if item.kind == 'summary':
+            from app.agent.contract_communication.agent_core.subgraph.fifo_management.fifo_summary.schema import FIFOTopicSummary
+            FIFOTopicSummary.model_validate(item.payload)
+        elif item.status not in TERMINAL_STATUSES or not item.turn_id:
+            raise ValueError('只能备份冻结的终态任务或已验收摘要')
         columns = 'record_id, sequence, kind, turn_id, status, payload, created_at, activated_at, processing_duration_ms'
         existing = connection.execute(
             f'SELECT {columns} FROM conversation_records WHERE conversation_id = ? '
@@ -388,7 +429,7 @@ class SQLiteCommunicationStore:
 
     def backup_tasks_with_workspace(
         self, conversation_id: str, *, secret_key: SecretStr, records: list[dict],
-        workspace: dict, expected_workspace_revision: int,
+        workspace: dict, expected_workspace_revision: int, positions: dict[str, int] | None = None,
     ) -> None:
         """原子复制同会话冻结轨迹与工作区；任一冲突则整批回滚。"""
         from app.schema.communication_workspace import WorkspaceSnapshot
@@ -398,6 +439,21 @@ class SQLiteCommunicationStore:
             raise ValueError('工作区备份版本无效')
         with self._connection(write=True) as connection:
             self._owner(connection, conversation_id, secret_key)
+            if positions:
+                if (len(set(positions.values())) != len(positions)
+                        or any(type(n) is not int or n <= 0 for n in positions.values())):
+                    raise ValueError('轨迹排序映射非法')
+                existing = connection.execute('SELECT record_id, sequence FROM conversation_records WHERE conversation_id = ?',
+                                              (conversation_id,)).fetchall()
+                moved = [r for r in existing if r['record_id'] in positions and positions[r['record_id']] != r['sequence']]
+                # 先暂移至高位，再恢复目标位置，避开 UNIQUE(sequence) 中间冲突。
+                offset = max([*positions.values(), *(r['sequence'] for r in existing), 0]) + 1
+                for index, row in enumerate(moved):
+                    connection.execute('UPDATE conversation_records SET sequence = ? WHERE record_id = ?',
+                                       (offset + index, row['record_id']))
+                for row in moved:
+                    connection.execute('UPDATE conversation_records SET sequence = ? WHERE record_id = ?',
+                                       (positions[row['record_id']], row['record_id']))
             for record in records:
                 self._backup_task(connection, conversation_id, record)
             self._backup_workspace(connection, conversation_id, snapshot, expected_workspace_revision)
@@ -436,8 +492,8 @@ class SQLiteCommunicationStore:
         self, conversation_id: str, *, secret_key: SecretStr, records: list[dict],
         memories: list[dict], workspace: dict, expected_workspace_revision: int,
     ) -> None:
-        """原轨迹、检索对、加工完成标记与工作区在同一事务提交，不修改原轨迹。"""
-        from app.agent.conversation_memory.state import MemoryPendingRecord
+        """原轨迹、三入口检索行、加工标记及工作区原子提交；拒绝旧综合摘要结构。"""
+        from app.schema.communication_retrieval import TaskRetrievalRecord
         from app.schema.communication import ConversationHistoryRecord
         from app.schema.communication_workspace import WorkspaceSnapshot
         from sqlite_vec import serialize_float32
@@ -447,46 +503,79 @@ class SQLiteCommunicationStore:
             raise ValueError('工作区备份版本无效')
         if not records or len(records) != len(memories):
             raise ValueError('归档任务与加工结果必须完整配对')
+        prefixes = ('user_input', 'intermediate_output', 'final_output')
+        columns = [f'{p}_{kind}' for p in prefixes for kind in ('text', 'embedding')]
         pairs = []
         for raw, memory in zip(records, memories, strict=True):
             record = ConversationHistoryRecord.model_validate(raw)
-            memory = MemoryPendingRecord.model_validate(memory)
-            original = dict(task_id=record.record_id, status=record.status, payload=record.payload,
-                            created_at=record.created_at, activated_at=record.activated_at,
-                            processing_duration_ms=record.processing_duration_ms)
-            if memory.model_dump(exclude={'retrieval_text', 'embedding'}) != original:
-                raise ValueError('加工结果改变了原任务身份、轨迹或计时')
-            pairs.append((record, memory.retrieval_text,
-                          serialize_float32(memory.embedding) if memory.embedding is not None else None))
-        if len({r.record_id for r, _, _ in pairs}) != len(pairs):
+            memory = TaskRetrievalRecord.model_validate(memory)
+            if record.kind != 'task' or record.record_id != memory.record_id:
+                raise ValueError('检索投影必须对应同位置的原任务')
+            values = []
+            for prefix in prefixes:
+                text = getattr(memory, prefix+'_text')
+                vector = getattr(memory, prefix+'_embedding')
+                values.extend((text, serialize_float32(vector) if vector is not None else None))
+            pairs.append((record, tuple(values)))
+        if len({r.record_id for r, _ in pairs}) != len(pairs):
             raise ValueError('归档任务重复')
         with self._connection(write=True) as connection:
             self._owner(connection, conversation_id, secret_key)
-            for record, text, vector in pairs:
+            for record, values in pairs:
+                # 编码期间可能插入FIFO摘要并重排sequence。以稳定record_id回连，只更新位置，
+                # 其余冻结内容仍由_backup_task完整校验，不能用旧序号覆盖新排序。
+                current = connection.execute('SELECT sequence FROM conversation_records WHERE conversation_id = ? AND record_id = ?',
+                                             (conversation_id, record.record_id)).fetchone()
+                if current is not None:
+                    record = record.model_copy(update={'sequence':current['sequence']})
                 self._backup_task(connection, conversation_id, record.model_dump())
                 saved = connection.execute(
-                    'SELECT retrieval_text, embedding, memory_processed_at FROM conversation_records WHERE record_id = ?',
+                    f"SELECT {', '.join(columns)} FROM conversation_task_retrievals WHERE record_id = ?",
                     (record.record_id,),
                 ).fetchone()
-                if saved['memory_processed_at'] is not None:
-                    if (saved['retrieval_text'], saved['embedding']) != (text, vector):
+                if saved is not None:
+                    if tuple(saved) != values:
                         raise CommunicationStoreConflict('已加工任务禁止被不同结果覆盖')
                     continue
+                now = _now()
                 connection.execute(
-                    'UPDATE conversation_records SET retrieval_text = ?, embedding = ?, memory_processed_at = ? WHERE record_id = ?',
-                    (text, vector, _now(), record.record_id),
+                    f"INSERT INTO conversation_task_retrievals (record_id, {', '.join(columns)}, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (record.record_id, *values, now),
                 )
+                connection.execute('UPDATE conversation_records SET memory_processed_at = ? WHERE record_id = ?',
+                                   (now, record.record_id))
             self._backup_workspace(connection, conversation_id, snapshot, expected_workspace_revision)
+
+    def read_task_retrieval(self, conversation_id: str, *, secret_key: SecretStr, record_id: str) -> dict | None:
+        """授权后按稳定记录ID读检索投影；历史加载仍不携带检索数据。"""
+        import struct
+        with self._connection() as connection:
+            connection.execute('BEGIN')
+            self._owner(connection, conversation_id, secret_key)
+            record = connection.execute('SELECT kind FROM conversation_records WHERE conversation_id = ? AND record_id = ?',
+                                        (conversation_id, record_id)).fetchone()
+            if record is None or record['kind'] != 'task':
+                raise LookupError('任务不存在')
+            row = connection.execute('SELECT * FROM conversation_task_retrievals WHERE record_id = ?', (record_id,)).fetchone()
+            if row is None:
+                return None
+            result = dict(row)
+            for key in ('user_input_embedding','intermediate_output_embedding','final_output_embedding'):
+                if result[key] is not None:
+                    result[key] = struct.unpack('<4096f', result[key])
+            return result
 
     @staticmethod
     def _read_workspace(connection: sqlite3.Connection, conversation_id: str) -> dict:
+        from app.schema.communication_workspace import read_workspace_payload
+
         row = connection.execute(
             'SELECT payload, revision, updated_at FROM conversation_workspaces WHERE conversation_id = ?',
             (conversation_id,),
         ).fetchone()
         if row is None:
             raise LookupError('会话工作区不存在')
-        return dict(row) | {'payload': json.loads(row['payload'])}
+        return dict(row) | {'payload': read_workspace_payload(json.loads(row['payload'])).model_dump()}
 
     def read_workspace(self, conversation_id: str, *, secret_key: SecretStr) -> dict:
         with self._connection() as connection:
@@ -511,3 +600,29 @@ class SQLiteCommunicationStore:
             if result.rowcount != 1:
                 raise CommunicationStoreConflict("工作区版本已过期")
             return expected_revision + 1
+
+
+    def read_reasoning_window(self, conversation_id, *, secret_key):
+        from app.schema.reasoning_window import ReasoningWindow
+        with self._connection() as connection:
+            self._owner(connection, conversation_id, secret_key)
+            row = connection.execute('SELECT payload FROM conversation_reasoning_windows WHERE conversation_id = ?',
+                                     (conversation_id,)).fetchone()
+            return ReasoningWindow.model_validate_json(row['payload']) if row else ReasoningWindow()
+
+    def save_reasoning_window(self, conversation_id, *, secret_key, window, expected_position):
+        """独立短事务保存窗口；旧副本不得覆盖新思考，删除会话时级联清理。"""
+        from app.schema.reasoning_window import ReasoningWindow
+        value = ReasoningWindow.model_validate(window)
+        with self._connection(write=True) as connection:
+            self._owner(connection, conversation_id, secret_key)
+            row = connection.execute('SELECT payload FROM conversation_reasoning_windows WHERE conversation_id = ?',
+                                     (conversation_id,)).fetchone()
+            current = ReasoningWindow.model_validate_json(row['payload']) if row else ReasoningWindow()
+            if current == value:
+                return
+            if current.next_position != expected_position:
+                raise CommunicationStoreConflict('思考窗口位置冲突')
+            connection.execute('INSERT INTO conversation_reasoning_windows(conversation_id,payload) VALUES (?,?) '
+                'ON CONFLICT(conversation_id) DO UPDATE SET payload=excluded.payload',
+                (conversation_id,value.model_dump_json()))

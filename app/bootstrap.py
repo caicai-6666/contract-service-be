@@ -31,15 +31,19 @@ from app.infrastructure.contract_metadata_store import (
     SQLiteContractMetadataStore,
 )
 from app.infrastructure.elasticsearch import create_elasticsearch_client
+from app.infrastructure.neo4j import Neo4jClient
+from app.infrastructure.contract_graph_store import ContractGraphStore
 from app.infrastructure.pdf_candidate_loader import (
     LocalPDFDuplicateCandidateLoader,
 )
 from app.service.auth import AuthService, LoginCodeCache
 from app.service.communication_workflow import CommunicationWorkflowService
+from app.service.communication_file_tools import CommunicationFileTools
+from app.agent.contract_communication.agent_core.runtime import run_agent_core
 from app.service.communication_history import ConversationHistoryService
 from app.service.communication_archive import CommunicationArchiveService
-from app.service.communication_demo import run_demo_workflow
 from app.service.contract_ingestion import ContractIngestionService
+from app.service.contract_relation import ContractRelationService
 from app.service.contract_extraction import (
     AgentContractDocumentDetectionExecutor,
     AgentContractExtractionExecutor,
@@ -66,7 +70,9 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     communication_store = SQLiteCommunicationStore(settings.communication_database_path)
     communication_store.initialize()
     application.state.communication_store = communication_store
-    communication_history_service = ConversationHistoryService(communication_store)
+    communication_history_service = ConversationHistoryService(communication_store,
+        memory_query_capacity=settings.communication_memory_query_cache_max_queries,
+        memory_query_page_size=settings.communication_memory_query_page_size)
     application.state.communication_history_service = communication_history_service
     communication_memory_graph = build_conversation_memory_graph()
     application.state.conversation_memory_graph = communication_memory_graph
@@ -116,16 +122,33 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     elasticsearch = create_elasticsearch_client(settings)
     application.state.elasticsearch = elasticsearch
     contract_extraction_service: ContractExtractionService | None = None
-    # 始终先执行真实门禁；开关只替换门禁通过后的问答层，不能绕过校验。
+    # 完整业务门禁通过后，统一进入正式 Agent Core。
+    contract_metadata_store = SQLiteContractMetadataStore(settings.contract_metadata_database_path)
+    communication_file_tools = CommunicationFileTools(
+        communication_history_service, settings, metadata_store=contract_metadata_store, elasticsearch=elasticsearch,
+        field_catalog=field_definition_catalog, category_catalog=contract_category_catalog)
+    application.state.communication_file_tools = communication_file_tools
     communication_event_service = CommunicationWorkflowService(
         settings=settings.mllm,
-        after_gate=partial(run_demo_workflow, after_gate=True) if settings.communication_demo_enabled else None,
+        deepseek_settings=settings.deepseek,
+        expert_session_capacity=settings.communication_expert_session_cache_max_sessions,
+        relation_search_settings=settings,
+        relation_cache_capacity=settings.communication_contract_relations_cache_max_contracts,
+        relation_page_size=settings.communication_contract_relations_page_size,
+        notes_cache_capacity=settings.communication_contract_notes_cache_max_contracts,
+        notes_page_size=settings.communication_contract_notes_page_size,
+        agent_core_runner=partial(run_agent_core, settings=settings.mllm),
+        file_tools=communication_file_tools,
     )
-    if settings.communication_demo_enabled:
-        logger.warning("Communication 混合联调已启用：真实门禁通过后输出模拟问答，不执行真实合同分析")
+    logger.info("Communication 正式问答已启用：真实门禁通过后进入 Agent Core，共用本轮 SSE 与驻留会话")
     application.state.communication_event_service = communication_event_service
     communication_event_service.bind_history(communication_history_service)
+    neo4j: Neo4jClient | None = None
     try:
+        neo4j = Neo4jClient(settings)
+        application.state.neo4j = neo4j
+        contract_graph_store = ContractGraphStore(neo4j)
+        application.state.contract_graph_store = contract_graph_store
         await communication_event_service.start()
         index_sync = await synchronize_contract_index(
             elasticsearch,
@@ -171,10 +194,9 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
             retrieval_guide_catalog=retrieval_view_guide_catalog,
         )
         pdf_preparation_service = AsyncPDFPreparationService(settings.mllm)
-        contract_metadata_store = SQLiteContractMetadataStore(
-            settings.contract_metadata_database_path
-        )
         contract_ingestion_service = ContractIngestionService(
+            embedding_settings=settings.embedding,
+            graph_store=contract_graph_store,
             elasticsearch=elasticsearch,
             index_name=settings.elasticsearch_index_name,
             file_store=contract_file_store,
@@ -186,6 +208,13 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         await contract_ingestion_service.initialize()
         application.state.contract_metadata_store = contract_metadata_store
         application.state.contract_ingestion_service = contract_ingestion_service
+        application.state.contract_relation_service = ContractRelationService(
+            graph_store=contract_graph_store, metadata_store=contract_metadata_store,
+            embedding_settings=settings.embedding,
+            lock_documents=contract_ingestion_service.lock_documents,
+        )
+        communication_event_service.bind_contract_relations(
+            application.state.contract_relation_service, contract_metadata_store)
         logger.info(
             "SQLite 合同元数据目录初始化完成：database=%s",
             contract_metadata_store.database_path,
@@ -222,10 +251,16 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         await communication_archive_service.start()
         yield
     finally:
-        # 先停止归档模型作业，再冻结事件生产，最后备份原轨迹及工作区。
-        await communication_archive_service.close()
-        await communication_event_service.close()
-        await communication_history_service.close()
-        if contract_extraction_service is not None:
-            await contract_extraction_service.close()
-        await elasticsearch.close()
+        try:
+            # 先停止归档模型作业，再冻结事件生产，最后备份原轨迹及工作区。
+            await communication_archive_service.close()
+            await communication_event_service.close()
+            await communication_history_service.close()
+            if contract_extraction_service is not None:
+                await contract_extraction_service.close()
+        finally:
+            try:
+                if neo4j is not None:
+                    await neo4j.close()
+            finally:
+                await elasticsearch.close()

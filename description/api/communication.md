@@ -2,22 +2,24 @@
 
 > 本文按接口组织。每个接口章节独立提供方法与完整路径、认证、参数、响应、错误码及请求示例；示例中的 login_code、c1、t1、文件路径须替换为实际值。
 
-正式激活后已执行文件可读性、文件摘要、文件与文字业务相关性及文件文字整体判断，并将拒绝提示、任务终态同步至 SSE 与历史；上下文相关性及服务端历史选择已接入，核心问答尚未接入。启用 `COMMUNICATION_DEMO_ENABLED=true` 则在真实门禁通过后，通过同一轮 SSE 输出模拟问答；拒绝或失败不会进入 mock，见[样式联调说明](../capability/application/communication-ui-demo.md)。
+正式激活后已执行文件可读性、文件摘要、文件与文字业务相关性及文件文字整体判断，并将拒绝提示、任务终态同步至 SSE 与历史；上下文相关性及服务端历史选择已接入，完整门禁放行后进入正式 Agent Core，继续同一轮 SSE。
 
 ## 接口目录
 
-| 接口 | 方法与完整路径 |
-| --- | --- |
-| [获取当前用户会话列表](#获取当前用户会话列表) | GET /contract/api/communication/conversations |
-| [打开会话](#打开会话) | POST /contract/api/communication/conversations/{conversation_id}/open |
-| [向前刷新会话历史](#向前刷新会话历史) | POST /contract/api/communication/conversations/{conversation_id}/refresh |
-| [修改会话名称](#修改会话名称) | PATCH /contract/api/communication/conversations/{conversation_id} |
-| [删除会话](#删除会话) | DELETE /contract/api/communication/conversations/{conversation_id} |
-| [创建会话及首轮](#创建会话及首轮) | POST /contract/api/communication/conversations |
-| [创建或替换轮次](#创建或替换轮次) | POST /contract/api/communication/conversations/{conversation_id}/turns |
-| [订阅轮次事件流](#订阅轮次事件流) | GET /contract/api/communication/conversations/{conversation_id}/turns/{turn_id}/events |
-| [获取轮次快照](#获取轮次快照) | GET /contract/api/communication/conversations/{conversation_id}/turns/{turn_id} |
-| [取消轮次](#取消轮次) | POST /contract/api/communication/conversations/{conversation_id}/turns/{turn_id}/cancel |
+| 接口 | 方法 | 完整路径 |
+| --- | --- | --- |
+| [获取当前用户会话列表](#获取当前用户会话列表) | `GET` | `/contract/api/communication/conversations` |
+| [打开会话](#打开会话) | `POST` | `/contract/api/communication/conversations/{conversation_id}/open` |
+| [向前刷新会话历史](#向前刷新会话历史) | `POST` | `/contract/api/communication/conversations/{conversation_id}/refresh` |
+| [修改会话名称](#修改会话名称) | `PATCH` | `/contract/api/communication/conversations/{conversation_id}` |
+| [删除会话](#删除会话) | `DELETE` | `/contract/api/communication/conversations/{conversation_id}` |
+| [创建会话及首轮](#创建会话及首轮) | `POST` | `/contract/api/communication/conversations` |
+| [创建或替换轮次](#创建或替换轮次) | `POST` | `/contract/api/communication/conversations/{conversation_id}/turns` |
+| [订阅轮次事件流](#订阅轮次事件流) | `GET` | `/contract/api/communication/conversations/{conversation_id}/turns/{turn_id}/events` |
+| [获取轮次快照](#获取轮次快照) | `GET` | `/contract/api/communication/conversations/{conversation_id}/turns/{turn_id}` |
+| [取消轮次](#取消轮次) | `POST` | `/contract/api/communication/conversations/{conversation_id}/turns/{turn_id}/cancel` |
+
+共用说明：[请求中的合同引用](#请求中的合同引用)。
 
 接入顺序：创建会话及首轮 → 订阅激活 → 后续创建或替换轮次 → 订阅新轮次。刷新时读取快照，主动停止时调用取消接口。
 
@@ -33,7 +35,7 @@
 
 返回当前登录用户在 SQLite 中保留的全部会话，用于会话列表展示。不依赖内存中是否仍存在轮次，不触发工作流。
 
-请求头：`Authorization: Bearer <login_code>`。所有权限等级均可查看自己的会话，登录方式见[审核用户登录 API](auth.md)。
+请求头：`Authorization: Bearer <login_code>`。所有已登录用户均可查看自己的会话，登录方式见[审核用户登录 API](auth.md)。
 
 ### 请求参数
 
@@ -89,7 +91,7 @@ curl 'http://127.0.0.1:20000/contract/api/communication/conversations' \
 
 首次打开时读取最新摘要（包含）及其后的历史，加载到会话驻留缓存。没有摘要则加载全部已有记录。重复打开保留已向前加载的历史，并合并数据库中的新增尾部记录，不将范围重置为最新摘要。
 
-请求头：`Authorization: Bearer <login_code>`。所有等级均可打开自己的会话，缓存命中仍校验密钥归属。
+请求头：`Authorization: Bearer <login_code>`。所有已登录用户均可打开自己的会话，缓存命中仍校验密钥归属。
 
 ### 请求参数
 
@@ -127,7 +129,7 @@ curl 'http://127.0.0.1:20000/contract/api/communication/conversations' \
 
 | 字段 | 含义 |
 | --- | --- |
-| `input` | 用户原文 `text` 与附件 `files`；新附件含 `file_id/file_name/display_name/summary/file_path/admission`，规则见下方。 |
+| `input` | 用户原文 `text`、附件 `files` 与合同快照 `contracts`；新附件含 `file_id/file_name/display_name/summary/file_path/admission`，规则见下方。 |
 | `events` | 完整精简展示记录，按原 SSE 顺序排列，保留所有 `turn.status/task.progress/message.completed/error` 业务事件。 |
 | `streaming_messages` | 仍在生成的消息累积正文，含 `message_id/message_kind/text/status/references`，`status=streaming`；无活跃消息或任务结束时为 `[]`。 |
 | `last_sequence` | 读取时已处理的最后 SSE 序号，包含过滤掉的 delta；旧历史未知时为 `null`。 |
@@ -197,7 +199,7 @@ curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations/c1
 
 从当前驻留历史的最早记录向前扩展，遇到更早的一条摘要（包含）即停止；若前面没有摘要，则读取至会话起点。新旧记录按 sequence 组成完整顺序轨迹，不重复追加。
 
-请求头：`Authorization: Bearer <login_code>`。所有等级均可刷新自己的会话。
+请求头：`Authorization: Bearer <login_code>`。所有已登录用户均可刷新自己的会话。
 
 ### 请求参数
 
@@ -268,7 +270,7 @@ curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations/c1
 
 `PATCH /contract/api/communication/conversations/{conversation_id}`
 
-修改当前用户的会话名称。请求头：`Authorization: Bearer <login_code>`，所有权限等级均可修改本人会话。
+修改当前用户的会话名称。请求头：`Authorization: Bearer <login_code>`，所有已登录用户均可修改本人会话。
 
 ### 请求参数
 
@@ -327,7 +329,7 @@ curl -X PATCH 'http://127.0.0.1:20000/contract/api/communication/conversations/c
 
 `DELETE /contract/api/communication/conversations/{conversation_id}`
 
-删除本人会话及 SQLite 中关联的全部任务、摘要和工作区记录。请求头：`Authorization: Bearer <login_code>`。所有权限等级均可删除自己的会话，不套用正式合同删除的 1 级权限。
+删除本人会话及 SQLite 中关联的全部任务、摘要和工作区记录。请求头：`Authorization: Bearer <login_code>`。所有已登录用户均可删除自己的会话。
 
 ### 请求参数
 
@@ -361,7 +363,31 @@ curl -i -X DELETE 'http://127.0.0.1:20000/contract/api/communication/conversatio
 
 物理删除 SQLite 会话，通过外键在同一事务级联删除记录表和工作区；不提供撤销接口，只有已有备份才能恢复。不会删除其他用户或其他会话的数据。
 
-删除成功同步驱逐会话轨迹及该会话事件源，停止演示执行；数据库失败则保留内存。删除与后台备份串行，防止迟到备份或输出复活记录。既有 SSE 会收到 turn_unavailable 连接级错误后关闭，后续请求返回 404；不生成伪造的正常完成消息。不删除 upload 附件或正式合同/ES 数据。
+删除成功同步驱逐会话轨迹及该会话事件源，停止当前执行；数据库失败则保留内存。删除与后台备份串行，防止迟到备份或输出复活记录。既有 SSE 会收到 turn_unavailable 连接级错误后关闭，后续请求返回 404；不生成伪造的正常完成消息。不删除 upload 附件或正式合同/ES 数据。
+
+---
+
+## 请求中的合同引用
+
+创建会话及提交新轮次均支持 `contract_ids`。前端只提交 ID，例如 `formData.append("contract_ids", documentId)`；多份合同重复追加字段，不提交 JSON 数组字符串。所有已登录用户可引用正式合同，已有会话仍须校验归属。
+
+服务端在读取上传内容、创建会话、注册任务或替代原任务之前，先从合同 SQLite 查找全部引用，只接受 `ready` 合同，读取 `document_id`、`file_name`、`summary`。此过程不查询 ES、不读取 PDF，也不调用模型。任一引用无效则整次请求失败：ID 格式错误或数量超限返回 422，不存在或未就绪返回 404，数据库不可用返回 503；不创建新会话，不中断被替代任务。
+
+读取结果保存在任务 `payload.input.contracts`，并随 open/refresh 展示历史返回，例如：
+
+```json
+{
+  "document_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "file_name": "设备采购合同",
+  "summary": "本合同涉及设备供应与安装服务。"
+}
+```
+
+合同名称按库中值保留，不自动添加或删除 `.pdf`。旧合同摘要为 null 时仍可引用，上下文明确提示尚未保存摘要，不推测正文。任务保存当次读取快照，之后的元数据变更不改写历史；新请求重新读取。合同删除不删除历史快照，后续打开原文仍由文件工具检查实际资源。
+
+引用合同不进入上传附件的可读性、摘要生成和主题冲突检查；已有摘要单独作为文件资料参与后续相关性判断，用户文字仍照常检查。完整门禁通过后，在用户输入下单独渲染“引用合同 N”，只包含合同 ID、文件名和摘要，不注入页数、展示名称或注意事项。完整 ID 可用于 `view_contract_file`。
+
+合同快照随原任务持久化；记忆检索用户输入将合同与附件采用同样的文件区块编码机制，详见[检索文本模板](../architecture/workflow/conversation-memory/retrieval-embedding.md#用户输入存储模板)。不新增 SSE 事件。
 
 ---
 
@@ -384,8 +410,9 @@ curl -i -X DELETE 'http://127.0.0.1:20000/contract/api/communication/conversatio
 | `name` | string | 否 | 最多 200 字符，去除首尾空白；未提供时使用北京时间 YYYY-MM-DD HH:mm:ss，纯空白名称拒绝。 |
 | `text` | string | 否 | 最多 20000 字符，保留原文；纯空白视为无文字。 |
 | `files` | PDF[] | 否 | 重复使用 files 字段；最多 10 份，每份 10 MiB，合计 20 MiB。 |
+| `contract_ids` | string[] | 否 | 重复使用 contract_ids 表单字段，最多 10 项完整的 64 位小写 SHA-256；重复 ID 去重并保留首次出现顺序。 |
 
-文字和文件至少一项非空。文件名去除目录部分后须以 `.pdf` 结尾且不超过 512 字符，内容不得为空。这里只做上传约束，不验证 PDF 可打开、加密、渲染或合同属性，不代表业务门禁已通过。
+文字、上传文件和 `contract_ids` 至少一项非空。文件名去除目录部分后须以 `.pdf` 结尾且不超过 512 字符，内容不得为空。这里只做上传约束，不验证 PDF 可打开、加密、渲染或合同属性，不代表业务门禁已通过。
 
 首轮不支持 `supersedes_turn_id`，会话归属从已认证用户的密钥取得，客户端不提交密钥或用户标识。
 
@@ -467,9 +494,10 @@ curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations' \
 | --- | --- | --- | --- |
 | `text` | string | 否 | 最多 20000 字符，保留原文；纯空白视为无文字。 |
 | `files` | PDF[] | 否 | 重复使用 files 字段；最多 10 份，每份 10 MiB，合计 20 MiB。 |
+| `contract_ids` | string[] | 否 | 重复使用 contract_ids 表单字段，最多 10 项完整的 64 位小写 SHA-256；重复 ID 去重并保留首次出现顺序。 |
 | `supersedes_turn_id` | string | 否 | 长度 1～128；补充或调整时指定同会话中 `can_interrupt=true` 的处理中轮次。 |
 
-文字和文件至少一项非空。文件名去除目录部分后须以 `.pdf` 结尾且不超过 512 字符，内容不得为空。这里只做上传约束，不验证 PDF 可打开、加密、渲染或合同属性，不代表业务门禁已通过。
+文字、上传文件和 `contract_ids` 至少一项非空。文件名去除目录部分后须以 `.pdf` 结尾且不超过 512 字符，内容不得为空。这里只做上传约束，不验证 PDF 可打开、加密、渲染或合同属性，不代表业务门禁已通过。
 
 本接口不接受会话命名操作。未指定替代 ID 时，同会话不得已有活跃轮次。
 
@@ -590,8 +618,13 @@ curl -N 'http://127.0.0.1:20000/contract/api/communication/conversations/c1/turn
 | `type` | 默认文案 | 适用范围 |
 | --- | --- | --- |
 | `local-search` | 正在查阅资料 | 检索合同、读取上传文件、查阅历史记录。 |
-| `online-search` | 正在联网检索 | 搜索网页、读取外部资料。 |
+| `online-search` | 正在联网检索 | 搜索网页、读取外部资料；保留给联网检索工具。 |
+| `external-expert` | 正在咨询外部专家：本轮提问内容 | 发起专家咨询或在已有专家会话中追问。 |
 | `thinking` | 正在思考 | 全部业务校验、理解问题、规划任务、计算分析、对比条款、组织答复。 |
+
+新发布的 `task.progress.message` 统一采用“正在＋动作”（例如“正在咨询外部专家”）。工具注册时校验此前缀及非空动作，历史事件仍兼容旧文案。前端可以依据后续进度或轮次终态将上一条显示为“已结束：咨询外部专家”，但不能仅将“正在”替换成“已完成”来判定成功：工具失败后也会恢复思考，同一状态还可能因去重而不重复发送。本约束不适用于错误消息及用户回复正文。
+
+前端须支持 `external-expert` 类型，优先展示后端 `message`，用 `type` 选择图标或样式；历史记录中的旧 `online-search` 不回写。
 
 每次进度整体覆盖当前展示，不要求前端逐条堆积。多个内部工具可以共用一个展示状态，无需为每次调用发送开始、执行中和结束通知；内部工具轨迹仍独立保留。`type` 不是轮次生命周期状态，不改变 `processing/completed` 等状态；收到轮次终态后停止进度动画。该新增必填字段同步用于 SSE 和快照 `progress`，旧的只含 `message` 的发布方式不再有效。
 
@@ -606,7 +639,7 @@ data: {"turn_id":"t1","type":"local-search","message":"正在查阅相关采购�
 
 #### 门禁拒绝与恢复
 
-正式文件可读性、逐文件命名/摘要、文件与文字业务相关性及文件文字整体判断已接入首次订阅；`COMMUNICATION_DEMO_ENABLED=true` 时只在真实门禁通过后运行展示脚本，不再替换或跳过门禁。纯文字、纯文件或文件加文字，在无历史时均已可聚合为 passed/rejected：拒绝按现有流式提示、rejected 终态与历史同步，通过时若启用演示则继续同轮模拟问答，否则说明核心问答尚未接入并以 completed 结束提示，不伪造真实分析结论。存在有效历史时，服务端从最新累计摘要之后选取最近最多五轮，排除当前轮及其后记录、拒绝、过期和非终态记录，再进行上下文关联判断；不向模型提供累计摘要，不跨摘要补足数量。上下文维度主要承接“继续”“还有补充吗”等依赖历史的请求；有文字时无历史也会判断，明确操作先前文件可判相关，文件定位、可用性核验及必要澄清留待后续服务，不代表文件已找到。只有文件且无历史时跳过该维度。前端无需提交历史或增加请求参数。未启用模拟问答时仍不批准附件落盘；启用时在完整门禁通过后批准附件，保留真实名称与摘要，随本轮终态后台备份。模拟层不会伪造文件拒绝或覆盖准入结果，门禁与模拟共用同一轮事件流和计时。正式门禁所有未放行情况（含判断或摘要执行失败）统一进入拒绝回复节点，并以 rejected 结束；回复明确区分服务故障与材料问题，不把技术失败解释为文件不合格。判断证据、理由、逐文件判断结果及私有审计不新增为公开 HTTP/SSE 或用户历史字段；已生成的 display_name/summary 仍按附件描述契约保留在用户输入中。
+正式文件可读性、逐文件命名/摘要、文件与文字业务相关性及文件文字整体判断已接入首次订阅；纯文字、纯文件或文件加文字，在无历史时均已可聚合为 passed/rejected：拒绝按现有流式提示、rejected 终态与历史同步，通过时进入正式 Agent Core，装配驻留工作区、最新摘要、摘要后历史及当前任务，由 finish_task 提交最终答复并结束本轮。存在有效历史时，服务端从最新累计摘要之后选取最近最多五轮，排除当前轮及其后记录、拒绝、过期和非终态记录，再进行上下文关联判断；不向模型提供累计摘要，不跨摘要补足数量。上下文维度主要承接“继续”“还有补充吗”等依赖历史的请求；有文字时无历史也会判断，明确操作先前文件可判相关，文件定位、可用性核验及必要澄清留待后续服务，不代表文件已找到。只有文件且无历史时跳过该维度。前端无需提交历史或增加请求参数。仅在完整门禁通过后批准附件，保留真实名称、display_name、摘要和页数，随本轮终态后台备份；拒绝附件不落盘。门禁与 Agent Core 共用同一轮事件流和计时。正式门禁所有未放行情况（含判断或摘要执行失败）统一进入拒绝回复节点，并以 rejected 结束；回复明确区分服务故障与材料问题，不把技术失败解释为文件不合格。判断证据、理由、逐文件判断结果及私有审计不新增为公开 HTTP/SSE 或用户历史字段；已生成的 display_name/summary 仍按附件描述契约保留在用户输入中。
 
 文字维度内部使用 related/uncertain/unrelated 三态，由聚合统一计分，详见[加权与阈值聚合](../architecture/workflow/contract-communication/business-gate.md#加权与阈值聚合)。uncertain 不新增为 SSE 或快照的轮次状态；纯文字无法确认业务主题时仍可能因总分不足形成 rejected，并流式提示补充问题。该调整不改变前端接口契约，不能将模型故障归入 uncertain。
 
@@ -647,7 +680,7 @@ data: {"turn_id":"t1","message_id":"m1","message_kind":"intermediate","delta":"�
 - `intermediate`：执行中的阶段提示。
 - `final`：本轮最终答复，可以是总结，也可以是澄清或确认请求，不表示用户的整体目标已经完成。
 
-`message.completed` 表示消息已收束，不保证正文完整，必须读取 `status`。正常发布默认 `completed`；`interrupted` 只能由运行时在任务中断时生成。其 `text` 必须等于已发送增量拼接结果；正常消息也支持没有增量而直接提交全文。前端按 ID 覆盖正文，不能将它追加到已有 delta 后。已收束消息不能再次追加，消息类型不能中途改变。
+`message.completed` 表示消息已收束，不保证正文完整，必须读取 `status`。正常发布默认 `completed`；`interrupted` 由运行时在任务中断或流式输出校验失败时生成；后者可以继续当前任务纠错。其 `text` 必须等于已发送增量拼接结果；正常消息也支持没有增量而直接提交全文。前端按 ID 覆盖正文，不能将它追加到已有 delta 后。已收束消息不能再次追加，消息类型不能中途改变。
 
 取消、替代、失败或拒绝时，若有正在生成的消息，运行时先发送 `message.completed(status=interrupted)`，再发送 `turn.status` 终态；两者与内存历史原子提交，正常最终答复仍要求 `status=completed`。没有半成品时不虚构空消息。系统关闭和运行时 TTL 失败冻结也按同一规则保存历史，但连接已失效时不保证客户端收到末尾事件。
 
@@ -655,11 +688,11 @@ data: {"turn_id":"t1","message_id":"m1","message_kind":"intermediate","delta":"�
 
 `completed/cancelled/superseded/rejected/failed/expired` 为轮次终态，终态后拒绝发布迟到事件。已激活轮次的终态发送后关闭流；已收到其终态序号的重连立即结束。未激活过期记录订阅直接返回 `410`，不建立 SSE。取消、被替代、拒绝或失败可以中断正在生成的消息，快照将其标为 `interrupted`。`error` 本身不结束轮次，业务失败仍需另行发布 `turn.status: failed`。
 
-不再使用 `awaiting_confirmation` 轮次状态，该旧值会被 Schema 拒绝。需要用户澄清或文件剔除确认时，以 `final` 提出问题，正常完成本轮并关闭流。用户回复通过同一 `conversation_id` 下的新轮次进入，获得新 `turn_id` 和新事件流；“待用户确认”属于会话或任务上下文，不维持旧 SSE。创建及门禁的轻量历史关联已实现，第二层核心问答的上下文继承尚未实现。
+不再使用 `awaiting_confirmation` 轮次状态，该旧值会被 Schema 拒绝。需要用户澄清或文件剔除确认时，以 `final` 提出问题，正常完成本轮并关闭流。用户回复通过同一 `conversation_id` 下的新轮次进入，获得新 `turn_id` 和新事件流；“待用户确认”属于会话或任务上下文，不维持旧 SSE。创建及门禁的轻量历史关联、第二层上下文继承均已实现；新轮次读取驻留工作区、最新摘要及其后历史，当前任务继续使用原生工具调用轨迹。
 
 处理期间收到用户补充或方向调整时，旧轮次使用 `superseded`（已被替代）而不是 `cancelled`（用户手动终止），并在 `superseded_by_turn_id` 中指向新轮次。新轮次保持同一会话，独立从事件序号 1 开始。旧轮次若已完成则保留原终态，直接创建普通新轮次，不改写历史。
 
-上述替代已通过 HTTP 创建接口接入内部原子约束，但尚未执行真实任务中断。不能把“已关闭旧 SSE”当成已经终止后台模型调用。
+上述替代通过 HTTP 创建接口接入内部原子约束，并取消旧轮次生产协程；迟到结果不能写回已结束任务。已发往远端的模型请求停止计算与否仍取决于服务端取消能力。
 
 ### 错误响应、回放与心跳
 
@@ -864,4 +897,13 @@ Authorization: Bearer <login_code>
 - [事件运行时](../architecture/system/communication-events.md)：内部事件提交、回放与容量限制。
 - [SQLite 存储](../architecture/data/communication-sqlite.md)：三表、密钥归属与存储配置。
 - [用户上下文设计](../architecture/workflow/contract-communication/user-context.md)：取消与调整的模型可见语义。
-- [样式联调说明](../capability/application/communication-ui-demo.md)：模拟输出与场景配置。
+
+
+## Agent Core 输出增量
+
+`emit_progress` 和 `finish_task` 已通过 `message.delta` 展示生成中的正文，并在工具校验和执行成功后发送 `message.completed`。预览失败时会收到 `message.completed(status=interrupted)`，此时任务可能继续；前端不能仅因 final 类型消息出现就关闭订阅，仍以 `turn.status` 终态为准。推理和其他工具参数不作为正文推送。详见[交互工具增量展示](../architecture/workflow/contract-communication/interaction-tools.md#增量展示)。
+
+
+## 工具执行状态展示
+
+工具状态通过既有 `task.progress` 发送，type 和 message 来自程序注册配置。未覆盖配置的工具使用 thinking / 正在思考；查找和联网检索可分别使用 local-search、online-search，专家咨询使用 external-expert。实际执行前切换，结束后恢复 thinking，相同状态不重复推送。最终正文完成或任务终态后不再恢复状态。此类事件仅表示当前步骤，不包含工具参数或结果；用户正文仍只由两种交互工具发送。

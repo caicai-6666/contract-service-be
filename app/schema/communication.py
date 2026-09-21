@@ -10,7 +10,7 @@ TurnStatus = Literal[
     "pending_activation", "processing", "completed", "cancelled", "superseded", "rejected", "failed", "expired"
 ]
 MessageKind = Literal["intermediate", "final"]
-TaskProgressType = Literal["local-search", "online-search", "thinking"]
+TaskProgressType = Literal["local-search", "online-search", "external-expert", "thinking"]
 UserContextStatus = Literal["user_goal_adjusted", "user_manually_stopped"]
 TERMINAL_STATUSES = frozenset({"completed", "cancelled", "superseded", "rejected", "failed", "expired"})
 
@@ -64,8 +64,8 @@ class TaskProgressData(CommunicationModel):
     """当前用户展示状态，不等同于工具调用或轮次生命周期。"""
 
     event_type: Literal["task.progress"] = "task.progress"
-    type: TaskProgressType = Field(description="展示类型：local-search 查阅本地资料；online-search 联网检索；thinking 理解、规划、分析或组织答复。")
-    message: str = Field(min_length=1, max_length=2000, description="简短的用户可见业务说明，不包含内部工具名、调用 ID 或推理过程。")
+    type: TaskProgressType = Field(description="展示类型：local-search 查阅本地资料；online-search 联网检索；external-expert 咨询外部专家；thinking 理解、规划、分析或组织答复。")
+    message: str = Field(min_length=1, max_length=2000, description="新发布的状态说明统一使用“正在＋动作”，不包含内部工具名、调用 ID 或推理过程；状态切换不代表上一步成功，读取兼容旧历史文案。")
 
 
 class MessageDeltaData(CommunicationModel):
@@ -126,8 +126,16 @@ class DisplayEvent(CommunicationModel):
     data: dict = Field(description="与对应 SSE data 相同的公开负载；旧轨迹引用沿用 type/location。")
 
 
+class ContractReference(CommunicationModel):
+    """请求接收时从正式合同目录读取的快照；不接受客户端提交名称与摘要。"""
+
+    document_id: str = Field(pattern=r'^[0-9a-f]{64}$', description='正式合同的完整 SHA-256 标识，可用于合同查看工具。')
+    file_name: str = Field(min_length=1, max_length=255, description='正式入库时用户确认的展示文件名。')
+    summary: str | None = Field(default=None, description='正式入库时用户确认的摘要；旧合同未保存时为空，不补写。')
+
+
 class ConversationDisplayPayload(CommunicationModel):
-    input: dict = Field(description="用户原文和附件列表；附件保留原文件名，display_name、summary 为后端生成的描述，未生成时为 null，旧记录可缺省。")
+    input: dict = Field(description="用户原文、附件列表和 contracts 合同引用快照（document_id、file_name、summary）；附件保留原文件名，display_name、summary 为后端生成的描述，未生成时为 null，旧记录可缺省。")
     events: tuple[DisplayEvent, ...] = Field(description="按原始事件顺序保存的展示记录，不含 delta、心跳、连接错误或工具轨迹。")
     streaming_messages: tuple[dict, ...] = Field(description="仍在处理的消息累积正文，覆盖而非追加；任务结束后为空。")
     last_sequence: int | None = Field(ge=0, description="恢复时已处理的最后 SSE 序号，包含被过滤的 delta；旧轨迹未知时为 null。")

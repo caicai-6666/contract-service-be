@@ -30,7 +30,7 @@ from app.agent.contract_extraction.subgraph import (
     build_clause_extraction_subgraph,
     build_document_understanding_subgraph,
     build_field_extraction_subgraph,
-    build_file_name_generation_subgraph,
+    build_contract_overview_generation_subgraph,
     build_retrieval_view_generation_subgraph,
 )
 from app.agent.contract_extraction.subgraph.classification.definition import (
@@ -45,8 +45,8 @@ from app.agent.contract_extraction.subgraph.clause_extraction.state import (
 from app.agent.contract_extraction.subgraph.field_extraction.definition import (
     FieldDefinitionCatalog,
 )
-from app.agent.contract_extraction.subgraph.file_name_generation.state import (
-    SuggestedFileNameResult,
+from app.agent.contract_extraction.subgraph.contract_overview_generation.state import (
+    ContractOverviewResult,
 )
 from app.agent.contract_extraction.subgraph.retrieval_view_generation.definition import (
     RetrievalViewGuideCatalog,
@@ -121,10 +121,10 @@ class ContractExtractionExecutor(Protocol):
     ) -> BaseModel:
         """独立提取 Core。"""
 
-    async def generate_suggested_file_name(
+    async def generate_contract_overview(
         self,
         context: ExtractionContext,
-    ) -> SuggestedFileNameResult:
+    ) -> ContractOverviewResult:
         """根据页面、文档结构与分类生成可供用户修改的建议名称。"""
 
     async def extract_clause(
@@ -160,7 +160,7 @@ class AgentContractExtractionExecutor:
         )
         self._classification_graph = build_classification_subgraph()
         self._field_graph = build_field_extraction_subgraph()
-        self._file_name_graph = build_file_name_generation_subgraph()
+        self._contract_overview_graph = build_contract_overview_generation_subgraph()
         self._clause_graph = build_clause_extraction_subgraph()
         self._retrieval_graph = build_retrieval_view_generation_subgraph()
 
@@ -231,26 +231,26 @@ class AgentContractExtractionExecutor:
             unit_grounding_audit=output.unit_grounding_audit,
         )
 
-    async def generate_suggested_file_name(
+    async def generate_contract_overview(
         self,
         context: ExtractionContext,
-    ) -> SuggestedFileNameResult:
+    ) -> ContractOverviewResult:
         """运行建议名称子图，并拒绝把技术失败作为前端建议。"""
-        result = await self._file_name_graph.ainvoke(
+        result = await self._contract_overview_graph.ainvoke(
             {
                 "base_context": context.base_context,
                 "classification": context.classification,
                 "page_count": context.prepared_pdf.page_count,
             }
         )
-        suggested_file_name: SuggestedFileNameResult = result[
-            "suggested_file_name"
+        contract_overview: ContractOverviewResult = result[
+            "contract_overview"
         ]
-        if suggested_file_name.status == "failed":
+        if contract_overview.status == "failed":
             raise RuntimeError(
-                suggested_file_name.error or "建议名称没有形成可靠结果"
+                contract_overview.error or "合同概览没有形成可靠结果"
             )
-        return suggested_file_name
+        return contract_overview
 
     async def extract_core(
         self,

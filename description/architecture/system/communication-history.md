@@ -30,7 +30,7 @@
 
 ## 公开轨迹收集
 
-`communication_trace.py` 只接收已校验的用户可见消息，以及执行层显式提交的 `record_tool_call / record_tool_result`。这些内部记录方法不是模型工具，也不是 HTTP 任意写入接口。演示执行器已接入工具记录。
+`communication_trace.py` 只接收已校验的用户可见消息，以及执行层显式提交的 `record_tool_call / record_tool_result`。这些内部记录方法不是模型工具，也不是 HTTP 任意写入接口。Agent Core 已接入工具记录。
 
 - 连续的同消息增量合并；工具穿插后保留新的片段，不跨工具合并。
 - message.completed 仅确认片段状态与引用，不重复追加全文；无增量时可直接记录完整消息。
@@ -45,7 +45,7 @@
 
 ## 附件准入与延迟落盘
 
-`CommunicationEventService.resolve_file_admission(conversation_id, turn_id, owner=..., accepted_indices=(...))` 是供工作流使用的内部接口，不是 HTTP 接口或模型工具。下标从 0 开始，对应本轮原始上传顺序，必须唯一且合法；空元组表示全部剔除。执行层须在 `processing` 期间显式提交一次结果，身份不符、重复提交或终态后的迟到结果均拒绝。真实执行器仅在完整门禁通过且存在后续执行器时批准附件；当前混合联调已接入该路径，不能仅因文件可读就默认准入。
+`CommunicationEventService.resolve_file_admission(conversation_id, turn_id, owner=..., accepted_indices=(...))` 是供工作流使用的内部接口，不是 HTTP 接口或模型工具。下标从 0 开始，对应本轮原始上传顺序，必须唯一且合法；空元组表示全部剔除。执行层须在 `processing` 期间显式提交一次结果，身份不符、重复提交或终态后的迟到结果均拒绝。真实执行器仅在完整门禁通过且存在后续执行器时批准附件；正式 Agent Core 已接入该路径，不能仅因文件可读就默认准入。
 
 附件元数据包含 `file_id/file_name/file_path/admission`，精确字段见 [SQLite 文件引用](../data/communication-sqlite.md#文件引用)。处理规则如下：
 
@@ -64,7 +64,7 @@
 
 accepted 只表示保存资格，不是“磁盘写入已确认”；异步备份未完成时路径对应文件可能尚不存在。备份成功不修改冻结 payload，已准入字节继续保留到记忆归档成功以支持文件校验和缺失恢复。归档与驱逐检查同样遵守准入状态，不能绕过规则补写待判断或不可用附件。
 
-没有 admission 字段的旧记录沿用旧磁盘存储契约，不自动迁移、不删除已有附件，但读取接口不默认授予访问权。真实门禁已接入；混合模式下 mock 不修改准入，独立演示脚本仍显式模拟结果，不能作为真实内容判定。附件读取要求当前用户的对应任务轨迹已驻留且文件明确 accepted，优先内存、其次磁盘；即使会话已打开，未加载旧任务的文件仍不可访问，不自动查询数据库补齐授权。成功读取刷新会话活动计数，磁盘 I/O 后重新检查同一次驻留身份；完整协议见[资源文件 API](../../api/resource.md#读取已驻留会话任务的-pdf-附件)。
+没有 admission 字段的旧记录沿用旧磁盘存储契约，不自动迁移、不删除已有附件，但读取接口不默认授予访问权。真实门禁已接入；附件准入由真实门禁决定。附件读取要求当前用户的对应任务轨迹已驻留且文件明确 accepted，优先内存、其次磁盘；即使会话已打开，未加载旧任务的文件仍不可访问，不自动查询数据库补齐授权。成功读取刷新会话活动计数，磁盘 I/O 后重新检查同一次驻留身份；完整协议见[资源文件 API](../../api/resource.md#读取已驻留会话任务的-pdf-附件)。
 
 异常退出会丢失尚未备份的内存附件；文件系统与 SQLite 不是跨介质原子事务，文件已写入而数据库未提交时可能留下待重试文件，异常退出后的孤立文件回收仍未实现。“不落盘”指不持久化至业务 upload 目录，HTTP multipart 解析器仍可能使用会自动关闭清理的临时文件。
 
@@ -86,7 +86,7 @@ SQLite 查询显式选择记录元数据、payload、activated_at 与 processing
 
 模型入口 get_model_records 仅提供窗口候选，状态过滤、token 预算和工作区组装仍需后续按[上下文规范](../../standard/agent-context-management.md)实现。
 
-门禁使用独立内部入口 `CommunicationEventService.get_gate_history(conversation_id, turn_id, owner=...)`：先校验轮次所有权及 processing 状态，再持共享锁调用 `ConversationHistoryService.get_gate_records_locked`。只从当前轮之前、最新累计摘要之后选择最近最多五条有效终态任务，排除拒绝、过期、在途任务与摘要本身；返回深拷贝，包含已备份与 fresh 数据，不额外加载向量或检索文本。无合格历史则返回空元组，不跨摘要补足数量；有文字时上下文节点仍判断明确的先前文件操作意图，只有文件且无历史时跳过。具体输入投影和执行规则见[上下文相关性判断](../workflow/contract-communication/context-relevance.md)。此入口不改变用户 open/refresh 返回范围，也不代表第二层模型上下文已经组装完成。
+门禁使用独立内部入口 `CommunicationEventService.get_gate_history(conversation_id, turn_id, owner=...)`：先校验轮次所有权及 processing 状态，再持共享锁调用 `ConversationHistoryService.get_gate_records_locked`。只从当前轮之前、最新累计摘要之后选择最近最多五条有效终态任务，排除拒绝、过期、在途任务与摘要本身；返回深拷贝，包含已备份与 fresh 数据，不额外加载向量或检索文本。无合格历史则返回空元组，不跨摘要补足数量；有文字时上下文节点仍判断明确的先前文件操作意图，只有文件且无历史时跳过。具体输入投影和执行规则见[上下文相关性判断](../workflow/contract-communication/context-relevance.md)。此入口不改变用户 open/refresh 返回范围。第二层使用独立的[门禁后上下文装配](../workflow/contract-communication/context-assembly.md)，读取最新摘要后的全部已准入有效任务，不受五轮限制。
 
 ---
 
@@ -100,9 +100,9 @@ SQLite 查询显式选择记录元数据、payload、activated_at 与 processing
 
 失败时保留原 `pending_backup` 快照，下一次先重试它，不将后来的更新混入旧批次。轨迹按原 record_id、turn_id、sequence 和冻结内容幂等确认；工作区按完整 payload、revision、updated_at 确认。这样即便数据库提交成功但回执丢失，也可以确认旧批次后继续保存较新的内存版本。读历史时偶然读到在途已提交记录，不提前改变该记录的 fresh 标记。单个会话失败不影响其他会话。
 
-删除与备份通过单独的协调锁串行；SQLite 删除成功后同时驱逐会话轨迹和事件源，并停止该会话的演示协程。既有 SSE 被唤醒后以 turn_unavailable 关闭，不声称正常完成。失败保留内存，迟到输出不能复活已删除会话。附件与正式合同/ES 数据不在删除范围。
+删除与备份通过单独的协调锁串行；SQLite 删除成功后同时驱逐会话轨迹和事件源，并停止该会话的执行协程。既有 SSE 被唤醒后以 turn_unavailable 关闭，不声称正常完成。失败保留内存，迟到输出不能复活已删除会话。附件与正式合同/ES 数据不在删除范围。
 
-应用正常关闭先停止事件生产，把未结束轮次标为 failed，再排空旧备份及其后产生的新版本；发生失败则不无限阻塞关闭，记录不含密钥/正文的日志后释放内存。突然崩溃或备份持续失败时，fresh 轨迹和未备份工作区可能丢失，不承诺零丢失。独立演示脚本使用临时数据库，退出后整体清理；正式服务才跨重启保留已备份历史和工作区。
+应用正常关闭先停止事件生产，把未结束轮次标为 failed，再排空旧备份及其后产生的新版本；发生失败则不无限阻塞关闭，记录不含密钥/正文的日志后释放内存。突然崩溃或备份持续失败时，fresh 轨迹和未备份工作区可能丢失，不承诺零丢失。正式服务跨重启保留已备份历史和工作区。
 
 当前要求单进程、单 worker；已接入[十分钟记忆归档与空闲驱逐](communication-archive.md)，仍没有总驻留容量控制。SSE 的容量限制不等于完整历史容量限制，长期大量会话需要后续增加驻留预算。累计摘要生成、历史压缩及文件垃圾回收仍不包含在当前实现中。
 
@@ -116,13 +116,19 @@ SQLite 查询显式选择记录元数据、payload、activated_at 与 processing
 
 - `get_workspace(conversation_id, secret_key=...)`：加载并返回工作区深拷贝，包含 payload、revision、updated_at。
 - `update_workspace(conversation_id, secret_key=..., payload=..., expected_revision=...)`：校验归属、完整结构及内存版本，接受后递增 revision，更新时间并唤醒后台备份；返回深拷贝。过期版本拒绝提交。
+- `create_workspace_entry(conversation_id, secret_key=..., section=..., entry=..., expected_revision=...)`：创建用户补充（section=task_constraints，entry 为文本）、已知信息或剩余方向，程序生成键并返回 `(key, snapshot)`；不能直接创建已探索记录。
+- `update_workspace_field(conversation_id, secret_key=..., section=..., key=..., field=..., value=..., expected_revision=...)`：修改已有字段。task_constraints 中 key=task 修改用户任务，其他 key 定位已有补充，此时 field 为 null；其余区域按条目键与字段更新。
+- `complete_workspace_direction(..., direction_id=..., outcome=..., conclusion=..., information_ids=..., expected_revision=...)`：同一提交将剩余方向移入已探索区，保留 ID 并记录结果；失败不移除原规划。
+- `remove_workspace_entry(..., section=..., key=..., expected_revision=...)`：移除失效补充、已知信息或方向条目；不允许留下悬空信息引用，不删除原始轨迹。
 - `flush()`：每个会话最多尝试一个备份批次；返回值只表示本轮尝试是否成功，不代表处理期间新产生的数据已经全部保存。
 
-内容契约复用 `WorkspacePayload` 的三个非空白字符串列表，见 [SQLite 工作区](../data/communication-sqlite.md#conversation_workspaces会话工作区)。结构校验不等于业务确认：目标、已知信息和后续任务由未来问答模型及其执行器整理，当前服务不根据轨迹猜测工作区，不读取失败草稿或私有推理填充它。
+内容契约复用 `WorkspacePayload` 的四个 KV 区域（用户任务及补充、已知信息、已探索方向、剩余方向），见 [SQLite 工作区](../data/communication-sqlite.md#conversation_workspaces会话工作区)。结构校验不等于业务确认：目标、已知信息和后续任务由未来问答模型及其执行器整理，当前服务不根据轨迹猜测工作区，不读取失败草稿或私有推理填充它。
+
+创建、字段更新、移除和探索收束均复用完整快照校验与版本提交；读取后出现竞争更新时拒绝旧版本，不覆盖其他有效条目。信息状态与探索结果的业务真实性仍由执行器判断，服务不会因用户任务改变而自动删改相关规划。[模型可见工具](../workflow/contract-communication/workspace-tools.md)已提供定义和执行适配，通过受权提交回调复用完整 payload 更新；[模型循环](../workflow/contract-communication/agent-runtime.md)已接入。
 
 工作区是会话级当前状态，不是每条任务的历史副本；备份保存的是取快照时已接受的最新内容，不宣称它恰好覆盖到本批最后一条任务。即使没有新轨迹，已接受但尚未备份的工作区更新也会独立补存，避免备份期间产生的新版本永久遗漏。
 
-工作区不写入任务 payload、公开 trace、SSE 或前端 open/refresh 响应。现有前端契约不变；模型历史入口仍只提供最新摘要及其后任务，未来问答执行器需另外读取工作区并组装模型上下文。驻留会话的工作区不得绕过服务直接更新数据库，否则备份会报版本冲突并保留内存，不静默覆盖。
+工作区不写入任务 payload、公开 trace、SSE 或前端 open/refresh 响应。现有前端契约不变；模型历史入口仍只提供最新摘要及其后任务，主循环每轮读取最新工作区并组装模型上下文。驻留会话的工作区不得绕过服务直接更新数据库，否则备份会报版本冲突并保留内存，不静默覆盖。
 
 原始备份继续采用终态唤醒机制；记忆加工和空闲驱逐由已接入的[归档服务](communication-archive.md)独立调度，不将“已备份”当成“已加工”。工作区内容仍不由后台模型整理。
 
@@ -133,3 +139,27 @@ SQLite 查询显式选择记录元数据、payload、activated_at 与 processing
 本地 unittest 覆盖实时读取、跨工具消息片段、SSE 缓存截断、终态冻结、取消/替换/过期、计时、附件唯一命名、后台自动备份、失败与幂等重试、新轮次不等待备份、历史窗口、用户隔离、删除防复活及已备份内容重新加载。
 
 `tests/test_communication_workspace.py` 另覆盖工作区载入、深拷贝与非公开边界、内容/版本校验、同事务回滚、重启恢复、六种终态同步备份、回执丢失后的固定快照重试、备份期间更新不丢失和关闭排空。
+
+---
+
+## Agent Core 上下文读取
+
+工作区与任务仍只维护一份驻留数据。正式门禁通过后，记录 agent_core_ready 和已确认文件页数，在共享锁内读取工作区、最新结构化摘要及其后的任务副本，在锁外渲染。工作区版本提交后重新读取即取得新值；具体接口与过滤边界见[门禁后上下文装配](../workflow/contract-communication/context-assembly.md)。
+
+
+---
+
+## 自动摘要与驻留排序
+
+`insert_agent_summary` 接受预期旧摘要、已验收新摘要和 task_id 前缀范围。持备份锁与驻留锁校验活动任务、旧摘要基线、完整前缀及 completed 末项后，将摘要插在最后一个被压缩任务之后，并顺延后续记录的 sequence。已压缩任务仍留在同一份历史中供展示与归档；模型下次装配只取最新摘要及其后任务。
+
+已持久化任务同样可能需要顺延。下一次备份携带全部驻留 record_id 的目标位置，在同一事务保存排序、新摘要、冻结任务和工作区。失败快照的重试也须包含新摘要，不能只更新排序；详见[SQLite 插入契约](../data/communication-sqlite.md#部分历史压缩后的摘要插入)。再次 open/refresh 时按稳定 record_id 合并，尚未备份的新驻留序号优先，不能把磁盘旧序号误报为冻结内容变化。
+
+摘要验收和内存插入先于执行前压缩分支的原工具执行；压缩失败不改边界，原工具不执行。工具执行后才压缩的分支即使失败，也保留已接受工具状态。工作区提交在共享锁内校验活动任务和 revision，成功反馈前更新唯一内存副本。
+
+
+---
+
+## 终态轨迹清理
+
+统一终态投影在冻结前移除 agent_messages 中来源已验证的独立系统操作提示，并清理公开 trace 中的 system_guidence 条目。成功调用及反馈原样保留；不扫描正文标签，不改写工具结果。终态校验通过后才替换驻留记录，因此后续备份和重新加载直接得到清洁轨迹。活动任务的提示仍用于操作反馈和容量计数，私有审计不受终态清理影响。见[任务结束后的提示清理](../workflow/contract-communication/context-assembly.md#任务结束后的提示清理)。

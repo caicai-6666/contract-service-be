@@ -30,7 +30,18 @@ def render_contract_question_embedding_input(question: str) -> str:
     )
 
 
+def render_user_query_embedding_input(query: str) -> str:
+    """使用与入库问题配对的查询侧指令，不补造答案或新的检索问题。"""
+    if not isinstance(query, str) or not query.strip():
+        raise ValueError("合同检索问题不能为空")
+    return (
+        f"<|im_start|>system\n{USER_QUERY_EMBEDDING_INSTRUCTION}<|im_end|>\n"
+        f"<|im_start|>user\n{query.strip()}<|im_end|>\n<|im_start|>assistant\n"
+    )
+
+
 __all__ = [
+    "render_user_query_embedding_input",
     "CONTRACT_QUESTION_EMBEDDING_INSTRUCTION",
     "RETRIEVAL_EMBEDDING_PROMPT_VERSION",
     "USER_QUERY_EMBEDDING_INSTRUCTION",

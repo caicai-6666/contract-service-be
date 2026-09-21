@@ -8,11 +8,14 @@ SQLite 字段以[合同 SQLite 元数据结构](../../architecture/data/contract
 
 ## 职责与输入
 
-正式入库由 `app.service.contract_ingestion.ContractIngestionService` 承担投影与三处持久化编排，`app.infrastructure.contract_metadata_store.SQLiteContractMetadataStore` 使用短事务维护文件目录和状态，`ContractExtractionService` 负责按 `run_id` 定位运行、校验所有权和控制生命周期。
+正式持久化前新增名称与摘要合并向量化：以用户最终确认的 `file_name` 与 `summary` 编码，复用当前 Embedding 配置。编码失败时不开始持久化；成功后向量与对应文本在同一 SQLite 事务写入。详见[合同名称与摘要向量](../../architecture/data/contract-sqlite-metadata.md#合同名称与摘要向量)。注意事项不参与编码，旧合同不自动回填。
 
-调用方只提交三项最终审核值：
+正式入库由 `app.service.contract_ingestion.ContractIngestionService` 承担投影与四处持久化编排，`app.infrastructure.contract_metadata_store.SQLiteContractMetadataStore` 使用短事务维护文件目录和状态，`ContractExtractionService` 负责按 `run_id` 定位运行、校验所有权和控制生命周期。
+
+调用方提交以下最终审核值：
 
 - `file_name`：最终展示名称，不作为物理存储路径；
+- `summary`：非空的合同事实摘要，最多 3000 字符，写入 SQLite；
 - `core`：包含启动期 Core 目录全部稳定 `code` 的完整对象，没有最终值时使用 `null`；
 - `clauses`：按原合同阅读顺序排列的完整最终条款。
 
@@ -64,7 +67,8 @@ flowchart TD
     validation --> sqlite_ingesting["SQLite 短事务<br/>登记 ingesting"]
     sqlite_ingesting --> file["幂等保存 document_id.pdf"]
     file --> es["写入 ELASTICSEARCH_INDEX_NAME"]
-    es --> sqlite_ready["SQLite 短事务<br/>发布 ready"]
+    es --> graph["Neo4j MERGE 合同节点"]
+    graph --> sqlite_ready["SQLite 短事务<br/>发布 ready"]
     sqlite_ready --> event["发布 run.ingested"]
     event --> remove["删除内存 run_id 并关闭 SSE"]
 ```
@@ -75,9 +79,9 @@ SQLite 默认位于 `data/abstract/contracts.db`。服务首先将最终 Core `s
 
 ES 写入使用 `ELASTICSEARCH_INDEX_NAME`，默认 `contracts-v1`，并以 `document_id` 同时作为 `_id` 和 `_source.document_id`。同一 `document_id` 再次写入会覆盖该合同文档，支持审核用户在查重后选择更新同身份合同；不会使用实验索引配置。
 
-PDF 或 ES 明确失败时，应用按 `document_id + ingestion_id` 删除当前 SQLite 尝试记录，具体原因由异常链与日志记录；内容寻址文件可以安全保留，运行聚合不会删除，用户能够使用同一 `run_id` 重试。ES 请求超时或连接中断时会立即实时读取同一 `_id`，只有完整元数据匹配才按成功收敛。ES 成功后还必须把 SQLite 状态提交为 `ready`，服务才发布 `run.ingested`、从内存注册表删除运行并关闭现有 SSE。之后该 `run_id` 的查询、重复入库或重试均返回不存在。
+PDF、ES 或 Neo4j 写入失败时保留 SQLite `ingesting` 记录作为持久化恢复入口，失败原因保留在异常链与日志，运行聚合不会删除，用户可使用同一 `run_id` 重试。ES 超时会立即实时读取同一 `_id`，元数据匹配时继续；无法确认时不丢弃 SQLite 对账依据。ES 成功后通过 `ContractGraphStore.ensure_contract()` 幂等创建 `(:Contract {document_id})`，不覆盖既有节点属性或关系。图节点成功后才发布 SQLite `ready` 和 `run.ingested`、释放运行。
 
-同一进程内相同 `document_id` 的入库尝试串行执行，防止并发 ES 覆盖与 SQLite 状态错配。应用启动时扫描 `ingesting`：重新核验 PDF 哈希以及 ES 中的名称、地址、审核人、入库时间、类别摘要和签订日期，全部匹配时恢复为 `ready`，否则删除该 SQLite 尝试记录。ES 在对账期间不可访问会阻止应用启动。
+相同 `document_id` 的入库和删除在当前单进程内共用文档锁。应用启动时初始化 Neo4j 唯一约束，然后处理非就绪记录：`deleting` 继续删除；`ingesting` 核验 PDF 哈希及 ES 元数据，匹配后确保图节点存在再发布 `ready`，不匹配则先持久化 `deleting`，再清理四处存储。随后为所有 `ready` 历史合同幂等补建图节点。恢复期间外部存储不可达或清理失败会阻止启动，不将未完成记录发布为可用合同。
 
 ---
 
@@ -85,13 +89,13 @@ PDF 或 ES 明确失败时，应用按 `document_id + ingestion_id` 删除当前
 
 ### 正式合同删除
 
-`ContractIngestionService.delete_document()` 复用同一实例的文档锁，与同 ID 入库串行。它只接受 SQLite 中的 `ready` 合同，按 ES → PDF → SQLite 顺序清理；SQLite 通过 `document_id + ingestion_id` 条件删除并级联清除类别关联，避免旧操作误删新尝试。PDF 删除只使用固定根目录与哈希文件名，拒绝符号链接和非普通文件。ES 删除使用 `refresh=wait_for`，已不存在的文档和 PDF 允许跳过。
+`ContractIngestionService.delete_document()` 复用文档锁。首次接受 `ready`，重试接受 `deleting`；`ingesting` 仍返回冲突。先以短事务登记 `deleting`，从列表、摘要、注意事项和新的会话合同引用中隐藏，然后依次清理 Neo4j 节点及全部关联边 → ES → PDF → SQLite。SQLite 按 `document_id + ingestion_id` 条件删除，并级联清理类别关联与注意事项。
 
-外部存储失败时不继续删除后续存储；SQLite 记录保留供显式重试，不能保证失败后的合同仍可读取。无自动回滚、备份或启动删除恢复；此前完成的删除不会撤销。HTTP 契约见[删除正式合同](../../api/contract.md#删除正式合同)。此接口不会清除其他运行、实验数据或全局类别目录。
+失败时保留 `deleting`，通过同 ID 删除请求或下次启动继续；不自动回滚已完成删除，当前未提供运行期后台重试队列。图节点、ES 文档、PDF 已不存在均视为该步骤完成。删除中的合同不能被新入库覆盖或重新发布为 `ready`；未来关系新增入口必须校验双方为 `ready`，并协调相同合同锁。PDF 固定路径与符号链接防护保持不变。HTTP 契约见[删除正式合同](../../api/contract.md#删除正式合同)。
 
 ### 装配与验证
 
-应用启动时由 `app.bootstrap` 使用共享 `AsyncElasticsearch`、正式索引名、固定 Core 目录、向量维度、本地合同文件存储和 SQLite 元数据存储装配入库服务。SQLite 路径由 `CONTRACT_METADATA_DATABASE_FILE` 配置，默认 `data/abstract/contracts.db`。
+应用启动时由 `app.bootstrap` 使用共享 `AsyncElasticsearch`、`Neo4jClient` 和 `ContractGraphStore`、正式索引名、固定 Core 目录、向量维度、本地合同文件存储和 SQLite 元数据存储装配入库服务。SQLite 路径由 `CONTRACT_METADATA_DATABASE_FILE` 配置，默认 `data/abstract/contracts.db`。
 
 不连接外部服务的基础静态验证命令为：
 

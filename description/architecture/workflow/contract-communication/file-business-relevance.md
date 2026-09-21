@@ -2,7 +2,7 @@
 
 > **当前状态：** 已接入逐文件并发判断、严格 JSON Schema 约束解码、有限纠错与文件维度聚合。仅依据名称和摘要，不重复读取视觉页面。
 
-所属工作流见[合同沟通智能体](readme.md)，调度与现有聚合边界见[业务门禁子图](business-gate.md)。模型可见规则的唯一来源为 `app/agent/contract_communication/business_gate/prompt/file_business_relevance.py`，版本 `file-business-relevance-v1`。
+所属工作流见[合同沟通智能体](readme.md)，调度与现有聚合边界见[业务门禁子图](business-gate.md)。模型可见规则的唯一来源为 `app/agent/contract_communication/business_gate/prompt/file_business_relevance.py`，版本 `file-business-relevance-v2`。
 
 ---
 
@@ -18,14 +18,17 @@
 
 ## 判定与输出约定
 
-- summary 是内容判断的主要依据，display_name 辅助识别；不能仅看名称包含“合同”“报表”“图纸”就放行。
+- summary 是内容判断的主要依据，display_name 辅助识别；依据实质内容与用途，不仅看名称包含“合同”“报表”“图纸”就放行。
+- 摘要明确披露独立的非业务实质内容时，即便文件其他部分相关，也将该文件判 unrelated；业务部分、篇幅占比或附页位置不能抵消。
+- 作为业务背景、引用、证据或必要附件的内容不自动算无关。用途不明且不足以判断是否独立时为 uncertain，不自行补造业务联系。
+- 本次不增加全文自洽性检查、恶意标签或新熔断分支；摘要未披露的内容不能检出。合同条款矛盾本身不代表业务无关。
 - 名称与具体摘要冲突时保留冲突说明，以摘要实际内容为主；资料笼统或冲突导致主题无法确认时使用 uncertain。
 - 不以通用表格、数字、线条推断业务主题，不假设采购关系或上传意图；不判断与当前用户问题的匹配度。
 - 技术资料属于本文件维度的业务材料范围，不因此自动修改文字维度对通用技术咨询的定义。
 
 输出字段顺序为 reasoning、result。reasoning 先引用名称或摘要的短原文，再说明依据，不限制语言、不虚构原文件页码。result 为 related（明确相关）、uncertain（不足以判断）、unrelated（明确无关）。执行故障不是 uncertain。
 
-`schema.py` 的 `FileBusinessRelevanceGeneration` 是唯一机器契约。客户端发送 strict JSON Schema，关闭额外 thinking、使用 temperature=0；本地再次拒绝缺失、额外或重复字段、布尔值、空理由、非标准 JSON、代码块、截断、拒答和工具调用。输出上限为配置上限与 1024 token 的较小值。
+`schema.py` 的 `FileBusinessRelevanceGeneration` 是唯一机器契约。客户端发送 strict JSON Schema，开启原生 thinking、使用 temperature=0；本地再次拒绝缺失、额外或重复字段、布尔值、空理由、非标准 JSON、代码块、截断、拒答和工具调用。思考与最终 JSON 共用全局 max_completion_tokens，不再另设 1024 上限。
 
 ---
 
@@ -60,3 +63,10 @@
 复用 PyYAML、Pydantic、MLLMClient 和全局模型配置，无新依赖、环境变量、HTTP/SSE 字段或持久化字段。执行与纠错遵循[提示词工程规范](../../../standard/prompt-engineering.md)及[上下文管理规范](../../../standard/agent-context-management.md)。本节点不使用函数工具，采用 Schema 校验的等价清理流程。
 
 `tests/test_file_business_relevance_prompt.py` 和 `tests/test_file_business_relevance_node.py` 覆盖提示词、严格 Schema、输入隔离、纠错清理、故障、并发上限、乱序结果、取消与聚合规则。聚合及 Communication 回归覆盖状态、流式提示、历史备份和附件边界。测试使用模型桩，不代表真实模型语义准确率已验证。
+
+
+## v2 验证边界
+
+本版本仅收紧单文件实质内容与用途的判断，输出仍为 reasoning/result 三态。多文件聚合继续“至少一份 related 则文件维度 related”，不将本次单文件规则等同于任一文件拒绝整轮。历史实验按v1标注的混合内容用例不能直接用原标签评价v2；原始产物保持不变。
+
+定向验证包括7份合成摘要（全部符合预期）及真实五页合同插入单页艺术内容的配对测试：原件通过，混合件摘要披露第3页无关艺术内容并被拒绝。拒绝自然语言仍有未具体指出问题页的不足。证据和限制见[真实单页插入分析](../../../../experiment/file-mixed-page/output/20260915T093834.719415Z/analysis.md)，不代表全文插页检出率保证。

@@ -60,7 +60,7 @@
 - 当前文字明确补充、更正了业务事实、约束、目标或安排，例如“尾款改成验收后 30 天支付”。
 - 当前文字要求处理业务材料，例如“翻译这份采购合同”；本节点不核验文件是否真的上传或与描述一致。
 - 当前文字同时包含寒暄和实质业务需求，不能因为有“你好”“谢谢”等表述而忽略后面的业务内容。
-- 对混合主题，存在可独立识别、可实际处理的业务需求即可提供本维度的相关信号；不因此认定其他无关内容也在服务范围内。
+- 对全部请求目的进行检查：只要包含一个明确非业务需求，即便同时存在业务需求，也将整段判为 unrelated。相关内容不能抵消该否决。
 
 ### 4.2 明确不相关
 
@@ -93,9 +93,9 @@
 
 | 值 | 业务语义 |
 | --- | --- |
-| `related` | 当前文字具有足够证据，能够独立识别属于上述范围的业务意图或信息。 |
-| `uncertain` | 缺少识别业务主题所需的信息，仅凭当前文字无法判断。 |
-| `unrelated` | 当前文字的主题明确，且不属于业务范围。 |
+| `related` | 当前文字具有足够证据，能够识别上述业务意图或信息，且不包含明确非业务请求目的。 |
+| `uncertain` | 没有明确非业务请求目的，但缺少识别业务主题所需的信息，仅凭当前文字无法判断。 |
+| `unrelated` | 任一请求目的明确不属于业务范围，即便同时有业务需求；或整体明确不相关。 |
 
 uncertain 与 unrelated 不再混合。比如“那就按第二个方案来”可能延续先前合同讨论，应为 uncertain；证明这种延续是上下文相关性节点的职责，本节点不得猜测。三态仍统一流向聚合，不新增图分支。
 
@@ -137,11 +137,11 @@ uncertain 与 unrelated 不再混合。比如“那就按第二个方案来”�
 
 ## 7. 实现与调用
 
-- 提示词位于 `app/agent/contract_communication/business_gate/prompt/text_business_relevance.py`，版本为 `text-business-relevance-v6`；保留信息不足不得补造背景及不限制理由语言的规则，补充短追问 uncertain 与非业务请求不能靠旧文件包装改变主题的边界。已明确的业务主题不因旧文件不可见、计算依据不足而降为 uncertain。不将本文整篇发送给模型。
+- 提示词位于 `app/agent/contract_communication/business_gate/prompt/text_business_relevance.py`，版本为 `text-business-relevance-v7`；保留信息不足不得补造背景及不限制理由语言的规则，补充短追问 uncertain 与非业务请求不能靠旧文件包装改变主题的边界。已明确的业务主题不因旧文件不可见、计算依据不足而降为 uncertain。不将本文整篇发送给模型。
 - `build_text_business_relevance_messages(text)` 生成 system 规则及唯一 Schema、user 原文两条消息；不注入文件、历史、权重或运行信息，保留原文空格和换行。空白输入直接报错，正式路由不调度无文字情况。
 - `schema.py` 中 `TextBusinessRelevanceGeneration` 是唯一机器输出契约：reasoning 为非空字符串，不限制语言，先引用本轮短原文再解释规则；引文保留原文语言，翻译或释义不冒充原文。result 为严格的三态字符串，不兼容旧布尔值。禁止缺失、额外、重复字段、非标准 JSON、代码块和类型转换。
 - `node.py` 中 `check_text_business_relevance_async` 发起模型请求，`check_text_business_relevance` 是同步适配。图装配使用 `RunnableLambda` 分别绑定同步与异步函数，正式服务调用 `ainvoke`，不阻塞事件循环。
-- 复用已有 `MLLMClient.create_json_chat_completion`，`schema_name=text_business_relevance`、严格约束解码、关闭额外 thinking 通道；输出 token 上限取 1024 与配置上限的较小值。沿用图构建的 settings 和 max_attempts（默认 3，允许 1 至 3），受全局 MLLM 并发配额限制，不新增配置。
+- 复用已有 `MLLMClient.create_json_chat_completion`，`schema_name=text_business_relevance`、严格约束解码、开启原生 thinking 通道；思考与最终 JSON 共用全局 max_completion_tokens，不再另设 1024 上限。沿用图构建的 settings 和 max_attempts（默认 3，允许 1 至 3），受全局 MLLM 并发配额限制，不新增配置。
 - 成功只更新文字维度的三态结果、私有执行记录及 `text_business_relevance_feedback` 业务日志；失败使用独立的 failed 提示，跳过时反馈为空。不修改兄弟分支、整体状态、得分或用户提示。日志契约见[相关性节点的业务 hint](business-gate.md#相关性节点的业务-hint)，聚合仍等待所有适用维度完成。
 
 ---
@@ -162,3 +162,18 @@ uncertain 与 unrelated 不再混合。比如“那就按第二个方案来”�
 `tests/test_text_business_relevance.py` 覆盖 Schema、提示词示例、稳定前缀、原文保留、上下文隔离、成功/失败/取消、连续纠错及审计保留；路由和聚合测试覆盖同步、异步及单次汇合，Communication 测试覆盖纯文字节点到 SSE、快照、历史与备份的路径。回归测试采用模拟模型响应，不代表语义准确率已经验证。关键词误导、上下文短句及检索统计需求的真实判断效果仍需后续实验。
 
 v4 新增多语言理由的结构接受检查，以及“不以通用对象补造主题”的提示词约束检查。此前 90 条真实实验针对 v3；本次使用了其错误类型指导规则调整，旧集仅可作回归，不再作为 v4 的独立准确率依据。旧报告按当时规则记录的英文理由问题，在当前契约下不再视为问题；原实验产物和历史分析不改写。v4 尚未执行真实模型效果测试。
+
+
+---
+
+## 混合请求的目的否决（v7）
+
+本版本取消“存在部分实质业务需求即可相关”的规则。文字节点检查全部要求执行的事项，只要含有明确的非业务请求目的，整段必须 unrelated；该优先级高于宽口径相关及信息不足规则。reasoning 应引用实际触发否决的非业务需求。
+
+背景、引文、否定对象及待审核材料不是请求目的。审查游戏开发合同的责任条款仍属于法律业务；按合同金额或付款日排序属于业务数据处理。不能按“算法、游戏、音乐”等关键词硬拒绝，也不能通过假定误输入或把合同名词补写成独立咨询动作来放行。
+
+结果 Schema 的字段说明已同步，结构仍为 reasoning/result。程序继续严格校验三态，不用关键词代码代替语义判断；聚合已有 unrelated 硬否决，无须新增节点或修改权重。文件节点和文件—文字关联节点本次不调整。
+
+此前实验按旧混合政策标注的 related 不能直接用于本版本评分，原始产物保持不变。当前定向复测入口为 `experiment/business-gate-intent-boundary/run.py`。
+
+本次 v7 定向真实复测共12次（10条不同文字，原句重复3次），全部符合新政策预期；82项相关性离线测试通过。详细证据及局限见[请求目的否决复测分析](../../../../experiment/business-gate-intent-boundary/output/20260915T091236.763453Z/analysis.md)。此结果不是整体误拒率保证。

@@ -50,7 +50,7 @@ from app.service.contract_extraction.model import (
     StageProgress,
     StageSnapshot,
     StageStatus,
-    SuggestedFileNameView,
+    ContractOverviewView,
 )
 from app.service.contract_extraction.projector import (
     ProjectedSection,
@@ -58,7 +58,7 @@ from app.service.contract_extraction.projector import (
     project_clause,
     project_core,
     project_retrieval_view,
-    project_suggested_file_name,
+    project_contract_overview,
 )
 from app.service.contract_extraction.registry import (
     InternalDraftSectionCode,
@@ -97,7 +97,7 @@ _STAGE_ORDER = (
     StageCode.PDF_DEDUPLICATION,
     StageCode.CONTRACT_STRUCTURE_RECOGNITION,
     StageCode.CONTRACT_CLASSIFICATION,
-    StageCode.FILE_NAME_GENERATION,
+    StageCode.CONTRACT_OVERVIEW_GENERATION,
     StageCode.CORE_EXTRACTION,
     StageCode.CLAUSE_EXTRACTION,
     StageCode.RETRIEVAL_PREPARATION,
@@ -129,7 +129,7 @@ _STAGE_NAMES = {
     StageCode.CONTRACT_STRUCTURE_RECOGNITION: "识别合同结构",
     StageCode.PDF_DEDUPLICATION: "检查重复合同",
     StageCode.CONTRACT_CLASSIFICATION: "识别合同类型",
-    StageCode.FILE_NAME_GENERATION: "生成建议名称",
+    StageCode.CONTRACT_OVERVIEW_GENERATION: "生成建议名称与摘要",
     StageCode.CORE_EXTRACTION: "提取核心信息",
     StageCode.CLAUSE_EXTRACTION: "提取合同条款",
     StageCode.RETRIEVAL_PREPARATION: "准备智能检索",
@@ -139,7 +139,7 @@ _PENDING_MESSAGES = {
     StageCode.CONTRACT_STRUCTURE_RECOGNITION: "等待识别合同的页面与内容结构。",
     StageCode.PDF_DEDUPLICATION: "等待检查是否存在重复合同。",
     StageCode.CONTRACT_CLASSIFICATION: "等待识别合同涉及的交易类型。",
-    StageCode.FILE_NAME_GENERATION: "等待根据合同内容生成建议名称。",
+    StageCode.CONTRACT_OVERVIEW_GENERATION: "等待根据合同内容生成建议名称与摘要。",
     StageCode.CORE_EXTRACTION: "等待提取合同核心信息。",
     StageCode.CLAUSE_EXTRACTION: "等待提取合同条款。",
     StageCode.RETRIEVAL_PREPARATION: "等待生成合同检索信息。",
@@ -149,7 +149,7 @@ _RUNNING_MESSAGES = {
     StageCode.CONTRACT_STRUCTURE_RECOGNITION: "正在识别合同的内容结构。",
     StageCode.PDF_DEDUPLICATION: "正在检查是否存在重复合同。",
     StageCode.CONTRACT_CLASSIFICATION: "正在识别合同涉及的交易类型。",
-    StageCode.FILE_NAME_GENERATION: "正在根据合同内容生成建议名称。",
+    StageCode.CONTRACT_OVERVIEW_GENERATION: "正在根据合同内容生成建议名称与摘要。",
     StageCode.CORE_EXTRACTION: "正在提取合同核心信息。",
     StageCode.CLAUSE_EXTRACTION: "正在识别并提取合同条款。",
     StageCode.RETRIEVAL_PREPARATION: "正在生成便于检索合同的信息。",
@@ -159,7 +159,7 @@ _COMPLETED_MESSAGES = {
     StageCode.CONTRACT_STRUCTURE_RECOGNITION: "合同内容结构已识别。",
     StageCode.PDF_DEDUPLICATION: "重复合同检查已完成。",
     StageCode.CONTRACT_CLASSIFICATION: "合同类型已识别。",
-    StageCode.FILE_NAME_GENERATION: "建议名称已生成。",
+    StageCode.CONTRACT_OVERVIEW_GENERATION: "建议名称与合同摘要已生成。",
     StageCode.CORE_EXTRACTION: "合同核心信息已生成。",
     StageCode.CLAUSE_EXTRACTION: "合同条款已生成。",
     StageCode.RETRIEVAL_PREPARATION: "合同检索信息已准备。",
@@ -169,7 +169,7 @@ _FAILED_MESSAGES = {
     StageCode.CONTRACT_STRUCTURE_RECOGNITION: "暂时无法识别合同结构",
     StageCode.PDF_DEDUPLICATION: "暂时无法完成重复合同检查",
     StageCode.CONTRACT_CLASSIFICATION: "暂时无法识别合同类型",
-    StageCode.FILE_NAME_GENERATION: "本次未能生成建议名称",
+    StageCode.CONTRACT_OVERVIEW_GENERATION: "本次未能生成建议名称与合同摘要",
     StageCode.CORE_EXTRACTION: "本次未能完成核心信息提取",
     StageCode.CLAUSE_EXTRACTION: "本次未能完成合同条款提取",
     StageCode.RETRIEVAL_PREPARATION: "本次未能完成检索准备",
@@ -421,8 +421,8 @@ class ContractExtractionService:
                             aggregate
                         ),
                         suggested_file_name=(
-                            aggregate.suggested_file_name_view.file_name
-                            if aggregate.suggested_file_name_view is not None
+                            aggregate.contract_overview_view.file_name
+                            if aggregate.contract_overview_view is not None
                             else None
                         ),
                         status=self._run_list_status_locked(
@@ -487,6 +487,7 @@ class ContractExtractionService:
         *,
         reviewer_user_name: str,
         file_name: str,
+        summary: str,
         core: CoreDraftData,
         clauses: ClauseDraftData,
     ) -> ContractIngestionResult:
@@ -541,6 +542,7 @@ class ContractExtractionService:
                 processed_pdf_bytes=await assemble_processed_pdf(aggregate.prepared_pdf),
                 page_count=aggregate.prepared_pdf.page_count,
                 file_name=file_name,
+                summary=summary,
                 reviewer=reviewer_user_name,
                 classification=classification,
                 category_reasoning={
@@ -722,6 +724,8 @@ class ContractExtractionService:
                 raise StageRetryError("只有执行失败的阶段可以重试")
             if stage.attempt >= self._max_stage_attempts:
                 raise StageRetryError("该阶段已达到最大尝试次数")
+            if not stage.retryable:
+                raise StageRetryError("该阶段不允许重试，请调整文件后重新上传")
             self._validate_retry_prerequisites_locked(aggregate, stage_code)
             if stage_code is StageCode.CONTRACT_CLASSIFICATION:
                 understanding = aggregate.structure_result
@@ -745,8 +749,8 @@ class ContractExtractionService:
                 understanding,
                 classification_already_started=True,
             )
-        elif stage_code is StageCode.FILE_NAME_GENERATION:
-            operation = self._run_from_file_name_generation(
+        elif stage_code is StageCode.CONTRACT_OVERVIEW_GENERATION:
+            operation = self._run_from_contract_overview_generation(
                 aggregate,
                 already_started=True,
             )
@@ -790,7 +794,7 @@ class ContractExtractionService:
             ):
                 raise StageRetryError("合同结构识别结果不可用，无法重试分类")
             return
-        if stage_code is StageCode.FILE_NAME_GENERATION:
+        if stage_code is StageCode.CONTRACT_OVERVIEW_GENERATION:
             if not isinstance(aggregate.prerequisites, ExtractionContext):
                 raise StageRetryError("合同分类结果不可用，无法重试建议名称生成")
             return
@@ -930,7 +934,7 @@ class ContractExtractionService:
         self,
         aggregate: RunAggregate,
     ) -> None:
-        """先识别合同文档；仅可靠判定为合同时启动查重。"""
+        """合同性质与初步摘要质量检查均通过后，才允许启动查重。"""
         try:
             detection = await self._document_detection_executor.detect(
                 aggregate.prepared_pdf
@@ -946,13 +950,21 @@ class ContractExtractionService:
             )
             return
 
-        if detection.status == "failed":
+        outcome = detection.outcome
+        if outcome is None:
+            await self._fail_stage(aggregate, StageCode.CONTRACT_DOCUMENT_DETECTION,
+                RuntimeError("合同检查缺少收束结果"))
+            return
+        if outcome.status == "failed" or (
+            outcome.status == "rejected" and outcome.source == "file_quality"
+        ):
             async with aggregate.lock:
                 aggregate.document_detection_result = detection
             await self._fail_stage(
-                aggregate,
-                StageCode.CONTRACT_DOCUMENT_DETECTION,
-                RuntimeError(detection.error or "合同文档识别没有形成可靠结果"),
+                aggregate, StageCode.CONTRACT_DOCUMENT_DETECTION,
+                RuntimeError(outcome.error or outcome.message),
+                public_message=outcome.message,
+                allow_retry=outcome.status == "failed",
             )
             return
 
@@ -963,11 +975,11 @@ class ContractExtractionService:
                 StageCode.CONTRACT_DOCUMENT_DETECTION,
                 result=detection,
             )
-            if not detection.is_contract:
+            if outcome.status == "rejected":
                 self._publish_locked(
                     aggregate,
                     EventType.RUN_DOCUMENT_REJECTED,
-                    "上传内容不属于合同文档，处理已停止。",
+                    outcome.message,
                     document_detection=(
                         self._document_detection_view_locked(aggregate)
                     ),
@@ -985,7 +997,7 @@ class ContractExtractionService:
         self,
         aggregate: RunAggregate,
     ) -> None:
-        """完成 PDF 查重，然后在用户可见暂停点停止推进。"""
+        """完成 PDF 查重；重复即终止，有召回候选待确认，无候选自动推进。"""
         prepared_pdf = aggregate.prepared_pdf
         try:
             deduplication = await self._deduplication_executor.deduplicate(
@@ -1026,21 +1038,36 @@ class ContractExtractionService:
                     deduplication=self._deduplication_view_locked(aggregate),
                 )
                 return
-            aggregate.awaiting_deduplication_review = True
-            aggregate.updated_at = now
-            review_expires_at = now + self._deduplication_review_ttl
-            aggregate.deduplication_review_expires_at = review_expires_at
-            aggregate.expires_at = review_expires_at
-            # 先建立精确定时器再公开暂停事件，确保前端收到事件后立即
-            # 提交 continue 时一定能取消对应任务，不遗留长时间空转任务。
-            self._schedule_review_expiry(aggregate)
+            if deduplication.candidate_set.candidates:
+                # 候选已由 ES 相似度阈值过滤；即便模型判为不同合同，仍需
+                # 用户核对。只有召回集合为空才视为完全无候选并自动推进。
+                aggregate.awaiting_deduplication_review = True
+                aggregate.updated_at = now
+                review_expires_at = now + self._deduplication_review_ttl
+                aggregate.deduplication_review_expires_at = review_expires_at
+                aggregate.expires_at = review_expires_at
+                self._schedule_review_expiry(aggregate)
+                self._publish_locked(
+                    aggregate,
+                    EventType.RUN_DEDUPLICATION_REVIEW_REQUIRED,
+                    "发现超过相似度阈值的候选合同，请确认后继续提取。",
+                    deduplication=self._deduplication_view_locked(aggregate),
+                    touch=False,
+                )
+                return
+            # 可靠查重且没有任何超过阈值的候选，直接推进。
+            aggregate.awaiting_deduplication_review = False
+            aggregate.deduplication_review_expires_at = None
+            aggregate.continued_at = now
             self._publish_locked(
                 aggregate,
-                EventType.RUN_DEDUPLICATION_REVIEW_REQUIRED,
-                "重复合同检查已完成，请处理候选结果后继续。",
+                EventType.RUN_CONTINUED,
+                "未发现超过相似度阈值的候选合同，自动继续结构识别和提取。",
                 deduplication=self._deduplication_view_locked(aggregate),
-                touch=False,
             )
+
+        # 下游需要再次获取 aggregate.lock，必须在释放当前锁后调用。
+        await self._run_after_deduplication_review(aggregate)
 
     async def _run_after_deduplication_review(
         self,
@@ -1152,9 +1179,9 @@ class ContractExtractionService:
                 classification=classification_view,
             )
 
-        await self._run_from_file_name_generation(aggregate)
+        await self._run_from_contract_overview_generation(aggregate)
 
-    async def _run_from_file_name_generation(
+    async def _run_from_contract_overview_generation(
         self,
         aggregate: RunAggregate,
         *,
@@ -1162,28 +1189,28 @@ class ContractExtractionService:
     ) -> None:
         """生成证据化建议名称，成功后再启动三个相互隔离的分支。"""
         if not already_started:
-            await self._begin_stage(aggregate, StageCode.FILE_NAME_GENERATION)
+            await self._begin_stage(aggregate, StageCode.CONTRACT_OVERVIEW_GENERATION)
         context = aggregate.prerequisites
         if not isinstance(context, ExtractionContext):
             await self._fail_stage(
                 aggregate,
-                StageCode.FILE_NAME_GENERATION,
+                StageCode.CONTRACT_OVERVIEW_GENERATION,
                 RuntimeError("缺少合同分类结果"),
             )
             return
 
         try:
-            internal_result = await self._executor.generate_suggested_file_name(
+            internal_result = await self._executor.generate_contract_overview(
                 context
             )
-            suggested_file_name = project_suggested_file_name(internal_result)
+            contract_overview = project_contract_overview(internal_result)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.exception("建议名称生成失败，run_id=%s", aggregate.run_id)
             await self._fail_stage(
                 aggregate,
-                StageCode.FILE_NAME_GENERATION,
+                StageCode.CONTRACT_OVERVIEW_GENERATION,
                 exc,
             )
             return
@@ -1191,12 +1218,12 @@ class ContractExtractionService:
         async with aggregate.lock:
             # 与分类投影一样独立保存，确保 SSE 丢失或历史列表恢复后
             # 仍能获得当前正式建议；完整工具审计只留在阶段尝试历史中。
-            aggregate.suggested_file_name_view = suggested_file_name
+            aggregate.contract_overview_view = contract_overview
             self._complete_stage_locked(
                 aggregate,
-                StageCode.FILE_NAME_GENERATION,
+                StageCode.CONTRACT_OVERVIEW_GENERATION,
                 result=internal_result,
-                suggested_file_name=suggested_file_name,
+                contract_overview=contract_overview,
             )
 
         await asyncio.gather(
@@ -1391,7 +1418,7 @@ class ContractExtractionService:
         progress: StageProgress | None = None,
         result: Any | None = None,
         classification: ContractClassificationView | None = None,
-        suggested_file_name: SuggestedFileNameView | None = None,
+        contract_overview: ContractOverviewView | None = None,
     ) -> None:
         async with aggregate.lock:
             stage = aggregate.stages[stage_code]
@@ -1403,7 +1430,7 @@ class ContractExtractionService:
                 progress=progress,
                 result=result,
                 classification=classification,
-                suggested_file_name=suggested_file_name,
+                contract_overview=contract_overview,
             )
 
     def _complete_stage_locked(
@@ -1416,7 +1443,7 @@ class ContractExtractionService:
         result_status: ResultStatus | None = None,
         result_revision: int | None = None,
         classification: ContractClassificationView | None = None,
-        suggested_file_name: SuggestedFileNameView | None = None,
+        contract_overview: ContractOverviewView | None = None,
     ) -> None:
         stage = aggregate.stages[stage_code]
         now = _utcnow()
@@ -1441,7 +1468,7 @@ class ContractExtractionService:
             stage.message,
             stage_code=stage_code,
             classification=classification,
-            suggested_file_name=suggested_file_name,
+            contract_overview=contract_overview,
         )
 
     async def _report_stage_progress(
@@ -1505,17 +1532,23 @@ class ContractExtractionService:
         aggregate: RunAggregate,
         stage_code: StageCode,
         error: Exception,
+        *,
+        public_message: str | None = None,
+        allow_retry: bool = True,
     ) -> None:
         async with aggregate.lock:
             stage = aggregate.stages[stage_code]
             now = _utcnow()
             stage.status = StageStatus.FAILED
-            stage.retryable = stage.attempt < self._max_stage_attempts
-            stage.message = (
-                f"{_FAILED_MESSAGES[stage_code]}，可以从该阶段重试。"
-                if stage.retryable
-                else f"{_FAILED_MESSAGES[stage_code]}，且已达到最大尝试次数。"
-            )
+            stage.retryable = allow_retry and stage.attempt < self._max_stage_attempts
+            # 仅显式提供的业务检查说明可公开；技术异常仍留在私有审计。
+            failure_message = public_message or _FAILED_MESSAGES[stage_code]
+            if not allow_retry:
+                stage.message = failure_message
+            elif stage.retryable:
+                stage.message = f"{failure_message}，可以从该阶段重试。"
+            else:
+                stage.message = f"{failure_message}，且已达到最大尝试次数。"
             stage.updated_at = now
             stage.progress = None
             if stage.attempts:
@@ -1569,9 +1602,9 @@ class ContractExtractionService:
         candidates: list[DeduplicationCandidateView] = []
         for candidate in result.candidate_set.candidates:
             judgment = judgments[candidate.document_id]
-            # 不同合同和失败判断仍保留在内部结果与审计中；前端只需要
-            # 处理确认为重复或相似的合同，不公开无操作价值的候选。
-            if judgment.status not in {"duplicate", "similar"}:
+            # 所有可靠判断的阈值内候选均供用户核对，不把 different
+            # 改写为 similar；失败判断不作为有效查重结果展示。
+            if judgment.status not in {"duplicate", "similar", "different"}:
                 continue
             # cosine dense_vector 的 ES _score 为 (1 + cosine) / 2；公共契约
             # 返回原始 cosine，避免把两种分数口径都称为“相似度”。
@@ -1610,7 +1643,7 @@ class ContractExtractionService:
         document_detection: ContractDocumentDetectionView | None = None,
         deduplication: DeduplicationReviewView | None = None,
         classification: ContractClassificationView | None = None,
-        suggested_file_name: SuggestedFileNameView | None = None,
+        contract_overview: ContractOverviewView | None = None,
         touch: bool = True,
     ) -> ContractExtractionEvent:
         now = _utcnow()
@@ -1638,7 +1671,7 @@ class ContractExtractionService:
             document_detection=document_detection,
             deduplication=deduplication,
             classification=classification,
-            suggested_file_name=suggested_file_name,
+            contract_overview=contract_overview,
             occurred_at=now,
         )
         aggregate.next_sequence += 1
@@ -1679,7 +1712,7 @@ class ContractExtractionService:
             document_detection=self._document_detection_view_locked(aggregate),
             deduplication=self._deduplication_view_locked(aggregate),
             classification=aggregate.classification_view,
-            suggested_file_name=aggregate.suggested_file_name_view,
+            contract_overview=aggregate.contract_overview_view,
         )
         if aggregate.draft is None:
             return ContractExtractionSnapshot(run=run, draft=None)

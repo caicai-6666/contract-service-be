@@ -16,6 +16,9 @@ properties:
     code: date
     aliases: []
     type: string
+    index_format: strict_date
     required: true
+    constraints: {}
+    extraction_rule: 提取完整真实签订日期，规范为 YYYY-MM-DD；中文年月日可转换，不补全缺失年月日，不推测日期，不允许不存在的日期。
     meaning: 合同正文明确标注的完整签订或签约日期。
     excludes: 不包括生效、交货、付款、报价、打印、附件或单方签章日期。

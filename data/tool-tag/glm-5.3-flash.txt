@@ -1,0 +1,4 @@
+工具调用使用 GLM-5.3-Flash 的 XML 格式：
+<tool_call>工具名称<arg_key>字符串参数名</arg_key><arg_value>字符串原文</arg_value><arg_key>其他类型参数名</arg_key><arg_value>合法JSON值</arg_value></tool_call>
+替换为实际工具名称及参数，提供全部必填参数。每个参数以一组 arg_key 和 arg_value 表示；字符串直接写原文，不加 JSON 外层引号，数字、布尔值、数组、对象和 null 使用合法 JSON。无参数工具写为 <tool_call>工具名称</tool_call>。
+不得使用 Markdown 代码块或普通文字模拟调用，工具调用后不得追加解释。不要使用 Qwen 的 function/parameter 标签或 DeepSeek 的 DSML 标签。具体工具、参数类型及字段含义以注入的工具定义为准；每轮允许调用的工具数量遵循当前任务规则。

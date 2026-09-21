@@ -181,7 +181,7 @@ class ContractExtractionResult(BaseModel):
 
     pdf_path: Path
     classification: SerializeAsAny[BaseModel]
-    suggested_file_name: SerializeAsAny[BaseModel]
+    contract_overview: SerializeAsAny[BaseModel]
     document_structure: SerializeAsAny[BaseModel]
     field_extraction: FieldExtractionResult
     clause_extraction: SerializeAsAny[BaseModel]
@@ -200,7 +200,7 @@ class ContractExtractionState(TypedDict, total=False):
     prompt_context: PDFPromptContext
     base_context: ContractBaseContext
     classification: BaseModel
-    suggested_file_name: BaseModel
+    contract_overview: BaseModel
     prefill_context: ContractPrefillContext
     document_structure: BaseModel
     field_extraction: FieldExtractionResult

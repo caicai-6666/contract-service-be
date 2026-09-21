@@ -19,7 +19,7 @@ from app.agent.pdf_deduplication.subgraph.candidate_judgment.tool import (
 )
 
 PAGE_NAVIGATION_JUDGMENT_TOOL_VERSION: Final = (
-    "candidate-page-navigation-tool-v2"
+    "candidate-page-navigation-tool-v3"
 )
 
 

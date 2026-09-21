@@ -79,7 +79,7 @@ def merge_extraction_results(
         "result": ContractExtractionResult(
             pdf_path=prepared_pdf.source_path,
             classification=state["classification"],
-            suggested_file_name=state["suggested_file_name"],
+            contract_overview=state["contract_overview"],
             document_structure=state["document_structure"],
             field_extraction=state["field_extraction"],
             clause_extraction=state["clause_extraction"],

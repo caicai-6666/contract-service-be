@@ -61,8 +61,6 @@ from app.infrastructure.mllm import (
 
 _MAXIMUM_CATEGORY_ROUNDS = 8
 _MAXIMUM_CONSECUTIVE_THINKS = 2
-_MAXIMUM_COMPLETION_TOKENS = 4096
-_UNMAPPED_DESCRIPTION_MAXIMUM_TOKENS = 1024
 _MAXIMUM_UNMAPPED_DESCRIPTION_ROUNDS = 6
 
 
@@ -147,7 +145,7 @@ async def _judge_one_category(
     """维护一个类别独占的短期记忆，直到形成互斥终止决定。"""
     started_at = perf_counter()
     messages = build_category_judgment_messages(context.messages, category)
-    settings = get_settings().mllm
+    settings = get_settings().mllm.for_contract_extraction()
     generation = settings.generation
     audits: list[ClassificationToolCallAudit] = []
     consecutive_thinks = 0
@@ -161,17 +159,14 @@ async def _judge_one_category(
                     messages=messages,
                     tools=list(CLASSIFICATION_TOOLS),
                     tool_choice=CLASSIFICATION_TOOL_CHOICE,
-                    max_completion_tokens=min(
-                        generation.max_completion_tokens,
-                        _MAXIMUM_COMPLETION_TOKENS,
-                    ),
+                    max_completion_tokens=generation.max_completion_tokens,
                     temperature=generation.temperature,
                     top_p=generation.top_p,
                     top_k=generation.top_k,
                     presence_penalty=generation.presence_penalty,
                     repetition_penalty=generation.repetition_penalty,
                     seed=generation.seed,
-                    enable_thinking=False,
+                    enable_thinking=True,
                     tool_placement="before_task",
                 )
         except (MLLMRequestError, MLLMUnavailableError) as exc:
@@ -361,7 +356,7 @@ async def _describe_unmapped_type(
     tuple[ClassificationToolCallAudit, ...],
 ]:
     """以有限恢复会话生成未映射类型描述，并保留私有审计。"""
-    settings = get_settings().mllm
+    settings = get_settings().mllm.for_contract_extraction()
     generation = settings.generation
     messages = append_unmapped_type_description_task(context.messages)
     audits: list[ClassificationToolCallAudit] = []
@@ -374,17 +369,14 @@ async def _describe_unmapped_type(
                 messages=messages,
                 tools=[DESCRIBE_UNMAPPED_TYPE_TOOL],
                 tool_choice=CLASSIFICATION_TOOL_CHOICE,
-                max_completion_tokens=min(
-                    generation.max_completion_tokens,
-                    _UNMAPPED_DESCRIPTION_MAXIMUM_TOKENS,
-                ),
+                max_completion_tokens=generation.max_completion_tokens,
                 temperature=generation.temperature,
                 top_p=generation.top_p,
                 top_k=generation.top_k,
                 presence_penalty=generation.presence_penalty,
                 repetition_penalty=generation.repetition_penalty,
                 seed=generation.seed,
-                enable_thinking=False,
+                enable_thinking=True,
                 tool_placement="before_task",
             )
         except (MLLMRequestError, MLLMUnavailableError) as exc:
@@ -533,7 +525,7 @@ async def classify_contract(
     if not catalog.categories:
         raise ValueError("合同分类目录不能为空")
 
-    settings = get_settings().mllm
+    settings = get_settings().mllm.for_contract_extraction()
     semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
     progress = ParallelProgressTracker(len(catalog.categories))
     await progress.report_counted()

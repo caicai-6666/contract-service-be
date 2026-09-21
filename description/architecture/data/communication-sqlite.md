@@ -2,15 +2,15 @@
 
 ## 用途与实现边界
 
-数据库默认位于 `data/communication/communication.db`，只包含会话、任务/摘要记录、工作区三张业务表。应用启动时幂等初始化，并通过 `application.state.communication_store` 暴露 `SQLiteCommunicationStore`。
+数据库默认位于 `data/communication/communication.db`，包含会话、任务/摘要记录、工作区、任务检索投影及独立思考窗口五张表。应用启动时幂等初始化，并通过 `application.state.communication_store` 暴露 `SQLiteCommunicationStore`。
 
-已实现建表、会话及空工作区的原子创建、终态任务追加、累计摘要追加、最近摘要边界读取、工作区版本更新和会话所有权校验；已支持记忆加工标记、检索文本/向量与工作区的原子归档。历史不依赖 SSE 缓存过期；数据库重开后记录仍在。
+已实现建表、会话及空工作区的原子创建、终态任务追加、累计摘要追加、最近摘要边界读取、工作区版本更新和会话所有权校验；存储层已支持三入口检索投影、加工标记与工作区原子提交；自动加工与调度已接入新契约。历史不依赖 SSE 缓存过期；数据库重开后记录仍在。
 
-> **接入边界：** 会话创建、历史加载和事件运行时已接通统一驻留轨迹；任务终态后台复制至 SQLite，附件注册时仅暂存内存，明确准入后随终态备份保存至 upload。见[历史驻留与备份](../system/communication-history.md)。已支持本人已驻留任务的准入附件读取；真实工作流恢复、摘要生成、向量检索和模型上下文组装仍未实现。
+> **接入边界：** 会话创建、历史加载和事件运行时已接通统一驻留轨迹；任务终态后台复制至 SQLite，附件注册时仅暂存内存，明确准入后随终态备份保存至 upload。见[历史驻留与备份](../system/communication-history.md)。已支持本人已驻留任务的准入附件读取；主助手生成循环、结构化摘要及上下文装配已接入；进程重启后自动续跑活动任务与向量检索仍未实现。
 
 ---
 
-## 三表结构
+## 业务表与扩展窗口
 
 ### conversations：会话
 
@@ -49,8 +49,7 @@
 | `created_at` | 记录创建时间，UTC Unix 毫秒；实时任务为注册时间，旧 append_task 记录为追加时间。 |
 | `activated_at` | 首次激活时间，UTC Unix 毫秒；旧记录未知或未激活时为空。 |
 | `processing_duration_ms` | 任务总处理时长，非负整数毫秒；摘要及缺少可靠计时的旧记录为 null。 |
-| `retrieval_text`、`embedding` | 已接通归档写入的检索文本和 float32 BLOB；无记忆或未向量化时均为空。 |
-| `memory_processed_at` | 记忆加工成功提交时间，UTC Unix 毫秒；空值代表待加工。跳过和无记忆也写入标记，摘要为空。 |
+| `memory_processed_at` | 三入口检索投影成功提交时间，UTC Unix 毫秒；空值代表待加工，摘要为空。旧综合摘要标记在迁移时清空，等待重新加工。 |
 
 一条任务对应一轮用户请求，不是内部子任务。任务内部按[有序轨迹设计](../workflow/contract-communication/turn-trace.md)组织输入、用户可见说明、调用摘要及最终答复。当前存储层只校验 `payload` 为合法 JSON 对象，内部轨迹 Schema 与语义校验由后续收集层负责，不能把存储成功等同于模型内容通过校验。
 
@@ -60,9 +59,42 @@
 
 实时任务使用 `backup_tasks_with_workspace` 按会话原子备份轨迹与工作区：按注册时的 record_id、turn_id、sequence、创建时间和冻结内容写入；相同内容重试视为成功，不同内容报冲突，任一失败则整个事务回滚。基础 `backup_task`、`append_task` 仍供离线显式操作，禁止在有 fresh 任务的会话绕开统一驻留层写入。调度、重试、删除和关闭边界见[历史驻留与备份](../system/communication-history.md)。
 
-索引覆盖会话内顺序、会话内时间、摘要边界及未加工任务部分索引 `records_memory_pending`。`archive_tasks_with_workspace` 已支持检索文本、4096 维 float32 向量、加工标记和工作区的原子写入。归档读取 `read_memory_backlog` 只取未加工原轨迹及已加工 ID，不加载已有检索正文/向量。详细规则见[归档与驱逐](../system/communication-archive.md)。后续跨会话向量查询可以先通过会话归属联接筛选，再按记录时间限定候选；当前未实现查询接口或 ANN 索引。
+索引覆盖会话内顺序、会话内时间、摘要边界及未加工任务部分索引 `records_memory_pending`。`read_memory_backlog` 只取未加工原轨迹及已加工 ID，不加载检索正文或向量。原始任务备份与历史加载保持独立。
 
-不再逐行存储 `embedding_model`。同一检索空间须统一模型、维度和编码规则；以后更换不兼容的模型时，需要统一重建向量，不能将不同模型的向量直接混合比较。向量化遵循[双侧指令契约](../workflow/conversation-memory/retrieval-embedding.md)。启动初始化会事务性移除旧库的该列及其约束引用，保留其余字段、记录、索引和外键；并补充加工标记，已有检索对的旧任务标为已加工，空检索字段的旧任务仍待处理。
+### conversation_task_retrievals：三入口检索投影
+
+一条任务对应最多一行检索投影；通过 `record_id` 外键关联，随原任务/会话删除级联清理。摘要记录不能写入本表。
+
+| 字段 | 含义 |
+| --- | --- |
+| `record_id` | 主键兼任务外键，关联 conversation_records.record_id；不使用可能因摘要插入而改变的 sequence。 |
+| `user_input_text` | 用户问题、文件名、展示名称和文件摘要的可读投影，不含 file_id/page_count 元数据。 |
+| `user_input_embedding` | 用户文字与每份文件格式化内容分别编码、归一化后等权平均，再次归一化的融合向量。 |
+| `intermediate_output_text` | 按编号模板组织的已完成公开中途输出；原条目及位置回连原始任务，模板见检索文本模板主文档。 |
+| `intermediate_output_embedding` | 每条中途输出单独编码并归一化，等权平均后再次归一化的融合向量。 |
+| `final_output_text` | 实际完成的最终答复，没有则为空。 |
+| `final_output_embedding` | 最终答复对应向量。 |
+| `created_at` | 首次成功写入时间，UTC Unix毫秒；幂等重试不改变。 |
+
+三类正文的精确标签、换行、缺失字段规则、独立编码单元及指令，统一见[检索文本模板与向量化契约](../workflow/conversation-memory/retrieval-embedding.md)。英文原始字段key与中文格式化标签属于不同层，数据库保存的是格式化正文，不是附件JSON。
+
+每个区域的文本/向量必须同时存在或同时为NULL，不能用空字符串或零向量占位。允许全NULL行表示外层筛选跳过或经过加工确认没有可检索区域；“没有行”表示尚未提交加工结果，不得因模型调用失败写全NULL行。文本内容是否符合格式及事实，由后续加工器负责；存储层不能仅凭向量判断是否由正确原文生成。
+
+每个向量固定4096维，以16384字节float32 BLOB保存。SQL检查配对、非空文本、BLOB长度、外键和任务类型；Python `TaskRetrievalRecord` 进一步校验有限数值及L2单位范数，拒绝布尔数值。Python存储接口使用tuple向量。中途条数不会增加外层入口权重；这里不保存任务综合向量，不创建FTS5或ANN索引。
+
+`archive_tasks_with_workspace(..., records, memories, workspace, expected_workspace_revision)` 的 memories 现为 `TaskRetrievalRecord` 字典列表，与 records 逐条同序配对。原轨迹、检索投影、加工标记和工作区在同一事务提交；原记录身份/冻结内容由备份接口校验。若编码期间插入摘要导致sequence重排，按record_id读取当前序号，仅调整位置，不改变其余原始字段。相同内容重试幂等，不同检索投影报冲突，任何失败整批回滚。旧 `MemoryPendingRecord` 综合摘要结构明确拒绝，不映射到某个入口。
+
+`read_task_retrieval(conversation_id, secret_key, record_id)` 校验会话所有权和任务归属，返回三组文本/解码后的向量及写入时间；任务未加工返回None，任务不存在或不属于该会话时报不存在。此接口不是语义检索，普通会话历史加载不读取检索表。
+
+### 旧库迁移与分阶段边界
+
+启动 `initialize()` 在同一事务重建旧 conversation_records，移除 retrieval_text、embedding 及遗留 embedding_model，保留原任务/摘要、payload、顺序、计时、会话归属和工作区，并恢复索引。旧综合检索内容不复制进新表，因为不能可靠拆解成三入口；原 memory_processed_at 一并清空，所有旧任务待重新加工。迁移失败回滚，成功后重复初始化不会清空已写入的新投影。
+
+新子表在父表迁移完成后创建，避免父表重建误触发新检索行级联删除。表结构不逐行保存模型名称；同一向量空间必须统一模型、维度和编码规则，更换不兼容模型需重建。
+
+单任务三入口格式化、向量计算、外层筛选、并发调度与原子提交均已接入，正式bootstrap启动归档扫描及安全驱逐。原任务和工作区的后台备份独立运行，不等待向量化。旧摘要图及兼容入口已移除。旧任务在重新打开所属会话后按待加工标记重新处理，不主动打开全部未驻留会话。详见[归档与驱逐](../system/communication-archive.md)。
+
+验证覆盖 `tests/test_communication_store.py`、`tests/test_communication_retrieval_store.py`，包括新建/重复初始化、旧库迁移、三组向量恢复、缺失区域、SQL/Python约束、所有权、幂等冲突、事务回滚与级联删除。
 
 ### conversation_workspaces：会话工作区
 
@@ -263,4 +295,40 @@ store.append_task(
 
 接口为同步存储方法，未来从异步请求调用时应在线程中执行，避免阻塞事件循环。没有自动清理、用户管理、私有审计表或生产数据迁移；后续表结构变更应增加明确迁移，不依赖 `CREATE TABLE IF NOT EXISTS` 修改已有列。
 
-本地 `tests/test_communication_store.py` 覆盖三表重开、用户隔离、最近摘要边界、过期摘要拒绝、工作区版本竞争、并发序号、非法内容回滚、外键和级联。测试文件沿用项目不追踪约定。
+本地 `tests/test_communication_store.py` 覆盖四表重开、用户隔离、最近摘要边界、过期摘要拒绝、工作区版本竞争、并发序号、非法内容回滚、外键和级联。测试文件沿用项目不追踪约定。
+
+---
+
+## 部分历史压缩后的摘要插入
+
+主循环通过 `ConversationHistoryService.insert_agent_summary` 将验收后的 `fifo-topic-summary-v2` 累计摘要插入驻留轨迹，位置紧随实际压缩前缀的最后一个任务。后续记录的 sequence 顺延，record_id、turn_id、原任务 payload 与检索加工数据不变。不能把部分历史摘要追加到会话尾部，否则最新摘要边界会遮蔽仍需使用的未压缩任务。
+
+下一次 `backup_tasks_with_workspace(..., positions=...)` 在同一事务中完成：
+
+1. 依照 record_id → sequence 映射移动已持久化记录。先暂移到所有现有/目标序号之外的正整数位置，再设置最终位置，避免唯一索引的中间冲突。
+2. 备份新摘要与尚未落盘的冻结任务，保留原身份；相同快照重复提交仅确认一致内容。
+3. 提交工作区快照及版本校验。任一步失败，整批排序、摘要、任务和工作区一起回滚。
+
+该映射只覆盖驻留记录，较早未加载记录不受影响。当前采用单进程驻留写入边界；冲突不会静默覆盖。插入与备份共享备份锁，不能让在途旧排序快照覆盖新状态。已有失败备份等待重试时，保留其工作区版本快照，同时纳入新摘要、待保存冻结任务及新排序，避免分两次提交导致摘要暂时缺位。
+
+`append_topic_summary(summary=..., expected_sequence=...)` 是结构化摘要的独立尾部追加接口，要求完整当前尾部已被覆盖；主循环部分 FIFO 压缩不使用它。读取继续按 sequence 最大的摘要及其后记录加载，无需另一份压缩范围索引。
+
+原生成功交互存入任务 payload.agent_messages；它与公开 trace/events 分开，只有完整工具调用、反馈与来源明确的系统提示能写入。任务终态后冻结，渲染字符串不持久化。
+
+验证见 `tests/test_agent_summary_persistence.py`：混合已持久化和内存任务、失败快照重试、事务回滚及新服务实例重新加载摘要边界。
+
+
+---
+
+## 原生思考窗口存储
+
+新增 conversation_reasoning_windows 表，conversation_id 为主键并引用 conversations，删除会话时级联清理；payload 保存完整窗口 JSON（版本、下一个绝对位置及有限思考条目）。启动期幂等建表，旧会话没有记录时按空窗口处理。写入校验所有权和期望位置，独立于任务/工作区批量备份；窗口数据不进入公开历史投影。范围与重启限制见[原生思考 FIFO 窗口](../workflow/contract-communication/reasoning-window.md)。
+
+
+---
+
+## 任务输入中的合同引用快照
+
+任务 `payload.input.contracts` 保存有序的 `{document_id, file_name, summary}` 列表，旧任务缺省为空列表。快照由请求入口从正式合同 SQLite 读取，随原任务备份与归档原样保存，不增加新表或外键；正式合同后续修改或删除不改写既有任务。公开历史与 Agent Core 使用相同快照。
+
+检索投影将引用合同作为文件区块处理：只提取文件名和非空摘要，不提取合同 ID，不补造展示名称或页数；独立编码后与用户文字及上传附件共同融合到 `user_input_embedding`。详见[检索文本模板](../workflow/conversation-memory/retrieval-embedding.md#用户输入存储模板)。

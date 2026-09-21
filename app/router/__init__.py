@@ -21,7 +21,6 @@ router.include_router(
     contract.router,
     dependencies=[Depends(require_reviewer_user)],
     responses={
-        403: {"description": "已登录，但用户权限等级不允许执行当前操作。"},
         401: {
             "description": "免登码缺失、格式错误、无效或已经过期。",
         }

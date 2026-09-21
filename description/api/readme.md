@@ -2,6 +2,49 @@
 
 > **用途：** 本页是外部 HTTP 与流式接口的统一入口，定义全局路径、媒体类型、错误格式和资源文档导航。
 
+## 接口目录
+
+按业务文档分组，点击接口名称可直接跳转到说明章节。
+
+| 接口 | 方法 | 完整路径 |
+| --- | --- | --- |
+| [健康检查](#健康检查) | `GET` | `/contract/api/health` |
+| [使用密钥登录](auth.md#使用密钥登录) | `POST` | `/contract/api/auth/login` |
+| [获取所有已入库合同元数据](contract.md#获取所有已入库合同元数据) | `GET` | `/contract/api/contract/documents` |
+| [删除正式合同](contract.md#删除正式合同) | `DELETE` | `/contract/api/contract/documents/{document_id}` |
+| [获取合同类别列表](contract.md#获取合同类别列表) | `GET` | `/contract/api/contract/categories` |
+| [获取 Core 审核表单定义](contract.md#获取-core-审核表单定义) | `GET` | `/contract/api/contract/core-definitions` |
+| [列出尚未入库的运行](contract.md#列出尚未入库的运行) | `GET` | `/contract/api/contract/extraction-runs` |
+| [上传 PDF 并创建任务](contract.md#上传-pdf-并创建任务) | `POST` | `/contract/api/contract/extraction-runs` |
+| [获取当前状态与提取结果](contract.md#获取当前状态与提取结果) | `GET` | `/contract/api/contract/extraction-runs/{run_id}` |
+| [取消任务](contract.md#取消任务) | `DELETE` | `/contract/api/contract/extraction-runs/{run_id}` |
+| [确认查重并继续](contract.md#确认查重并继续) | `POST` | `/contract/api/contract/extraction-runs/{run_id}/continue` |
+| [订阅处理事件](contract.md#订阅处理事件) | `GET` | `/contract/api/contract/extraction-runs/{run_id}/events` |
+| [重试失败阶段](contract.md#重试失败阶段) | `POST` | `/contract/api/contract/extraction-runs/{run_id}/stages/{stage_code}/retry` |
+| [正式入库合同](contract.md#正式入库合同) | `POST` | `/contract/api/contract/extraction-runs/{run_id}/ingestion` |
+| [获取合同注意事项列表](contract.md#获取合同注意事项列表) | `GET` | `/contract/api/contract/documents/{document_id}/notes` |
+| [新增合同注意事项](contract.md#新增合同注意事项) | `POST` | `/contract/api/contract/documents/{document_id}/notes` |
+| [获取合同内容摘要](contract.md#获取合同内容摘要) | `GET` | `/contract/api/contract/documents/{document_id}/summary` |
+| [删除合同注意事项](contract.md#删除合同注意事项) | `DELETE` | `/contract/api/contract/documents/{document_id}/notes/{note_id}` |
+| [创建合同关联](contract.md#创建合同关联) | `POST` | `/contract/api/contract/relations` |
+| [删除合同关联](contract.md#删除合同关联) | `DELETE` | `/contract/api/contract/relations/{relation_id}` |
+| [获取合同一跳关系列表](contract.md#获取合同一跳关系列表) | `GET` | `/contract/api/contract/documents/{document_id}/relations` |
+| [读取合同 PDF](resource.md#读取合同-pdf) | `GET` | `/contract/api/resource/contract` |
+| [读取提取任务的内存处理版 PDF](resource.md#读取提取任务的内存处理版-pdf) | `GET` | `/contract/api/resource/extraction-pdf/{file_id}` |
+| [读取已驻留会话任务的 PDF 附件](resource.md#读取已驻留会话任务的-pdf-附件) | `GET` | `/contract/api/resource/conversations/{conversation_id}/files/{file_id}` |
+| [创建临时展示任务](development-trace.md#创建临时展示任务) | `POST` | `/contract/api/communication/development-turns` |
+| [读取开发链路](development-trace.md#读取开发链路) | `GET` | `/contract/api/communication/conversations/{conversation_id}/turns/{turn_id}/development-trace` |
+| [获取当前用户会话列表](communication.md#获取当前用户会话列表) | `GET` | `/contract/api/communication/conversations` |
+| [打开会话](communication.md#打开会话) | `POST` | `/contract/api/communication/conversations/{conversation_id}/open` |
+| [向前刷新会话历史](communication.md#向前刷新会话历史) | `POST` | `/contract/api/communication/conversations/{conversation_id}/refresh` |
+| [修改会话名称](communication.md#修改会话名称) | `PATCH` | `/contract/api/communication/conversations/{conversation_id}` |
+| [删除会话](communication.md#删除会话) | `DELETE` | `/contract/api/communication/conversations/{conversation_id}` |
+| [创建会话及首轮](communication.md#创建会话及首轮) | `POST` | `/contract/api/communication/conversations` |
+| [创建或替换轮次](communication.md#创建或替换轮次) | `POST` | `/contract/api/communication/conversations/{conversation_id}/turns` |
+| [订阅轮次事件流](communication.md#订阅轮次事件流) | `GET` | `/contract/api/communication/conversations/{conversation_id}/turns/{turn_id}/events` |
+| [获取轮次快照](communication.md#获取轮次快照) | `GET` | `/contract/api/communication/conversations/{conversation_id}/turns/{turn_id}` |
+| [取消轮次](communication.md#取消轮次) | `POST` | `/contract/api/communication/conversations/{conversation_id}/turns/{turn_id}/cancel` |
+
 ---
 
 ## 服务入口
@@ -42,9 +85,7 @@ Authorization: Bearer <login_code>
 
 ---
 
-## 系统接口
-
-### 健康检查
+## 健康检查
 
 ```http
 GET /contract/api/health

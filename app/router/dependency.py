@@ -62,18 +62,6 @@ async def require_reviewer_user(user: AuthenticatedUserDependency) -> str:
     return user.name
 
 
-async def require_contract_add(user: AuthenticatedUserDependency) -> None:
-    """新增的完整流程（含取消未入库任务）仅允许 1、2 级。"""
-    if user.permission_level > 2:
-        raise HTTPException(status_code=403, detail="当前用户没有新增合同权限")
-
-
-async def require_contract_delete(user: AuthenticatedUserDependency) -> None:
-    """正式合同删除仅允许 1 级，不与取消内存任务混淆。"""
-    if user.permission_level != 1:
-        raise HTTPException(status_code=403, detail="当前用户没有删除合同权限")
-
-
 ReviewerUserDependency = Annotated[str, Depends(require_reviewer_user)]
 
 __all__ = [
@@ -83,6 +71,4 @@ __all__ = [
     "get_auth_service",
     "require_reviewer_user",
     "require_authenticated_user",
-    "require_contract_add",
-    "require_contract_delete",
 ]

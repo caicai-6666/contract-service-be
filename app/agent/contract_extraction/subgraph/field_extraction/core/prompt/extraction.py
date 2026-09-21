@@ -16,15 +16,18 @@ from app.agent.contract_extraction.subgraph.field_extraction.definition import (
 )
 from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
 
-CORE_COMMON_PROMPT_VERSION = "core-common-v5"
-CORE_EXTRACTION_PROMPT_VERSION = "core-extraction-v7"
+CORE_COMMON_PROMPT_VERSION = "core-common-v6"
+CORE_EXTRACTION_PROMPT_VERSION = "core-extraction-v8"
 
 FIELD_DEFINITION_GUIDE = """提取对象定义属性说明：
 - name：当前唯一处理的对象类别；不能改名或创造新类别。
 - aliases：合同中可能指向该对象类别的同义标题，只用于定位证据。
 - meaning / excludes：分别定义对象成立条件和排除边界。
 - cardinality：single 只允许一个对象；multiple 允许逐次提交多个独立对象。
-- properties：单个对象的扁平属性定义。每项包含 name、aliases、type、required、meaning 和 excludes。
+- properties：单个对象的扁平属性定义。每项包含 name、aliases、type、required、meaning、excludes、constraints 和 extraction_rule。
+- constraints：允许输出的枚举值、最小值、最大值和倍数；枚举提交 value，不提交 label。multiple_of=1 表示整数值。
+- extraction_rule：识别及标准化规则；保留 evidence 中的原文，value 提交转换后的标准值。例如美元转换为 USD，13% 转换为 13。不得因枚举存在某值就假定合同采用该值；有歧义的符号不能强行归类。
+- 无法满足约束时，可选属性省略；必填属性无法确定则该对象不可提交。没有成功对象时按 abandon_extraction 结束；已有对象时跳过无法可靠提取的对象并按 finish_extraction 收束。不得四舍五入、截断或选择最接近枚举凑值。
 - 属性 type 只允许 string、integer、number、boolean；属性值不能是对象或数组。
 - required 为 false 的属性没有可靠证据时直接省略，不使用 null 或伪造默认值。"""
 
@@ -59,12 +62,13 @@ CORE_FIELD_TASK = """当前唯一提取对象定义如下。定义是对象语�
 
 def serialize_field_definition(definition: FieldDefinition) -> str:
     """按模型提取对象定义顺序生成稳定 YAML。"""
-    # code 与 tokenize 仅决定 Elasticsearch mapping，不能污染模型提取任务。
+    # code、tokenize 与 index_format 仅决定 Elasticsearch mapping，不能污染模型提取任务。
     model_definition = definition.model_dump(mode="json")
     model_definition.pop("code", None)
     for property_definition in model_definition["properties"]:
         property_definition.pop("code", None)
         property_definition.pop("tokenize", None)
+        property_definition.pop("index_format", None)
     return yaml.safe_dump(
         model_definition,
         allow_unicode=True,

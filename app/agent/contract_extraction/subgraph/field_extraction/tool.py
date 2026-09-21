@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .constraints import constraint_violation
+from app.infrastructure.model_json import load_model_json, validate_model_payload
 import json
 from math import isfinite
 from typing import Any, Final, TypeAlias
@@ -192,11 +194,13 @@ def canonical_field_value(value: FieldObjectValue) -> str:
 
 def _property_schema(property_definition: FieldPropertyDefinition) -> dict[str, Any]:
     description = (
-        f"{property_definition.meaning} 排除边界：{property_definition.excludes}"
+        f"{property_definition.meaning} 排除边界：{property_definition.excludes} "
+        f"提取转换规则：{property_definition.extraction_rule}"
     )
     return {
         "type": property_definition.type.value,
         "description": description,
+        **property_definition.constraints.json_schema_keywords(),
     }
 
 
@@ -287,21 +291,6 @@ def build_field_tools(
     return base + (ABANDON_EXTRACTION_TOOL,)
 
 
-def _decode_embedded_json(value: Any) -> Any:
-    """兼容 Qwen 工具解析器把嵌套参数编码成 JSON 字符串的情况。"""
-    if isinstance(value, str) and value.lstrip().startswith(("{", "[")):
-        try:
-            decoded = json.loads(value)
-        except json.JSONDecodeError:
-            return value
-        return _decode_embedded_json(decoded)
-    if isinstance(value, list):
-        return [_decode_embedded_json(item) for item in value]
-    if isinstance(value, dict):
-        return {key: _decode_embedded_json(item) for key, item in value.items()}
-    return value
-
-
 def _type_correction(property_definition: FieldPropertyDefinition) -> str:
     return {
         FieldValueType.STRING: "传入非空 JSON 字符串，并保留必要的原文字符",
@@ -339,6 +328,14 @@ def _validate_property_value(
             f"value.{property_definition.name}",
             "数值不能是 NaN 或无穷大",
             "传入有限 JSON 数值",
+        )
+    problem = constraint_violation(property_definition, value)
+    if problem:
+        raise FieldObjectValidationError(
+            f"value.{property_definition.name}", problem,
+            f"依据页面证据及转换规则修正：{property_definition.extraction_rule}；"
+            "若证据不足或原值无法合法表示，不得猜测、截断或凑值；"
+            "可选属性省略，必填属性无法可靠确定时不要提交不完整对象，按当前终止工具结束",
         )
     return value
 
@@ -391,10 +388,10 @@ def parse_field_tool_arguments(
     except KeyError as exc:
         raise ValueError(f"未知的对象提取工具：{name}") from exc
     try:
-        payload = json.loads(raw_arguments)
+        payload = load_model_json(raw_arguments)
     except json.JSONDecodeError as exc:
         raise ValueError(f"工具 {name} 的参数不是有效 JSON") from exc
-    arguments = arguments_model.model_validate(_decode_embedded_json(payload))
+    arguments = validate_model_payload(arguments_model, payload)
     if not isinstance(arguments, ExtractObjectArguments):
         return arguments
     value = validate_object_value(definition, arguments.value)

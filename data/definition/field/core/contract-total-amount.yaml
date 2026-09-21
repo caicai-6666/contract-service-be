@@ -17,5 +17,7 @@ properties:
     aliases: []
     type: number
     required: true
+    constraints: {}
+    extraction_rule: 仅根据合同明确证据提取，遵循 meaning 与 excludes；无法确定时不补造默认值。
     meaning: 合同明确约定的整体交易总金额数值。
     excludes: 不包括币种、单价、小计、税额或阶段付款金额。

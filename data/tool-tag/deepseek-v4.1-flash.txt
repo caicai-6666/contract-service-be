@@ -1,0 +1,8 @@
+工具调用使用 DeepSeek V4.1 的 DSML 格式，标签中的“｜DSML｜”后必须保留一个空格：
+<｜DSML｜ calls>
+<｜DSML｜ invoke name="工具名称">
+<｜DSML｜ parameter name="字符串参数" string="true">字符串原文</｜DSML｜ parameter>
+<｜DSML｜ parameter name="其他类型参数" string="false">合法JSON值</｜DSML｜ parameter>
+</｜DSML｜ invoke>
+</｜DSML｜ calls>
+替换为实际工具名和所需参数，提供全部必填参数。字符串使用 string="true"，值不加JSON外层引号；数字、布尔值、数组、对象和null使用 string="false"，值为合法JSON。无参数工具保留空的invoke块。不得用Markdown代码块或普通文字模拟调用，调用块之后不得追加解释。不要使用旧版tool_calls、function_calls标签或Qwen的tool_call格式。

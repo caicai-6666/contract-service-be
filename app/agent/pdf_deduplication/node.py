@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import math
 from collections.abc import Sequence
 from time import monotonic
@@ -53,41 +54,10 @@ async def vectorize_processed_pdf(
     if source_page_numbers != tuple(range(1, prepared.page_count + 1)):
         raise ValueError("PreparedPDF 页面必须按从 1 开始的连续物理页码排列")
 
-    semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
-    async with EmbeddingClient(settings) as client:
-        async def embed_page(page) -> tuple[int, str, tuple[float, ...]]:
-            async with semaphore:
-                # 节点只传不可变引用；客户端取得全局配额后才编码。
-                completion = await client.create_multimodal_embedding(
-                    messages=build_pdf_page_embedding_messages(PNGImage(
-                        png_bytes=page.png_bytes,
-                        content_sha256=page.content_sha256,
-                    ))
-                )
-            vector = _normalize_vector(
-                completion.vectors[0],
-                expected_dimensions=settings.dimensions,
-            )
-            return (
-                page.page_number,
-                completion.model or settings.model,
-                vector,
-            )
-
-        page_embeddings = await asyncio.gather(
-            *(embed_page(page) for page in pages)
-        )
-
-    response_models = {model for _, model, _ in page_embeddings}
-    if len(response_models) != 1:
-        raise ValueError(f"页面 Embedding 响应模型不一致：{sorted(response_models)}")
-    fused = _fuse_tail_weighted(
-        tuple((page_number, vector) for page_number, _, vector in page_embeddings),
-        expected_dimensions=settings.dimensions,
-    )
+    fused = await encode_pdf_pages(pages, settings=settings)
     page_fusion_vector = PDFPageFusionVector(
         document_id=prepared.document_id,
-        embedding_model=next(iter(response_models)),
+        embedding_model=settings.model,
         embedding_input_version=PDF_PAGE_EMBEDDING_INPUT_VERSION,
         fusion_version=PDF_PAGE_FUSION_VERSION,
         fusion_method="weighted_mean_l2_normalized",
@@ -98,6 +68,54 @@ async def vectorize_processed_pdf(
         elapsed_ms=(monotonic() - started) * 1000,
     )
     return {**state, "page_fusion_vector": page_fusion_vector}
+
+
+async def encode_pdf_pages(pages, *, settings) -> tuple[float, ...]:
+    """查重与图片检索共用全页编码；任一页失败不发布部分融合结果。"""
+    pages = tuple(sorted(pages, key=lambda page: page.page_number))
+    if not pages or tuple(p.page_number for p in pages) != tuple(range(1, len(pages) + 1)):
+        raise ValueError("页面必须完整且从1连续编号")
+    semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
+    async with EmbeddingClient(settings) as client:
+        async def embed_page(page) -> tuple[int, str, tuple[float, ...]]:
+            async with semaphore:
+                # 节点只传不可变引用；客户端取得全局配额后才编码。
+                completion = await client.create_multimodal_embedding(
+                    messages=build_pdf_page_embedding_messages(PNGImage(
+                        png_bytes=page.png_bytes,
+                        content_sha256=hashlib.sha256(page.png_bytes).hexdigest(),
+                    ))
+                )
+            if completion.model != settings.model or len(completion.vectors) != 1:
+                raise ValueError("页面 Embedding 响应模型或数量不一致")
+            vector = _normalize_vector(
+                completion.vectors[0],
+                expected_dimensions=settings.dimensions,
+            )
+            return (
+                page.page_number,
+                completion.model or settings.model,
+                vector,
+            )
+
+        tasks = [asyncio.create_task(embed_page(page)) for page in pages]
+        try:
+            page_embeddings = await asyncio.gather(*tasks)
+        except BaseException:
+            # 一页失败或调用取消时，先清理其余请求，再关闭共享客户端。
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+    response_models = {model for _, model, _ in page_embeddings}
+    if len(response_models) != 1:
+        raise ValueError(f"页面 Embedding 响应模型不一致：{sorted(response_models)}")
+    fused = _fuse_tail_weighted(
+        tuple((page_number, vector) for page_number, _, vector in page_embeddings),
+        expected_dimensions=settings.dimensions,
+    )
+    return fused
 
 
 def _normalize_vector(

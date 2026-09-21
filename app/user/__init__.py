@@ -4,10 +4,9 @@ from app.user.catalog import (
     ReviewerUserCatalogError,
     load_reviewer_user_catalog,
 )
-from app.user.model import PermissionLevel, ReviewerUser, ReviewerUserCatalog
+from app.user.model import ReviewerUser, ReviewerUserCatalog
 
 __all__ = [
-    "PermissionLevel",
     "ReviewerUser",
     "ReviewerUserCatalog",
     "ReviewerUserCatalogError",

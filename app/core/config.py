@@ -3,10 +3,10 @@
 from functools import lru_cache
 from os import getenv
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -17,6 +17,9 @@ class MLLMGenerationSettings(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     enable_thinking: bool = False
+    reasoning_effort: Literal["low", "medium", "xhigh"] = Field(
+        default="xhigh", description="本地 MLLM 默认推理强度 low/medium/xhigh；合同提取和会话业务门禁独立配置，适配层转换模型协议。",
+    )
     temperature: float = Field(default=0.7, ge=0)
     top_p: float = Field(default=0.8, ge=0, le=1)
     top_k: int = Field(default=20, ge=0)
@@ -55,12 +58,16 @@ class MLLMSettings(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    progress_reminder_interval_seconds: float = Field(default=60, ge=0, allow_inf_nan=False, description='主模型中途反馈提醒间隔秒数；0关闭。成功emit_progress后重计，未响应提醒时每轮重注入。')
+    page_display_rounds: int = Field(default=5, ge=1, description='临时页面保留的完整模型生成轮数；从首次展示开始计数，落盘仅保存隐藏占位。')
+    reasoning_window_rounds: int = Field(default=3, ge=0, description='独立思考 FIFO 的保留轮数，0 表示不回注。')
+    reasoning_window_max_tokens: int = Field(default=16384, ge=0, description='思考 FIFO 的 token 上限，按最早完整条目驱逐，0 表示不保留。')
     provider: str = "vllm"
     base_url: str = "http://127.0.0.1:8000/v1"
     api_key: str | None = None
-    model: str = "qwen3.6-35b-a3b-fp8"
+    model: str = "qwen38-flash-next"
     tool_tag_file: str = Field(
-        default="qwen3.6-35b-a3b-fp8.txt",
+        default="qwen3.8-flash-next-nvfp4.txt",
         description="data/tool-tag 下的工具调用模板文件名；启动时读取，不允许目录路径。",
     )
     endpoint: str = "chat_completions"
@@ -73,6 +80,40 @@ class MLLMSettings(BaseModel):
     context_window_tokens: int = Field(default=262144, gt=0)
     generation: MLLMGenerationSettings = MLLMGenerationSettings()
     vision: MLLMVisionSettings = MLLMVisionSettings()
+    extraction_reasoning_effort: Literal["low", "medium", "xhigh"] = Field(
+        default="low", description="合同提取全链路的独立推理强度，包含文档识别、质量判断、查重和结构化提取。",
+    )
+    business_gate_reasoning_effort: Literal["low", "medium", "xhigh"] = Field(
+        default="xhigh", description="会话业务门禁的独立推理强度，包含附件可读性、摘要、相关性、主题冲突及拒绝回复。",
+    )
+
+    def for_contract_extraction(self) -> Self:
+        """构造不可变的提取配置副本，避免并发提取改变会话侧推理强度。"""
+        return self.model_copy(update={"generation": self.generation.model_copy(update={
+            "enable_thinking": True,
+            "reasoning_effort": self.extraction_reasoning_effort,
+        })})
+
+    def for_business_gate(self) -> Self:
+        """在创建门禁客户端前选择独立强度，不修改共享配置或调用方传入对象。"""
+        return self.model_copy(update={"generation": self.generation.model_copy(update={
+            "enable_thinking": True,
+            "reasoning_effort": self.business_gate_reasoning_effort,
+        })})
+
+    def thinking_template_kwargs(self, enable_thinking: bool) -> dict:
+        """生成与分词共用模型适配；不依赖可随意设置的服务模型别名。"""
+        result = {"enable_thinking": enable_thinking}
+        if enable_thinking:
+            effort = self.generation.reasoning_effort
+            # tool-tag 已显式选择模型协议。原生 DS 编码器会绕过 Jinja，
+            # 因而先转换为其接受的数值；自定义 DS 模板也接受相同数值。
+            profiles = {
+                "deepseek-v4.1-flash.txt": {"low": 50, "medium": 75, "xhigh": 100},
+                "glm-5.3-flash.txt": {"low": "low", "medium": "high", "xhigh": "max"},
+            }
+            result["reasoning_effort"] = profiles.get(self.tool_tag_file, {}).get(effort, effort)
+        return result
 
     @field_validator("tool_tag_file")
     @classmethod
@@ -144,6 +185,20 @@ class MLLMSettings(BaseModel):
         )
 
 
+class DeepSeekSettings(BaseModel):
+    """外部专家 Responses 连接及生成配置；由宿主显式创建客户端。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    base_url: str = Field(default="https://api.deepseek.com", min_length=1)
+    api_key: SecretStr | None = Field(default=None, repr=False)
+    model: str = Field(default="deepseek-v4-pro", min_length=1)
+    reasoning_effort: Literal["none", "low", "high", "max"] = Field(default="high", description="专家思考强度；none 关闭，low/high/max 开启，统一由此项控制思考开关。")
+    timeout_seconds: int = Field(default=300, gt=0)
+    max_concurrent_requests: int = Field(default=3, gt=0)
+    max_completion_tokens: int = Field(default=8192, gt=0)
+
+
 class EmbeddingSettings(BaseModel):
     """用于检索向量化的本地 vLLM 服务。"""
 
@@ -188,8 +243,46 @@ class Settings(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     app_env: str = "development"
-    communication_demo_enabled: bool = Field(default=False, description="在真实 communication 门禁通过后启用模拟问答，仅用于联调，不跳过门禁。")
+    communication_trace_enabled: bool = False
     communication_database_file: Path = Path("data/communication/communication.db")
+    sqlite_lindera_extension_path: Path = Field(default=Path('data/extensions/lindera/liblindera_sqlite'), description='Lindera原生扩展路径，可省略平台后缀；相对项目根目录解析。')
+    lindera_config_path: Path = Field(default=Path('config/lindera-jieba.yml'), description='进程统一使用的Lindera中文分词配置，相对项目根目录解析。')
+    communication_contract_file_cache_max_files: int = Field(
+        default=32, gt=0, description='共享合同文件池的最大文件数；达到容量后按 LRU 驱逐闲置模型。',
+    )
+    communication_session_file_cache_max_files: int = Field(
+        default=8, gt=0, description='每个会话附件文件池的最大文件数；不是所有会话的合计上限。',
+    )
+    communication_memory_query_cache_max_queries: int = Field(default=10, gt=0, description='每个会话记忆查询结果池容量，必须为正整数。')
+    communication_memory_query_page_size: int = Field(default=3, gt=0, description='记忆查询每页任务数，必须为正整数。')
+    communication_expert_session_cache_max_sessions: int = Field(default=10, gt=0, description='每个会话外部专家会话池容量，必须为正整数。')
+    communication_contract_relations_cache_max_contracts: int = Field(default=10, gt=0, description='每个会话合同关联快照池容量，必须为正整数。')
+    communication_contract_relations_page_size: int = Field(default=5, gt=0, description='合同关联每页关系数，必须为正整数。')
+    communication_contract_notes_cache_max_contracts: int = Field(default=10, gt=0, description='每个会话注意事项快照池容量，正整数。')
+    communication_contract_notes_page_size: int = Field(default=5, gt=0, description='注意事项每页记录数，正整数。')
+    communication_contract_search_cache_max_queries: int = Field(default=10, gt=0, description='每个会话合同检索结果集LRU容量。')
+    communication_web_page_cache_max_entries: int = Field(default=10, gt=0, description='每个会话最多驻留的网页与关注重点精炼结果数。')
+    communication_web_page_chars: int = Field(default=3000, gt=0, description='网页精炼内容每页最大字符数。')
+    communication_web_search_cache_max_queries: int = Field(default=10, gt=0, description='每个会话驻留网页搜索结果集上限。')
+    communication_web_search_page_size: int = Field(default=5, gt=0, description='网页搜索每页候选数量。')
+    communication_web_search_max_results: int = Field(default=20, gt=0, description='单次网页搜索最多获取的候选数量。')
+    communication_web_search_timeout_seconds: int = Field(default=10, gt=0, description='DDGS底层请求超时秒数。')
+    communication_web_search_max_concurrent_requests: int = Field(default=2, gt=0, description='网页搜索并发调用上限。')
+    communication_contract_search_page_size: int = Field(default=5, gt=0, description='合同检索结果每页合同数。')
+    communication_contract_retrieval_cache_max_queries: int = Field(default=10, ge=1, description='每会话最终合同候选结果集独立LRU容量。')
+    communication_contract_retrieval_page_size: int = Field(default=5, ge=1, le=50, description='最终合同候选每页条数。')
+    communication_contract_retrieval_max_rounds: int = Field(default=16, ge=1, le=64, description='合同候选子Agent最多工具调用轮数。')
+    communication_relation_search_top_k: int = Field(default=10, ge=1, le=50, description='关系检索最多返回边数。')
+    communication_relation_search_cache_max_queries: int = Field(default=10, ge=1, description='每会话关系检索结果集驻留上限。')
+    communication_relation_search_page_size: int = Field(default=3, ge=1, le=50, description='关系检索每页边数。')
+    communication_contract_retrieval_rrf_k: int = Field(default=60, ge=1, description='跨查询 RRF 平滑常数。')
+    communication_contract_retrieval_history_weight: float = Field(default=0.5, ge=0, le=1, allow_inf_nan=False, description='跨查询 RRF 历史排名权重；本轮为1减该值。')
+    communication_contract_clause_search_top_k: int = Field(default=10, ge=1, le=50, description='条款 BM25 检索最多返回的合同数。')
+    communication_contract_name_search_top_k: int = Field(default=10, ge=1, le=50, description='名称 BM25 检索最多返回的合同数。')
+    communication_contract_summary_search_top_k: int = Field(default=10, ge=1, le=50, description='摘要混合检索最多返回的合同数。')
+    communication_contract_note_search_top_k: int = Field(default=10, ge=1, le=50, description='备注混合检索最多返回的合同数。')
+    communication_contract_question_search_top_k: int = Field(default=10, ge=1, le=50, description='问题向量检索最多返回的合同数。')
+    communication_contract_question_search_minimum_similarity: float | None = Field(default=None, ge=-1, le=1, allow_inf_nan=False, description='问题检索余弦下限，未配置则不设置门槛。')
     contract_category_definition_dir: Path = Path(
         "data/definition/contract-category"
     )
@@ -211,6 +304,10 @@ class Settings(BaseModel):
     contract_extraction_event_buffer_size: int = Field(default=256, gt=0)
     contract_extraction_sse_heartbeat_seconds: int = Field(default=15, gt=0)
     contract_extraction_max_stage_attempts: int = Field(default=3, gt=0)
+    # 图数据库当前关闭认证；连接配置预备给后续基础设施接入使用。
+    neo4j_uri: str = Field(default="bolt://127.0.0.1:7687", min_length=1)
+    neo4j_database: str = Field(default="neo4j", min_length=1)
+    neo4j_connection_timeout_seconds: float = Field(default=30, gt=0)
     elasticsearch_hosts: tuple[str, ...] = ("http://127.0.0.1:9200",)
     elasticsearch_index_name: str = "contracts-v1"
     elasticsearch_ingestion_experiment_index_name: str = (
@@ -226,6 +323,7 @@ class Settings(BaseModel):
     elasticsearch_number_of_replicas: int = Field(default=0, ge=0)
     mllm: MLLMSettings = MLLMSettings()
     embedding: EmbeddingSettings = EmbeddingSettings()
+    deepseek: DeepSeekSettings = DeepSeekSettings()
     pdf_deduplication: PDFDeduplicationSettings = PDFDeduplicationSettings()
 
     @model_validator(mode="after")
@@ -310,8 +408,42 @@ def get_settings() -> Settings:
     load_dotenv(_PROJECT_ROOT / ".env")
     return Settings(
         app_env=_env("APP_ENV", "development"),
-        communication_demo_enabled=_env("COMMUNICATION_DEMO_ENABLED", "false"),
+        communication_trace_enabled=_env("COMMUNICATION_TRACE_ENABLED", "false"),
         communication_database_file=_env("COMMUNICATION_DATABASE_FILE", "data/communication/communication.db"),
+        sqlite_lindera_extension_path=_env('SQLITE_LINDERA_EXTENSION_PATH', 'data/extensions/lindera/liblindera_sqlite'),
+        lindera_config_path=_env('LINDERA_CONFIG_PATH', 'config/lindera-jieba.yml'),
+        communication_contract_file_cache_max_files=_env("COMMUNICATION_CONTRACT_FILE_CACHE_MAX_FILES", "32"),
+        communication_session_file_cache_max_files=_env("COMMUNICATION_SESSION_FILE_CACHE_MAX_FILES", "8"),
+        communication_memory_query_cache_max_queries=_env("COMMUNICATION_MEMORY_QUERY_CACHE_MAX_QUERIES", "10"),
+        communication_memory_query_page_size=_env("COMMUNICATION_MEMORY_QUERY_PAGE_SIZE", "3"),
+        communication_expert_session_cache_max_sessions=_env("COMMUNICATION_EXPERT_SESSION_CACHE_MAX_SESSIONS", "10"),
+        communication_contract_relations_cache_max_contracts=_env("COMMUNICATION_CONTRACT_RELATIONS_CACHE_MAX_CONTRACTS", "10"),
+        communication_contract_relations_page_size=_env("COMMUNICATION_CONTRACT_RELATIONS_PAGE_SIZE", "5"),
+        communication_contract_notes_cache_max_contracts=_env("COMMUNICATION_CONTRACT_NOTES_CACHE_MAX_CONTRACTS", "10"),
+        communication_contract_notes_page_size=_env("COMMUNICATION_CONTRACT_NOTES_PAGE_SIZE", "5"),
+        communication_contract_search_cache_max_queries=_env("COMMUNICATION_CONTRACT_SEARCH_CACHE_MAX_QUERIES", "10"),
+        communication_web_page_cache_max_entries=_env("COMMUNICATION_WEB_PAGE_CACHE_MAX_ENTRIES", "10"),
+        communication_web_page_chars=_env("COMMUNICATION_WEB_PAGE_CHARS", "3000"),
+        communication_web_search_cache_max_queries=_env("COMMUNICATION_WEB_SEARCH_CACHE_MAX_QUERIES", "10"),
+        communication_web_search_page_size=_env("COMMUNICATION_WEB_SEARCH_PAGE_SIZE", "5"),
+        communication_web_search_max_results=_env("COMMUNICATION_WEB_SEARCH_MAX_RESULTS", "20"),
+        communication_web_search_timeout_seconds=_env("COMMUNICATION_WEB_SEARCH_TIMEOUT_SECONDS", "10"),
+        communication_web_search_max_concurrent_requests=_env("COMMUNICATION_WEB_SEARCH_MAX_CONCURRENT_REQUESTS", "2"),
+        communication_contract_search_page_size=_env("COMMUNICATION_CONTRACT_SEARCH_PAGE_SIZE", "5"),
+        communication_contract_retrieval_cache_max_queries=int(_env("COMMUNICATION_CONTRACT_RETRIEVAL_CACHE_MAX_QUERIES", "10")),
+        communication_contract_retrieval_page_size=int(_env("COMMUNICATION_CONTRACT_RETRIEVAL_PAGE_SIZE", "5")),
+        communication_contract_retrieval_max_rounds=int(_env("COMMUNICATION_CONTRACT_RETRIEVAL_MAX_ROUNDS", "16")),
+        communication_relation_search_top_k=int(_env("COMMUNICATION_RELATION_SEARCH_TOP_K", "10")),
+        communication_relation_search_cache_max_queries=int(_env("COMMUNICATION_RELATION_SEARCH_CACHE_MAX_QUERIES", "10")),
+        communication_relation_search_page_size=int(_env("COMMUNICATION_RELATION_SEARCH_PAGE_SIZE", "3")),
+        communication_contract_retrieval_rrf_k=int(_env("COMMUNICATION_CONTRACT_RETRIEVAL_RRF_K", "60")),
+        communication_contract_retrieval_history_weight=float(_env("COMMUNICATION_CONTRACT_RETRIEVAL_HISTORY_WEIGHT", "0.5")),
+        communication_contract_clause_search_top_k=int(_env("COMMUNICATION_CONTRACT_CLAUSE_SEARCH_TOP_K", "10")),
+        communication_contract_name_search_top_k=int(_env("COMMUNICATION_CONTRACT_NAME_SEARCH_TOP_K", "10")),
+        communication_contract_summary_search_top_k=int(_env("COMMUNICATION_CONTRACT_SUMMARY_SEARCH_TOP_K", "10")),
+        communication_contract_note_search_top_k=int(_env("COMMUNICATION_CONTRACT_NOTE_SEARCH_TOP_K", "10")),
+        communication_contract_question_search_top_k=_env("COMMUNICATION_CONTRACT_QUESTION_SEARCH_TOP_K", "10"),
+        communication_contract_question_search_minimum_similarity=_env("COMMUNICATION_CONTRACT_QUESTION_SEARCH_MINIMUM_SIMILARITY", "").strip() or None,
         contract_category_definition_dir=_env(
             "CONTRACT_CATEGORY_DEFINITION_DIR",
             "data/definition/contract-category",
@@ -364,6 +496,9 @@ def get_settings() -> Settings:
             "CONTRACT_EXTRACTION_MAX_STAGE_ATTEMPTS",
             "3",
         ),
+        neo4j_uri=_env("NEO4J_URI", "bolt://127.0.0.1:7687"),
+        neo4j_database=_env("NEO4J_DATABASE", "neo4j"),
+        neo4j_connection_timeout_seconds=_env("NEO4J_CONNECTION_TIMEOUT_SECONDS", "30"),
         elasticsearch_hosts=_hosts_env(),
         elasticsearch_index_name=_env("ELASTICSEARCH_INDEX_NAME", "contracts-v1"),
         elasticsearch_ingestion_experiment_index_name=_env(
@@ -377,13 +512,26 @@ def get_settings() -> Settings:
         elasticsearch_vector_dimensions=_env("ELASTICSEARCH_VECTOR_DIMENSIONS", "4096"),
         elasticsearch_number_of_shards=_env("ELASTICSEARCH_NUMBER_OF_SHARDS", "1"),
         elasticsearch_number_of_replicas=_env("ELASTICSEARCH_NUMBER_OF_REPLICAS", "0"),
+        deepseek=DeepSeekSettings(
+            base_url=_env("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+            api_key=_optional_env("DEEPSEEK_API_KEY"),
+            model=_env("DEEPSEEK_MODEL", "deepseek-v4-pro"),
+            reasoning_effort=_env("DEEPSEEK_REASONING_EFFORT", "high"),
+            timeout_seconds=_env("DEEPSEEK_TIMEOUT_SECONDS", "300"),
+            max_concurrent_requests=_env("DEEPSEEK_MAX_CONCURRENT_REQUESTS", "3"),
+            max_completion_tokens=_env("DEEPSEEK_MAX_COMPLETION_TOKENS", "8192"),
+        ),
         mllm=MLLMSettings(
+            progress_reminder_interval_seconds=_env("VLLM_MLLM_PROGRESS_REMINDER_INTERVAL_SECONDS", "60"),
+            page_display_rounds=_env("VLLM_MLLM_PAGE_DISPLAY_ROUNDS", "5"),
+            reasoning_window_rounds=_env("VLLM_MLLM_REASONING_WINDOW_ROUNDS", "3"),
+            reasoning_window_max_tokens=_env("VLLM_MLLM_REASONING_WINDOW_MAX_TOKENS", "16384"),
             provider=_env("VLLM_MLLM_PROVIDER", "vllm"),
             base_url=_env("VLLM_MLLM_BASE_URL", "http://127.0.0.1:8000/v1"),
             api_key=_optional_env("VLLM_MLLM_API_KEY"),
-            model=_env("VLLM_MLLM_MODEL", "qwen3.6-35b-a3b-fp8"),
+            model=_env("VLLM_MLLM_MODEL", "qwen38-flash-next"),
             tool_tag_file=_env(
-                "VLLM_MLLM_TOOL_TAG_FILE", "qwen3.6-35b-a3b-fp8.txt"
+                "VLLM_MLLM_TOOL_TAG_FILE", "qwen3.8-flash-next-nvfp4.txt"
             ),
             endpoint=_env("VLLM_MLLM_ENDPOINT", "chat_completions"),
             timeout_seconds=_env("VLLM_MLLM_TIMEOUT_SECONDS", "300"),
@@ -397,6 +545,7 @@ def get_settings() -> Settings:
             ),
             generation=MLLMGenerationSettings(
                 enable_thinking=_env("VLLM_MLLM_ENABLE_THINKING", "false"),
+                reasoning_effort=_env("VLLM_MLLM_REASONING_EFFORT", "xhigh"),
                 temperature=_env("VLLM_MLLM_TEMPERATURE", "0.7"),
                 top_p=_env("VLLM_MLLM_TOP_P", "0.8"),
                 top_k=_env("VLLM_MLLM_TOP_K", "20"),
@@ -405,6 +554,8 @@ def get_settings() -> Settings:
                 seed=_env("VLLM_MLLM_SEED", "3407"),
                 max_completion_tokens=_env("VLLM_MLLM_MAX_COMPLETION_TOKENS", "8192"),
             ),
+            extraction_reasoning_effort=_env("VLLM_MLLM_EXTRACTION_REASONING_EFFORT", "low"),
+            business_gate_reasoning_effort=_env("VLLM_MLLM_BUSINESS_GATE_REASONING_EFFORT", "xhigh"),
             vision=MLLMVisionSettings(
                 max_render_scale=_env("VLLM_MLLM_MAX_RENDER_SCALE", "2.0"),
                 visual_token_patch_size=_env("VLLM_MLLM_VISUAL_TOKEN_PATCH_SIZE", "32"),

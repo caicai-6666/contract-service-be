@@ -77,7 +77,6 @@ from app.infrastructure.mllm import (
 )
 
 _MAXIMUM_DISCOVERY_ROUNDS = 256
-_MAXIMUM_COMPLETION_TOKENS = 4096
 _MAXIMUM_CONTENT_ROUNDS = 6
 
 
@@ -151,7 +150,7 @@ async def discover_clause_candidates(
     if prepared_pdf.document_id != prefill_context.document_id:
         raise ValueError("条款发现输入 PDF 与最终公共前缀的 document_id 不一致")
 
-    settings = get_settings().mllm
+    settings = get_settings().mllm.for_contract_extraction()
     generation = settings.generation
     started_at = perf_counter()
     hierarchy_analysis: AnalyzeClauseHierarchyArguments | None = None
@@ -179,17 +178,14 @@ async def discover_clause_candidates(
                     messages=messages,
                     tools=list(tools),
                     tool_choice=CLAUSE_DISCOVERY_TOOL_CHOICE,
-                    max_completion_tokens=min(
-                        generation.max_completion_tokens,
-                        _MAXIMUM_COMPLETION_TOKENS,
-                    ),
+                    max_completion_tokens=generation.max_completion_tokens,
                     temperature=generation.temperature,
                     top_p=generation.top_p,
                     top_k=generation.top_k,
                     presence_penalty=generation.presence_penalty,
                     repetition_penalty=generation.repetition_penalty,
                     seed=generation.seed,
-                    enable_thinking=False,
+                    enable_thinking=True,
                     tool_placement=CLAUSE_DISCOVERY_TOOL_PLACEMENT,
                 )
             except (MLLMRequestError, MLLMUnavailableError) as exc:
@@ -558,7 +554,7 @@ async def _extract_one_clause(
                     presence_penalty=generation_profile.presence_penalty,
                     repetition_penalty=generation_profile.repetition_penalty,
                     seed=seed,
-                    enable_thinking=False,
+                    enable_thinking=True,
                     tool_placement=CLAUSE_CONTENT_TOOL_PLACEMENT,
                 )
         except (MLLMRequestError, MLLMUnavailableError) as exc:
@@ -749,7 +745,7 @@ async def extract_clause_contents(
         raise ValueError("条款详情公共提示词版本与当前实现不一致")
     if context.tool_version != CLAUSE_CONTENT_TOOL_VERSION:
         raise ValueError("条款详情公共工具版本与当前实现不一致")
-    settings = get_settings().mllm
+    settings = get_settings().mllm.for_contract_extraction()
     generation_profile = build_clause_content_generation_profile(settings.generation)
     semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
     progress = ParallelProgressTracker(len(discovery.candidates))

@@ -1,125 +1,121 @@
-# 会话记忆加工工作流
+# 单任务记忆加工子图
 
-> **实现状态：** 已实现节点1筛选、LangGraph Send并发节点2单任务整理及总结侧向量化、节点3待入库数据汇总。本图不写文件或SQLite；[归档Service](../../system/communication-archive.md)已接通定时分批、落盘和安全驱逐，查询端尚未实现。
-
----
-
-## 包结构与职责
-
-| 文件 | 职责 |
-| --- | --- |
-| `workflow.py` | 装配三节点图、Send分发及并发限制；筛选失败直接结束。 |
-| `state.py` | 批次输入、完整计划、失败及私有审计输出。 |
-| `node.py` | 两类节点共享的有限模型循环、单任务整理及确定性汇总。 |
-| `tool.py` | 节点1三工具及节点2两工具的独立Schema、严格参数解析和顺序校验。 |
-| `prompt/planning.py` | 系统提示词、业务字段投影与确定性任务渲染。 |
-| `prompt/summarizing.py` | 节点2单任务记忆整理提示词与消息构造，已接入工具循环。 |
-| `prompt/guidence.py` | 独立 user 纠错消息构造器。 |
-| `prompt/embedding.py` | 双侧场景化固定指令与总结侧编码输入。 |
-| `embedding.py` | 调用Embedding、校验响应、L2归一化及独立审计。 |
-
-具体契约见[筛选规划提示词](planning-prompt.md)和[筛选工具](planning-tools.md)。
-
-节点2详细规则见[单任务记忆整理提示词](summarizing-prompt.md)及[整理工具](summarizing-tools.md)。
-
-向量化和后续查询端采用双侧场景化方案，固定指令统一见[会话历史检索向量化契约](retrieval-embedding.md)。节点2编码及节点3返回内容的完整契约见[待入库数据](pending-records.md)。
+> **当前边界：** 子图接受上游已经筛选过的一个终态任务，确定性提取用户输入、中途输出、最终输出，再按实际内容并发向量化。不接受任务列表，不执行筛选，不调用MLLM生成摘要，不写SQLite。外层归档Service已接通筛选、任务并发调用、原子提交及后台扫描。
 
 ---
 
-## 流程与输入输出
+## 节点与拓扑
 
 ```mermaid
 flowchart TD
-    start["START"] --> plan["节点1：筛选与加工规划"]
-    plan -->|Send每个已选任务| process["节点2：并发整理及向量化"]
-    plan -->|零选择| collect["节点3：校验覆盖并按序汇总"]
-    plan -->|failed| failure["END：失败，不返回部分计划"]
-    process --> collect
-    collect --> finish["END：summarized / partial_failed / failed"]
+    start[START] --> model[节点1：任务建模]
+    model -->|有用户输入| input[节点2.1：用户输入向量化]
+    model -->|有中途输出| middle[节点2.2：逐条并发编码及融合]
+    model -->|有最终输出| final[节点2.3：最终输出向量化]
+    model -->|三区域均为空| collect[结果收束]
+    input --> collect
+    middle --> collect
+    final --> collect
+    collect --> endNode[END]
 ```
 
-等价顺序：START → 节点1 → Send逐任务并发调用节点2 → 节点3 → END。筛选失败直接结束；零选择直接汇总为空结果。
+等价顺序：一个建模节点 → 实际存在的编码分支并发执行 → 一个确定性收束节点。因此共有5个注册节点：1个建模、3个编码、1个尾部收束。收束不调用模型，负责覆盖校验和完整结果发布，不承担第四类编码。
 
-MemoryGenerationInput.tasks 为同一授权范围内的非空有序批次，每项含唯一 task_id、六种终态之一的 status、原任务创建时间 created_at（UTC Unix毫秒，可空）和公开 input/trace payload。created_at 沿用历史字段，不在 payload 重复存储；调用方需传入真实时间，缺失不补填。模型看到展示序号及带 +08:00 偏移的创建时间，程序映射真实 ID。输入不接受模型生成的旧计划或审计；节点1重新校验并深拷贝，授权及批次规模由调用方保证。
-
-输入另可携带activated_at与processing_duration_ms，作为原轨迹元数据复制到待入库记录，不注入总结向量，不用本次加工耗时替代。
-
-MemoryGenerationOutput 包含：
-
-| 字段 | 含义 |
-| --- | --- |
-| execution_status | planned仅表示节点1成功；summarized表示全部加工结束（非空正文已向量化，含无记忆及零选择）；partial_failed表示部分分支失败；failed表示筛选失败或全部已选分支失败；not_implemented仅为未运行DTO默认值。 |
-| plans | 完整筛选计划；筛选失败为null。节点2失败不撤销节点1已完成计划。 |
-| results | 按原计划顺序排列的所有已选任务终态；仅运行节点1或筛选失败时为null，零选择时为[]。 |
-| error | failed或partial_failed状态有错误说明。 |
-| planning_audit | 私有逐轮审计，不进入前端历史或模型上下文。 |
-| pending_records | 已汇总的待入库内容，按原输入顺序包含成功和跳过任务，不含加工失败项；尚未汇总为null。 |
-
-仅finish_selection被接受才发布完整计划；节点2不覆盖该计划及节点1审计。summarized表示加工结束，不表示持久化或业务目标完成。
-
-results每项为MemoryTaskResult，包含task_id、task_number、status、retrieval_text、embedding、evidence、reasoning_summary、error、私有audit和embedding_audit。单任务status为summarized（有正文和有效向量）、no_memory（有依据和原因但正文/向量为null）或failed（有错误，不发布正文/向量/依据/整理理由半成品）。两类审计只供内部追溯，不拼入记忆正文或pending_records，不直接传前端。
+三条外层分支处于同一执行层，完成后收束一次。用户输入分支内部对用户文字及每份文件并发编码，中途分支内部对各条消息并发编码，受局部Semaphore及EmbeddingClient进程级全局额度控制；不会在中途消息逐条完成时发布半成品。没有内容的分支不发请求，也不构造零向量。
 
 ---
 
-## 节点1执行与上下文
+## 输入与输出
 
-- 每批独立持有工具状态、正常短期记忆、纠错边界和审计，无共享检查点。
-- 读取启动加载的 tool_tag；使用 auto、before_task、tool_task_index=1 请求模型。额外 thinking 通道关闭，任务相关推理通过 think 参数表达，生成参数沿用 MLLM 配置。
-- 每轮保存响应、全部工具参数、响应元数据、用量和耗时，再验证数量、附加普通文本、截断、参数及调用顺序。失败动作不进入计划。
-- 连续失败最多允许两次修正机会，第三次失败结束；总轮次最多 128。较大批次需由后续 Service 控制规模。
-- 工具自身错误（未知工具、JSON错误、重复属性、Schema参数错误及任务序号越界）通过与调用标识配对的tool消息返回具体原因，不额外插入system_guidence。参数错误反馈从实际工具定义读取允许字段并说明缺失、多余或类型/取值问题，不回显参数值或未知属性名称。
-- 协议与流程违规（零/多工具、附加普通文本、截断、缺少调用标识、首轮顺序、连续think、回头选择）使用独立user身份的system_guidence；能配对单工具时同时保留未接受的tool反馈。以明确异常类型区分，不靠错误字符串判断。零/多工具或附加普通文本时仍提示真实tool_tag。
-- 下一动作通过全部校验后，只移除本段纠错期间由程序插入的 system_guidence 消息。已经进入上下文的失败调用、失败工具反馈及正常交互均按原顺序保留，直到本批结束；失败动作不进入权威选择。普通文本或无合法单工具的原始响应仍只保留于审计，不伪造工具交互。
-- 本节点按用户明确约定采用“只清理指引”的例外策略，不使用通用 ToolProtocolRecovery 的整段失败轨迹删除行为；以插入位置定位指引，不按内容匹配删除。连续失败时指引继续保留，完整校验成功才清理；私有审计始终完整。其他节点的清理策略不变。
-- 本节点不将 select_task 当作裁剪上下文的检查点，也不以已选列表替换正常交互历史。权威选择仍由工具状态独立维护，think 中的安排不自动成为正式计划。该节点边界不同于通用规范中检查点重建的推荐策略；最多128轮的限制保持不变，上下文会随有效交互增长，批次规模需由调用方控制。
-- 模型请求错误或不可用返回 failed，保留已有审计、不发布半成品；取消异常向上传播并关闭客户端。
-- 工具块固定在索引1的初始任务前，不随正常工具交互或纠错消息移动。真实服务需要使用更新后的项目聊天模板。
-
-审计随正常或显式失败结果返回内存调用方，尚无独立持久化审计通道；进程退出或外部取消时的审计备份仍需 Service 后续实现。上下文边界遵循[上下文规范](../../../standard/agent-context-management.md)。
-
----
-
-## 调用及未实现边界
-
-节点1完成后使用LangGraph的[Send机制](https://docs.langchain.com/oss/python/langgraph/graph-api#send)，每个分支仅携带一份深拷贝任务和对应选择。分支各自维护执行器、messages、纠错索引、失败计数、审计和客户端；通过内部task_results的列表追加reducer收集终态，不覆盖全局results。
-
-节点3不调用模型，在分支结束后核对覆盖范围、唯一性、task_id及task_number，按原选择顺序输出。缺失、重复或计划外结果导致显式异常，不发布伪成功汇总。分支模型错误、连续三轮校验失败或轮次耗尽返回单任务failed；未预期分支异常仅暴露类型并保留已有审计，不影响兄弟任务。取消异常继续传播并关闭客户端。
-
-节点2沿用节点1的反馈分流与历史保留策略，共享有限模型循环；每任务最多128轮。正文完成后独立调用Embedding，编码失败不交给MLLM纠错。图默认max_concurrency取MLLM和Embedding并发配置较小值，可在调用config中覆盖；它限制单次图调用的并发分支，不是跨请求/进程的全局限流。没有新增后台队列。
+入口：`build_conversation_memory_graph().ainvoke({'request': task})`，task为单个 `ConversationHistoryRecord` 或对应字典，必须是kind=task的终态记录，保留原record_id、sequence、turn_id、payload及创建/激活/处理时长。原始任务输入不能只给正文或任务ID，否则无法准备完整原记录；不得由模型生成身份与序号。上游负责筛选与授权，本图不决定哪些任务应该加工。
 
 ```python
 from app.agent.conversation_memory import build_conversation_memory_graph
-from app.core.config import get_settings
-from app.core.tool_tag import initialize_mllm_tool_tag
+from app.schema.communication import ConversationHistoryRecord
 
-# 独立脚本需要初始化；正式应用启动时已经加载。
-initialize_mllm_tool_tag(get_settings().mllm)
-graph = build_conversation_memory_graph()
-# 在异步环境中调用；这会请求真实模型，vLLM 未启动时不要直接运行。
-# output = await graph.ainvoke({"request": {"tasks": [
-#     {"task_id": "t1", "status": "completed",
-#      "payload": {"input": {"text": "仅比较付款条件"}, "trace": []}}
-# ]}})
+# 调用会实际访问配置的Embedding服务。
+task = ConversationHistoryRecord(
+    record_id='原任务record_id', sequence=1, kind='task', turn_id='原轮次ID',
+    status='completed', created_at=原任务创建时间毫秒,
+    payload={'input': {'text': '核对付款条件', 'files': []}, 'trace': []},
+)
+# result = await build_conversation_memory_graph().ainvoke({'request': task})
 ```
 
-CommunicationArchiveService已调用本图，负责授权、十分钟扫描、至少10条且以completed结尾的正常批次、原记录身份映射、落盘、重试和驱逐。边界约束由Service执行，不在图内限制独立实验的批量大小；强制驱逐尾批可不足10条或以中断状态结束。检索文本不是上下文截断用的summary记录。
+`TaskMemoryOutput` 返回：
 
-[统一驻留与后台备份](../../system/communication-history.md)继续运行，归档调度与原始备份独立，不修改原任务终态。没有新增 HTTP API。
+| 字段 | 含义 |
+| --- | --- |
+| execution_status | completed或failed，仅表示记忆加工状态，不改变原任务终态。 |
+| record | 成功时为原ConversationHistoryRecord的完整副本，可供conversation_records备份；失败时为None。 |
+| retrieval | 成功时为TaskRetrievalRecord对应字典：record_id及三组文本/向量；失败时为None。 |
+| error | 编码失败的区域名称；不回显服务地址或异常敏感正文。 |
+| audit | 按入口及原消息顺序保留Embedding调用审计，仅供内部使用。 |
+
+三区域均空时成功返回全NULL投影，不调用模型。计算失败不能转成空区域。任一区域失败返回failed且record/retrieval均为None，其他区域的成功向量不作为部分可入库结果返回。取消异常向上传播并取消/清理在途协程。非法输入及内部覆盖不一致直接抛校验异常，不能标记任务已加工。
+
+输入schema仅接受request通道；外部伪造branches、retrieval等状态不参与执行。节点1重新校验输入并深拷贝，图实例可复用，各次执行状态隔离。
+
+---
+
+## 任务建模规则
+
+节点1通过程序投影，不生成新的判断、结论或摘要。
+
+- 用户输入格式为“用户问题、文件名、展示名称、文件摘要”，缺失项省略；不加入file_id/page_count元数据。用户原文中明确以file_id=或file_id:标注的规范UUID/64位哈希也只在编码投影中去除，不改写权威轨迹，不猜测删除其他数字。
+- 中途输出仅取trace中type=message、message_kind=intermediate且status=completed的消息；没有“中途提问”区域。每条输出独立保留，内容相同的不同消息不去重。同一message_id因工具穿插拆出的片段按原顺序拼回一条消息，保留片段间原始空格。
+- 最终输出仅取已完成的final公开消息；没有实际最终输出则为空，不补造用户取消或方向调整的结论。
+- agent_messages、events、内部思考、system-guidence、工具调用及反馈均不作为输出正文来源。仅有公开trace缺失的旧任务不会通过其他投影猜测恢复正文。
+- 原始任务中保留文件身份、页面信息及调用轨迹供回连；检索投影的精简不删除权威数据。
+
+---
+
+## 编码与融合
+
+使用现有EmbeddingClient和全局请求额度，当前契约为qwen3-vl-embedding-8b、4096维。用户问题及文件分别使用 `user-input-question-file-v1` 专用指令；中途输出保留 `three-view-excerpt-v2-readable-input` 通用指令，最终输出使用 `final-response-v1` 结论专用指令，由 `prompt/embedding.py` 构造，详见[编码指令](retrieval-embedding.md#用户问题与文件专用指令)。不需要初始化MLLM工具模板。
+
+用户输入先拆成一个用户文字区块、每份上传附件及每份引用合同各一个格式化区块，分别并发编码，再将各单位向量等权平均并再次L2归一化。空白文字和无有效字段的附件跳过；只有文件也可编码。单份文件内部仍按“文件名、展示名称、文件摘要”拼接，支持仅含其中一个字段，不加入file_id/page_count。用户文字沿用“用户问题：”标签。每个非空区块权重相同，不按长度加权；文件越多，其合计权重越大。最终输出调用一次编码。中途输出逐条独立编码，结果各自L2归一化，再等权平均并再次L2归一化；单条消息保持其单位向量。条数不改变外层入口权重，图不计算额外综合任务向量。中途文本以 `numbered-intermediate-v1` 模板按原消息顺序编号并使用分隔线拼接存储；中途向量是逐条融合结果，不是对拼接文本再编码。用户输入同样保持原拼接文本存入user_input_text，但user_input_embedding改为区块融合向量；不新增SQLite字段，也不存储区块级向量。任一用户输入区块编码失败，整个任务失败，不能静默丢弃该区块。
+
+客户端检查模型、数量、维度、有限值和非零范数；最终结果再经TaskRetrievalRecord检查。融合自身不保留先后顺序的语义，也不保证后续更正自动覆盖此前判断。实际核对仍回读任务及最终输出。
+
+---
+
+## 包结构与后续接入
+
+| 文件 | 当前职责 |
+| --- | --- |
+| workflow.py | 正式单任务图装配。 |
+| node.py | 单任务建模、分流、三路编码、融合、收束及新图状态。 |
+| embedding.py | 任务片段编码及向量响应校验，仅暴露embed_task_text。 |
+| prompt/embedding.py | 版本化Embedding指令与实际输入渲染。 |
+| 输入契约 | 直接使用ConversationHistoryRecord，不保留批量DTO。 |
+
+
+新结果已通过CommunicationArchiveService及ConversationHistoryService.commit_archive接入[SQLite三入口存储契约](../../data/communication-sqlite.md)。Service在外层筛选终态任务、并发执行本图，完整校验原任务及投影关联后按原顺序整批提交。正式后台扫描及安全驱逐已恢复，具体筛选、分批、重试和生命周期见[归档与驱逐](../../system/communication-archive.md)。
+
+旧批量筛选、综合摘要节点、工具调用提示词、DTO及兼容入口已移除。历史实验原始输出保留；当前代码不再支持运行旧筛选实验。已有[三入口融合实验](../../../../experiment/memory-three-view-retrieval/README.md)和[真实归档链路实验](../../../../experiment/memory-persistence-live/README.md)继续使用当前实现。
 
 ---
 
 ## 验证
 
-Map-reduce专项测试使用真实编译图和事件屏障验证两个Send分支同时进入、逆序完成仍按原任务排序、消息隔离、部分/全部失败、无记忆、覆盖校验及外部伪造结果不可注入。新增编码与待入库测试详见[待入库数据](pending-records.md)。节点2调用Embedding但不写业务存储。
+`tests/test_conversation_memory.py` 使用真实编译图、模拟Embedding验证三路与逐条并发、缺失区域跳过、空任务、单条失败不发布半成品、取消清理、状态隔离、拒绝批量输入及外部伪造结果、文件投影、消息拆片合并和融合边界。
 
-总结侧向量化接入后，真实完整图再次处理24条轨迹，16条完成编码、8条跳过编码，节点3按原顺序返回24条待入库记录。全部4096维向量及原字段复制通过核对，详见[接入联调记录](../../../../experiment/conversation-memory-selection/output/20260909T050219.266017Z/analysis.md)。
+旧批量图专用测试及模拟客户端已删除；Embedding响应校验测试已改为验证当前片段编码入口。新存储事务测试验证TaskRetrievalRecord的校验与恢复，归档链路测试覆盖正式调度及临时SQLite。真实Embedding联调记录见上述实验。
 
-2026-09-09已使用24条合成回归轨迹执行真实完整图，16条入选且全部生成总结，无调用失败，完整图耗时约57.5秒。但人工发现时间遗漏、额外推断及措辞强化，不能将技术成功等同于内容准确。原始总结和逐任务问题见[本次分析](../../../../experiment/conversation-memory-selection/output/20260909T043206.383334Z/analysis.md)。
+---
 
-离线 unittest 使用模拟客户端覆盖正常完成、全部跳过、工具错误与流程指引分流、连续混合错误期间指引保留与成功后清理、多次选择后成功think与计划保留、成功/失败工具交互顺序及配对、三次连续失败、轮次耗尽、截断、服务不可用、取消、身份映射、失败不发布半成品、输入重校验和批次隔离；另验证 Jinja 工具锚点及客户端参数透传。
+## 尾部收束与中途输出模板
 
-真实模型实验入口及产物约定见[筛选与完整图实验](../../../../experiment/conversation-memory-selection/README.md)。使用 --run-graph 导出全任务台账、逐任务总结及候选语料，跳过/失败项不会伪造正文。历史实验不能替代后续版本的真实模型质量和token成本验证。
+`collect_task_retrieval` 是所有路径的最后一个节点，返回两份互相关联的内容：record用于原始任务表，retrieval用于检索表，两者record_id必须一致。原任务保持完整副本，包括原始文件身份与任务轨迹；只有检索投影采用精简格式。audit独立返回，不混入这两份待入库对象。
 
-检索文本仅用于向量定位任务，后续模型应阅读回连的原始轨迹而非这段总结。独立[7题向量召回实验](../../../../experiment/conversation-memory-retrieval/README.md)已使用官方Qwen3-VL-Embedding指令编码16份原始总结，7个预设相关任务均位于Top 1；其中时间遗漏样本分差较小。具体证据与边界见[召回分析](../../../../experiment/conversation-memory-retrieval/output/20260909T045017.197016Z/analysis.md)。该实验只验证小语料精确向量排序和task_id回连，不代表正式图已接入向量化、SQLite检索或回答生成。
+三类正文模板、编码边界和空值规则统一见[检索文本模板与向量化契约](retrieval-embedding.md)。中途输出采用 `numbered-intermediate-v1`，标题及分隔线只用于存储展示，不参与逐条编码；原消息通过record.payload.trace回连。
 
-实验另支持 --variant official/scenario-query/scenario-both，对照官方基线、仅查询侧场景化与双侧场景化。本次三组均7/7首选正确；双侧场景化的平均正确/干扰分差较大，但不能据此证明准确率提升，详见[三组指令对照](../../../../experiment/conversation-memory-retrieval/output/20260909T045426.163563Z/analysis.md)。用户选定的双侧方案已用于节点2总结侧编码，查询端仍未实现；实验CLI默认保留官方基线，复现选定方案需显式使用scenario-both。
+上层取得成功结果后，可将 `[result['record']]` 与 `[result['retrieval']]` 分别传给 `archive_tasks_with_workspace` 的 records/memories参数；会话所有权、工作区快照及期望版本仍由Service提供，不由子图生成。本图本身不执行落盘。
+
+
+---
+
+## 用户输入编码策略更新
+
+当前用户输入采用分块并发融合，并按用户问题与文件分别注入专用指令；中文展示标签未改动。已加工任务不会自动重算；已有拼接编码向量保持原值，后续如需统一历史检索语义，应另行重建旧投影。此前指令实验使用整段用户输入编码，其指标不代表当前分块融合策略的召回质量。

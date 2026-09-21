@@ -70,7 +70,6 @@ from app.infrastructure.mllm import (
     MLLMUnavailableError,
 )
 
-_MAXIMUM_COMPLETION_TOKENS = 4096
 _MAXIMUM_PROPOSAL_ROUNDS = 4
 _QUESTION_VECTOR_FUSION_VERSION = "retrieval-question-mean-l2-v1"
 
@@ -201,17 +200,14 @@ async def _generate_one_question_from_plan(
                     messages=messages,
                     tools=[PROPOSE_QUESTION_TOOL],
                     tool_choice=QUESTION_GENERATION_TOOL_CHOICE,
-                    max_completion_tokens=min(
-                        generation.max_completion_tokens,
-                        _MAXIMUM_COMPLETION_TOKENS,
-                    ),
+                    max_completion_tokens=generation.max_completion_tokens,
                     temperature=generation.temperature,
                     top_p=generation.top_p,
                     top_k=generation.top_k,
                     presence_penalty=generation.presence_penalty,
                     repetition_penalty=generation.repetition_penalty,
                     seed=generation.seed,
-                    enable_thinking=False,
+                    enable_thinking=True,
                     tool_placement=QUESTION_PROPOSAL_TOOL_PLACEMENT,
                 )
         except (MLLMRequestError, MLLMUnavailableError) as exc:
@@ -400,7 +396,7 @@ async def generate_questions_from_plans(
         messages=tuple(common_messages),
         prefix_sha256=context_sha256(common_messages),
     )
-    settings = get_settings().mllm
+    settings = get_settings().mllm.for_contract_extraction()
     started_at = perf_counter()
     semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
     progress = ParallelProgressTracker(len(discovery.focuses))

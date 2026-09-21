@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from secrets import token_urlsafe
 from time import monotonic
 
-from app.user import PermissionLevel, ReviewerUser, ReviewerUserCatalog
+from app.user import ReviewerUser, ReviewerUserCatalog
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,7 +25,6 @@ class AuthLoginResult:
 
     login_code: str
     user_name: str
-    permission_level: PermissionLevel
 
 
 class LoginCodeCache:
@@ -131,11 +130,10 @@ class AuthService:
         return AuthLoginResult(
             login_code=login_code,
             user_name=user.name,
-            permission_level=user.permission_level,
         )
 
     async def resolve_user(self, login_code: str) -> ReviewerUser | None:
-        """权限始终从服务端权威用户快照取得，不信任客户端提交的等级。"""
+        """根据免登码查找服务端用户快照，不信任客户端自行声明的身份。"""
         user_name = await self._login_code_cache.resolve(login_code)
         if user_name is None:
             return None

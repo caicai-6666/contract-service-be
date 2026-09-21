@@ -49,6 +49,8 @@ def _core_property_mapping(
 ) -> ElasticsearchMapping:
     """把一个 Core 基本类型属性转换为 ES 标量 mapping。"""
     if definition.type is FieldValueType.STRING:
+        if definition.index_format == "strict_date":
+            return {"type": "date", "format": "strict_date"}
         if definition.tokenize:
             return _text_mapping(analyzer)
         return {"type": "keyword"}
@@ -210,7 +212,7 @@ def _build_mapping_addition(
         )
 
     # 标量字段的类型与分析器无法原地修改；发现漂移时必须阻止启动。
-    for key in ("analyzer", "search_analyzer"):
+    for key in ("analyzer", "search_analyzer", "format"):
         expected_value = expected.get(key)
         actual_value = actual.get(key)
         if key == "search_analyzer" and actual_value is None:

@@ -35,6 +35,44 @@ class FieldDefinitionModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class FieldEnumOption(FieldDefinitionModel):
+    """机器枚举值与审核界面的展示标签。"""
+
+    value: str = Field(min_length=1, description="允许提交的标准字符串值。")
+    label: str = Field(min_length=1, description="该标准值的中文展示名称。")
+
+
+class FieldConstraints(FieldDefinitionModel):
+    """模型、审核与检索共用的可执行约束。"""
+
+    enum: tuple[FieldEnumOption, ...] | None = Field(default=None, description="允许的字符串枚举；null 表示不限制枚举。")
+    minimum: float | None = Field(default=None, allow_inf_nan=False, description="允许的最小数值，包含边界。")
+    maximum: float | None = Field(default=None, allow_inf_nan=False, description="允许的最大数值，包含边界。")
+    multiple_of: float | None = Field(default=None, gt=0, allow_inf_nan=False, description="数值必须为该值的整数倍；1 表示只允许整数值。")
+
+    @model_validator(mode="after")
+    def validate_constraints(self) -> Self:
+        if self.enum is not None:
+            values = [item.value for item in self.enum]
+            if not values or len(values) != len(set(values)):
+                raise ValueError("枚举必须非空且标准值不能重复")
+            if any(not item.value.strip() or not item.label.strip() for item in self.enum):
+                raise ValueError("枚举标准值和标签不能是空白")
+        if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
+            raise ValueError("minimum 不能大于 maximum")
+        return self
+
+    def json_schema_keywords(self) -> dict:
+        result = {}
+        if self.enum is not None:
+            result["enum"] = [item.value for item in self.enum]
+        for source, target in (("minimum", "minimum"), ("maximum", "maximum"), ("multiple_of", "multipleOf")):
+            value = getattr(self, source)
+            if value is not None:
+                result[target] = value
+        return result
+
+
 class FieldPropertyDefinition(FieldDefinitionModel):
     """提取对象中的一个扁平基本类型属性。"""
 
@@ -43,6 +81,9 @@ class FieldPropertyDefinition(FieldDefinitionModel):
     aliases: tuple[str, ...]
     type: FieldValueType
     tokenize: bool | None = None
+    index_format: Literal["strict_date"] | None = None
+    constraints: FieldConstraints
+    extraction_rule: str
     required: bool
     meaning: str
     excludes: str
@@ -54,9 +95,17 @@ class FieldPropertyDefinition(FieldDefinitionModel):
             raise ValueError(
                 f"属性“{self.name}”仅在 type=string 时允许配置 tokenize"
             )
+        if self.index_format is not None and (
+            self.type is not FieldValueType.STRING or self.tokenize is True
+        ):
+            raise ValueError("index_format=strict_date 仅允许用于不分词的字符串属性")
+        if self.constraints.enum is not None and self.type is not FieldValueType.STRING:
+            raise ValueError("enum 仅允许用于 string 属性")
+        if any(getattr(self.constraints, key) is not None for key in ("minimum", "maximum", "multiple_of")) and self.type not in (FieldValueType.INTEGER, FieldValueType.NUMBER):
+            raise ValueError("数值范围和倍数约束仅允许用于 integer 或 number 属性")
         return self
 
-    @field_validator("name", "meaning", "excludes")
+    @field_validator("name", "meaning", "excludes", "extraction_rule")
     @classmethod
     def validate_required_text(cls, value: str) -> str:
         """拒绝无法提供语义约束的空文本。"""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.infrastructure.model_json import load_model_json, validate_model_payload
 import json
 import re
 import unicodedata
@@ -25,7 +26,7 @@ class StrictClauseToolModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
-CLAUSE_DISCOVERY_TOOL_VERSION: Final = "clause-discovery-tool-v10"
+CLAUSE_DISCOVERY_TOOL_VERSION: Final = "clause-discovery-tool-v11"
 CLAUSE_DISCOVERY_TOOL_CHOICE: Final = TOOL_CHOICE_AUTO
 CLAUSE_CONTENT_TOOL_VERSION: Final = "clause-content-tool-v10"
 # 条款正文是长文本并发任务。保持 auto，配合非 strict 工具，避开 vLLM
@@ -242,14 +243,14 @@ class ClauseDocumentPathSegment(StrictClauseToolModel):
     identifier: str = Field(
         max_length=120,
         description=(
-            "该层在合同页面中可见的原始编号或稳定标识；纯标题没有编号时使用其简短原文标题，"
+            "该层有编号时只填写页面原始编号（保留编号标点），不夹带标题；没有编号时使用简短原文标题作为稳定标识，"
             "不得改写成推测编号或复制正文。"
         ),
     )
     title_hint: str | None = Field(
         max_length=120,
         description=(
-            "该层在合同页面中明确可见或可可靠概括的简短主题；无法确认时传 null。"
+            "该层不含编号的简短主题，优先使用原文标题；可可靠概括时不得引入新事实，无法确认时传 null。"
             "纯结构标题即使不进入正文候选，也必须在路径中保留。"
         ),
     )
@@ -279,14 +280,14 @@ class ClauseCandidateDecision(StrictClauseToolModel):
     identifier: str = Field(
         max_length=120,
         description=(
-            "用于稳定识别并关联当前条款的标识：优先保留原始编号；无编号时使用简短稳定描述，"
-            "不得包含完整条款正文。"
+            "当前条款有编号时仅填写页面原始编号，保留编号标点而不包含标题；无编号时使用简短稳定描述，"
+            "不得包含完整条款正文，也不得拼接父级编号构造原文没有的编号。"
         ),
     )
     title_hint: str | None = Field(
         max_length=120,
         description=(
-            "对条款主题的简短提示；优先保留明确原文标题，无标题且无法可靠概括时传 null。"
+            "不含编号的简短条款主题；优先保留原文标题，无标题时只可基于正文可靠概括，不得引入新事实，无法确认时传 null。"
         ),
     )
     document_path: list[ClauseDocumentPathSegment] = Field(
@@ -677,21 +678,6 @@ _ARGUMENT_MODELS: Final[dict[str, type[StrictClauseToolModel]]] = {
 }
 
 
-def _decode_embedded_json(value: Any) -> Any:
-    """兼容 Qwen 工具解析器把嵌套参数编码成 JSON 字符串的情况。"""
-    if isinstance(value, str) and value.lstrip().startswith(("{", "[")):
-        try:
-            decoded = json.loads(value)
-        except json.JSONDecodeError:
-            return value
-        return _decode_embedded_json(decoded)
-    if isinstance(value, list):
-        return [_decode_embedded_json(item) for item in value]
-    if isinstance(value, dict):
-        return {key: _decode_embedded_json(item) for key, item in value.items()}
-    return value
-
-
 def parse_clause_discovery_tool_arguments(
     name: str,
     raw_arguments: str,
@@ -702,10 +688,10 @@ def parse_clause_discovery_tool_arguments(
     except KeyError as exc:
         raise ValueError(f"未知的条款候选发现工具：{name}") from exc
     try:
-        payload = json.loads(raw_arguments)
+        payload = load_model_json(raw_arguments)
     except json.JSONDecodeError as exc:
         raise ValueError(f"工具 {name} 的参数不是有效 JSON") from exc
-    return arguments_model.model_validate(_decode_embedded_json(payload))
+    return validate_model_payload(arguments_model, payload)
 
 
 def parse_clause_content_tool_arguments(
@@ -716,12 +702,10 @@ def parse_clause_content_tool_arguments(
     if name != "extract_clause_content":
         raise ValueError(f"未知的条款内容提取工具：{name}")
     try:
-        payload = json.loads(raw_arguments)
+        payload = load_model_json(raw_arguments)
     except json.JSONDecodeError as exc:
         raise ValueError(f"工具 {name} 的参数不是有效 JSON") from exc
-    return ExtractClauseContentArguments.model_validate(
-        _decode_embedded_json(payload)
-    )
+    return validate_model_payload(ExtractClauseContentArguments, payload)
 
 
 def _validate_page_number(

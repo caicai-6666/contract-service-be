@@ -1,5 +1,6 @@
 """视觉判断的唯一结构契约及字段级、业务级校验。"""
 
+from app.infrastructure.model_json import validate_model_json
 import json
 from typing import Annotated
 
@@ -65,7 +66,7 @@ def _reject_nonfinite(value):
 
 
 def validate_judgment(content: str, *, page_count: int) -> VisualReadabilityJudgment:
-    """拒绝代码块、重复键、类型转换与越界页码，不猜测或截取 JSON。"""
+    """兼容容器编码；拒绝代码块、重复键、标量类型转换与越界页码。"""
     try:
         json.loads(content, object_pairs_hook=_unique_object, parse_constant=_reject_nonfinite)
     except json.JSONDecodeError as exc:
@@ -74,7 +75,7 @@ def validate_judgment(content: str, *, page_count: int) -> VisualReadabilityJudg
             "请检查双引号、逗号和括号；只返回完整对象，不要包裹 Markdown 代码块或追加说明。"
         ) from exc
     try:
-        return VisualReadabilityJudgment.model_validate_json(content, context={"page_count": page_count})
+        return validate_model_json(VisualReadabilityJudgment, content, context={"page_count": page_count})
     except ValidationError as exc:
         issues = []
         for error in exc.errors(include_url=False, include_input=False):
@@ -96,6 +97,8 @@ def validate_judgment(content: str, *, page_count: int) -> VisualReadabilityJudg
                 reason = "请按 Schema 提交正确类型与长度：evidence 是非空数组，每项含整数页码与非空描述；reasoning、description 使用非空简短文字，不要用对象、数字或空白代替。"
             issues.append(f"- {path}：{reason}")
         raise JudgmentValidationError("\n".join(issues)) from exc
+    except ValueError as exc:
+        raise JudgmentValidationError('内嵌 JSON 不合法，请按字段类型提交完整对象或数组。') from exc
 
 
 def build_validation_feedback(problem: str) -> dict[str, str]:

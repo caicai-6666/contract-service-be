@@ -23,7 +23,7 @@ from app.service.contract_extraction.model import (
     StageCode,
     StageProgress,
     StageStatus,
-    SuggestedFileNameView,
+    ContractOverviewView,
 )
 
 
@@ -120,7 +120,7 @@ class RunAggregate:
     structure_result: Any | None = None
     deduplication_result: PDFDeduplicationResult | None = None
     classification_view: ContractClassificationView | None = None
-    suggested_file_name_view: SuggestedFileNameView | None = None
+    contract_overview_view: ContractOverviewView | None = None
     prerequisites: Any | None = None
     awaiting_deduplication_review: bool = False
     deduplication_review_expires_at: datetime | None = None

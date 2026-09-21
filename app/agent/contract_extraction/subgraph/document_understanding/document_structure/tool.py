@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.infrastructure.model_json import load_model_json, validate_model_payload
 import json
 from enum import StrEnum
 from typing import Any, Final
@@ -457,21 +458,6 @@ _ARGUMENT_MODELS: Final[dict[str, type[StrictToolModel]]] = {
 }
 
 
-def _decode_embedded_json(value: Any) -> Any:
-    """兼容 Qwen3 XML parser 将嵌套对象作为 JSON 字符串返回的情况。"""
-    if isinstance(value, str) and value.lstrip().startswith(("{", "[")):
-        try:
-            decoded = json.loads(value)
-        except json.JSONDecodeError:
-            return value
-        return _decode_embedded_json(decoded)
-    if isinstance(value, list):
-        return [_decode_embedded_json(item) for item in value]
-    if isinstance(value, dict):
-        return {key: _decode_embedded_json(item) for key, item in value.items()}
-    return value
-
-
 def parse_tool_arguments(name: str, raw_arguments: str) -> ToolArguments:
     """在执行工具前用本地 Pydantic 契约再次校验模型参数。"""
     try:
@@ -480,10 +466,10 @@ def parse_tool_arguments(name: str, raw_arguments: str) -> ToolArguments:
         raise ValueError(f"未知的文档结构工具：{name}") from exc
 
     try:
-        payload = json.loads(raw_arguments)
+        payload = load_model_json(raw_arguments)
     except json.JSONDecodeError as exc:
         raise ValueError(f"工具 {name} 的参数不是有效 JSON") from exc
-    return arguments_model.model_validate(_decode_embedded_json(payload))
+    return validate_model_payload(arguments_model, payload)
 
 
 __all__ = [

@@ -20,6 +20,8 @@ properties:
     type: string
     tokenize: true
     required: true
+    constraints: {}
+    extraction_rule: 仅根据合同明确证据提取，遵循 meaning 与 excludes；无法确定时不补造默认值。
     meaning: 相关方在合同中展示的完整签约名称，应保留原文中必要的组织形式。
     excludes: 不包括角色名称、人员姓名、部门名称、品牌名或简称，除非合同只以该名称识别签约主体。
   - name: 角色
@@ -30,5 +32,56 @@ properties:
       - 当事人角色
     type: string
     required: true
+    constraints:
+      enum:
+      - value: party_a
+        label: 甲方
+      - value: party_b
+        label: 乙方
+      - value: party_c
+        label: 丙方
+      - value: party_d
+        label: 丁方
+      - value: buyer
+        label: 买方
+      - value: seller
+        label: 卖方
+      - value: supplier
+        label: 供方
+      - value: purchaser
+        label: 需方
+      - value: lessor
+        label: 出租方
+      - value: lessee
+        label: 承租方
+      - value: principal
+        label: 委托方
+      - value: agent
+        label: 受托方
+      - value: employer
+        label: 发包方
+      - value: contractor
+        label: 承包方
+      - value: service_provider
+        label: 服务提供方
+      - value: service_recipient
+        label: 服务接受方
+      - value: lender
+        label: 出借方
+      - value: borrower
+        label: 借款方
+      - value: guarantor
+        label: 担保方
+      - value: licensor
+        label: 许可方
+      - value: licensee
+        label: 被许可方
+      - value: assignor
+        label: 转让方
+      - value: assignee
+        label: 受让方
+      - value: other
+        label: 其他明确角色
+    extraction_rule: 仅将合同明确赋予该主体的角色转换为枚举代码。只有甲方或乙方时分别用 party_a 或 party_b，不推断为买方或卖方。明确买方用 buyer、卖方用 seller、供方用 supplier、需方用 purchaser。同一主体同时有甲乙方称谓和明确业务角色时优先业务角色；多个不同业务角色无法唯一选择时不强行合并。other 仅用于原文明确但枚举未覆盖的角色，不表示未知角色。证据保留原始角色称谓。
     meaning: 合同原文明确赋予该相关方的角色，例如甲方、乙方、买方、卖方、供方、需方、发包方或承包方。
     excludes: 不包括法定代表人、联系人、代理人等人员身份，也不得把多个相关方的角色合并成一个值。

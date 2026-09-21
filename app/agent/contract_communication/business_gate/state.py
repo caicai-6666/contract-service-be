@@ -8,13 +8,14 @@ from app.agent.contract_communication.business_gate.subgraph.file_readability.st
 from .schema import FileSummaryGeneration, TextBusinessRelevanceGeneration, TextBusinessRelevanceDecision
 from .schema import FileBusinessRelevanceDecision, NonBlankText
 from .schema import ContextRelevanceBasis, ContextRelevanceGeneration
-from app.schema.communication import ConversationHistoryRecord
+from app.schema.communication import ConversationHistoryRecord, ContractReference
 
 
 class BusinessGateInput(TypedDict, total=False):
-    """只接受原始输入；不接受调用方预先指定检查结果或渲染对象。"""
+    """接受原始上传、文字及服务端读取的合同快照；不接受调用方预先指定检查结果。"""
 
     files: tuple[ReadabilityFile, ...]
+    contracts: tuple[ContractReference, ...]
     text: str | None
     # 服务端选取最近至多五轮；不是前端可提交的历史覆盖字段。
     context: tuple[ConversationHistoryRecord, ...]
@@ -64,6 +65,7 @@ class FileSummary(BaseModel):
 
 
 class FileRelevanceInput(TypedDict, total=False):
+    contracts: tuple[ContractReference, ...]
     file_summaries: tuple[FileSummary, ...]
 
 
@@ -215,9 +217,31 @@ class RejectionReply(BaseModel):
     audit: tuple[dict, ...] = Field(default=(), exclude=True, repr=False)
 
 
+class FileTopicConflictResult(FileTextRelevanceResult):
+    """逐文件已校验判断；继承布尔结果与私有审计约束，程序绑定身份。"""
+
+    file_index: int = Field(ge=0, description='程序绑定的原始文件下标，从0开始')
+    file_name: NonBlankText = Field(description='程序绑定的原始上传文件名')
+
+
+class FileTopicConflictIssue(BaseModel):
+    model_config = ConfigDict(extra='forbid', frozen=True, strict=True)
+    file_index: int = Field(ge=1, description='原始上传序号，从1开始')
+    file_name: NonBlankText = Field(description='原始上传文件名')
+    hint: NonBlankText = Field(description='固定的主题冲突提示；具体页面事实由已接受摘要提供')
+
+
+class FileTopicConflictFeedback(BaseModel):
+    model_config = ConfigDict(extra='forbid', frozen=True, strict=True)
+    node: Literal['文件主题冲突'] = '文件主题冲突'
+    hint: NonBlankText = Field(description='程序生成的处理范围与原因，不包含模型私有理由')
+    issues: tuple[FileTopicConflictIssue, ...] = ()
+
+
 class BusinessGateSubgraphState(FileReadabilityState, total=False):
     """skipped 表示未调度，not_implemented 表示已进入占位节点，不代表判断通过。"""
 
+    contracts: tuple[ContractReference, ...]
     text: str | None
     context: tuple[ConversationHistoryRecord, ...]
     file_business_relevance: FileRelevanceStatus
@@ -240,6 +264,9 @@ class BusinessGateSubgraphState(FileReadabilityState, total=False):
     file_summary_status: Literal['skipped', 'not_implemented', 'completed', 'failed']
     file_summary_results: tuple[FileSummaryResult, ...]
     file_summary_feedback: FileSummaryFeedback | None
+    file_topic_conflict: bool | Literal['skipped', 'failed']
+    file_topic_conflict_results: tuple[FileTopicConflictResult, ...]
+    file_topic_conflict_feedback: FileTopicConflictFeedback | None
     rejection_reply: RejectionReply
 
 

@@ -2,7 +2,6 @@
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
-from app.user import PermissionLevel
 
 
 class LoginRequest(BaseModel):
@@ -26,9 +25,6 @@ class LoginResponse(BaseModel):
     user_name: str = Field(
         min_length=1,
         description="当前密钥对应的审核人名称。",
-    )
-    permission_level: PermissionLevel = Field(
-        description="权限等级：1 可新增、查看和删除；2 可新增和查看；3 只可查看。"
     )
 
 

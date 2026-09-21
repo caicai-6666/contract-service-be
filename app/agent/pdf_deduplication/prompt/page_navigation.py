@@ -20,12 +20,12 @@ from app.agent.pdf_deduplication.prompt.relation_standard import (
 )
 
 PageNavigationJudgmentPromptVersion = Literal[
-    "candidate-page-navigation-judgment-v4"
+    "candidate-page-navigation-judgment-v5"
 ]
 
 PAGE_NAVIGATION_JUDGMENT_PROMPT_VERSION: Final[
     PageNavigationJudgmentPromptVersion
-] = "candidate-page-navigation-judgment-v4"
+] = "candidate-page-navigation-judgment-v5"
 
 # 候选指南和查看工具都位于完整上传合同与共同标准之后，使同一上传合同
 # 比较多个候选时拥有完全一致的最长模型输入前缀。
@@ -71,7 +71,7 @@ PAGE_NAVIGATION_TOOL_INSTRUCTION_PROMPT: Final = f"""工具使用：
 2. 初始尚未获得任何 B 页面，第一次动作必须调用 inspect_candidate_pages。只能请求候选合同 B 的物理页码，页码必须来自指南给出的总页数范围，并说明本批页面要核对的具体问题。
 3. 当前批 B 页面可见时，可以调用 record_candidate_page_observations，把页面中可直接核对且继续判断所需的双侧观察写入证据工作区。观察必须同时引用当前可见的 B 页码和对应的 A 页码；不得记录关系结论、未查看页面、指南转述或整页正文。
 4. 当前批页面尚未记录但需要继续翻页时，应先记录有效观察；如果当前批没有产生可复用证据，应在下一次查看目的中明确说明，不得编造观察。程序接受检查点后会隐藏先前候选页面图像，并以“B 第 N 页已查看、当前已隐藏”的占位记录连同精简工作区替代图像。隐藏页不是当前可见页面；需要读取尚未记录的细节时必须重新调用 inspect_candidate_pages 打开该页。
-5. think 是允许进行实际分析和推理的工作空间。可以比较现有视觉证据、指南与已接受工作区，建立和排除关系假设并选择下一步动作；包含工具结构在内的整轮响应最多使用 1024 completion tokens。think 不写入证据工作区，也不提交正式关系，且不得连续调用超过两次。
+5. think 是允许进行实际分析和推理的工作空间。可以比较现有视觉证据、指南与已接受工作区，建立和排除关系假设并选择下一步动作；reasoning 最多 2000 个字符。think 不写入证据工作区，也不提交正式关系，且不得连续调用超过两次。
 6. 能够可靠判断时，调用 submit_contract_relation。提交内容必须依次给出跨文档页面证据、简洁推理摘要和 duplicate、similar、different 中唯一一个最终关系；不得仅引用候选指南。
 7. 只有已经实际查看候选页面并至少完成一次有效 think 后，仍因关键页面不可读、证据缺失、查看预算耗尽或冲突无法消解而不能可靠三分类时，才可调用 report_unable_to_determine_relation。
 8. inspect_candidate_pages、record_candidate_page_observations、think、正式提交和无法判断出口都是互斥的单次工具动作；任何一轮调用工具后都不得追加说明文字。

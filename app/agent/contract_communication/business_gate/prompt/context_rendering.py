@@ -135,6 +135,7 @@ def render_context_relevance_input(
             '任务状态': _STATUS_LABELS[record.status],
             '用户文字': _text(source.get('text'), missing='该轮未提供文字'),
             '用户文件': _history_files(source.get('files', [])),
+            **({'引用合同': source['contracts']} if source.get('contracts') else {}),
         }
         answer = _final_answer(record)
         if answer is not None:

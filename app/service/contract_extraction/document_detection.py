@@ -43,6 +43,8 @@ class AgentContractDocumentDetectionExecutor:
             raise RuntimeError("合同文档识别工作流没有返回有效 result")
         if result.document_id != prepared_pdf.document_id:
             raise RuntimeError("合同文档识别结果与处理版 PDF 身份不一致")
+        if result.outcome is None:
+            raise RuntimeError("合同检查工作流缺少收束结果")
         return result
 
 

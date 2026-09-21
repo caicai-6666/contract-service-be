@@ -2,7 +2,7 @@
 
 > **用途：** 本文定义 Core 的统一 YAML 契约，使单值事实和可重复的紧密关联事实都以扁平对象表达，并允许为字符串属性声明 Elasticsearch 分词策略。
 
-该契约主要表达“提取什么、允许提取几次、每个对象包含哪些属性”。`code` 服务 HTTP 结果与 Elasticsearch 的稳定机器身份，`tokenize` 只服务 Elasticsearch mapping；二者均不属于模型可见提取定义。契约不保存模型输出、证据、工具调用或节点状态。提取流程见[字段提取子图](../workflow/contract-extraction/field-extraction.md)。
+该契约主要表达“提取什么、允许提取几次、每个对象包含哪些属性”。`code` 服务 HTTP 结果与 Elasticsearch 的稳定机器身份，`tokenize` 和 `index_format` 只服务 Elasticsearch mapping；这些索引信息均不属于模型可见提取定义。契约不保存模型输出、证据、工具调用或节点状态。提取流程见[字段提取子图](../workflow/contract-extraction/field-extraction.md)。
 
 Core 定义位于 [Core 定义目录](../../../data/definition/field/core)。一个 YAML 文件只定义一种提取对象，顶层不使用对象列表包裹。
 
@@ -78,7 +78,10 @@ properties 中每个元素必须包含：
 | code | 小写 snake_case | 对象型 Core 下的稳定 ES 属性路径，同一对象内唯一。 |
 | aliases | 一维字符串列表 | 原文中可能指向该属性的同义标签；可为空列表。 |
 | type | 基本类型枚举 | 统一约束模型 Schema 与 Python 校验。 |
-| tokenize | 可选布尔值 | 仅用于 `string` 属性；`true` 表示 ES 全文分词，缺省或 `false` 表示精确值。 |
+| tokenize | 可选布尔值 | 仅用于 `string` 属性；`true` 表示 ES 全文分词，缺省或 `false` 表示不分词。 |
+| index_format | 可选 `strict_date` | 仅用于不分词的 string 属性，投影为 ES date；接口 JSON 类型仍是 string。 |
+| constraints | 必填对象 | enum（value/label）、minimum、maximum、multiple_of；无额外限制时显式写 `{}`。 |
+| extraction_rule | 必填非空字符串 | 明确提取、标准化和无法可靠转换时的处理方式。 |
 | required | 布尔值 | 决定每个对象是否必须提交该属性。 |
 | meaning | 非空字符串 | 定义属性的目标值和成立条件。 |
 | excludes | 非空字符串 | 排除相似但不属于该属性的内容。 |
@@ -94,19 +97,20 @@ properties 中每个元素必须包含：
 | 属性定义 | Elasticsearch 类型 | 分析器 |
 | --- | --- | --- |
 | `type: string` 且 `tokenize: true` | `text` | `analyzer` 和 `search_analyzer` 均使用 `ELASTICSEARCH_TEXT_ANALYZER`。 |
-| `type: string` 且未配置或配置 `tokenize: false` | `keyword` | 不分词。 |
+| `type: string` 且 `index_format: strict_date` | `date` | 使用 `format: strict_date`，禁止同时启用分词。 |
+| `type: string` 且未声明 index_format、未配置或配置 `tokenize: false` | `keyword` | 不分词。 |
 | `type: integer` | `integer` | 不允许声明 `tokenize`。 |
 | `type: number` | `double` | 不允许声明 `tokenize`。 |
 | `type: boolean` | `boolean` | 不允许声明 `tokenize`。 |
 
-分词字段只创建 `text`，不自动增加 `.keyword` 或 `.raw` 多字段。需要精确匹配的字符串应保持 `tokenize` 缺省或 `false`，直接映射为 `keyword`。
+分词字段只创建 `text`，不自动增加 `.keyword` 或 `.raw` 多字段。非日期的精确匹配字符串应保持 `tokenize` 缺省或 `false`，直接映射为 `keyword`。
 
-构造模型消息时，程序会移除顶层和属性 `code`，并从每个属性中移除 `tokenize`；动态提取工具 Schema 也不会读取它们。模型完成提取后，程序再附加稳定 `code`，用于生成 HTTP Core 值和正式入库字段。因此更改 `code` 会改变对外机器键和 Elasticsearch 路径，但不会改变提示词或模型可见工具参数；更改 `tokenize` 只改变 Elasticsearch mapping。
+构造模型消息时，程序会移除顶层和属性 `code`，并从每个属性中移除 `tokenize` 和 `index_format`；动态提取工具 Schema 也不会读取它们。模型完成提取后，程序再附加稳定 `code`，用于生成 HTTP Core 值和正式入库字段。因此更改 `code` 会改变对外机器键和 Elasticsearch 路径，但不会改变提示词或模型可见工具参数；更改 `tokenize` 或 `index_format` 只改变 Elasticsearch mapping。
 
 ```mermaid
 flowchart LR
     yaml["Core YAML 属性"]
-    model_projection["提取投影<br/>移除 code 与 tokenize"]
+    model_projection["提取投影<br/>移除 code、tokenize 与 index_format"]
     model["提示词与工具 Schema"]
     index_projection["入库 mapping 投影"]
     text["text + 配置分析器"]
@@ -207,6 +211,7 @@ Definition 加载阶段必须拒绝：
 - 顶层或属性 code 不是小写 snake_case，或同一 Core 目录的顶层 code 重复；
 - 属性 type 不是四种基本类型；
 - 非 string 属性声明 tokenize，包括声明为 false；
+- 非 string 属性声明 index_format，或 strict_date 与 tokenize=true 同时使用；
 - 出现未知属性，包括用于嵌套的 items 或子 properties；
 - 名称或正负语义为空，或别名包含空值和重复值；
 - 同一目录存在重复的顶层 name。
@@ -214,10 +219,25 @@ Definition 加载阶段必须拒绝：
 ~~~text
 版本化对象定义
   → 读取 cardinality 决定提取次数
-  → 移除仅供索引使用的 code 与 tokenize
+  → 移除仅供索引使用的 code、tokenize 与 index_format
   → 根据其余 properties 生成扁平 strict JSON Schema
   → 逐对象校验基本类型和必填属性
   → 收集一个或多个通过校验的对象
 ~~~
 
 Core 状态机已根据 `cardinality` 执行单对象自动结束或多对象显式 `finish_extraction` 结束；每次成功对象都会进入当前定义的短期记忆。
+
+
+---
+
+## 标准值约束与转换
+
+所有属性必须声明 constraints 和 extraction_rule，启动时缺失或规则为空将拒绝加载。enum 仅允许用于 string，选项必须非空、不重复，label 和 value 必须非空。minimum、maximum、multiple_of 仅用于 number/integer，范围不可倒置，倍数必须为有限正数。
+
+当前币种使用配置列出的货币代码；美元、RMB 等原文由模型结合证据转换，含糊的 $、¥ 不猜测。相关方 role 仍是单个字符串，标准值包含 party_a、party_b 与 buyer、seller 等业务角色；同时有明确业务角色和甲乙方称谓时优先业务角色。other 只表示原文明示、但枚举未覆盖的角色，不表示未知。税率为百分数数值，范围 1～100 且 multiple_of=1；零税率和小数税率按当前业务范围不可表示，不四舍五入凑值。完整选项以 YAML 为准。
+
+提取提示词展示两项配置，动态 extract_object Schema 投影 enum、minimum、maximum、multipleOf，参数 description 包含转换规则。Python 本地校验再次检查实际值；错误反馈给出 `value.属性名`、允许值/边界和转换规则，并说明证据不足时省略可选属性或按现有终止工具收束。无效值不进入工作区，纠错成功继续沿用既有失败轨迹清理和私有审计规则。
+
+Core 定义接口向前端返回相同约束和转换规则；最终入库再复用同一值约束校验器，防止绕过前端提交非法值。模型 Schema 使用标准 JSON Schema 的 multipleOf，配置和 HTTP 定义使用 multiple_of。类型仍来自 type，不因 multiple_of=1 改动 ES 的 double mapping。
+
+本次没有回写历史合同。历史币种和角色可能仍是旧原文，后续精确检索需另行规范化或明确兼容；重新审核提交时必须使用最新标准值。

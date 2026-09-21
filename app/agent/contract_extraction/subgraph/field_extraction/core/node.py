@@ -59,7 +59,6 @@ from app.infrastructure.mllm import (
 _MAXIMUM_SINGLE_ROUNDS = 8
 _MAXIMUM_MULTIPLE_ROUNDS = 32
 _MAXIMUM_CONSECUTIVE_THINKS = 2
-_MAXIMUM_COMPLETION_TOKENS = 2048
 
 
 def _sum_optional(values: Iterable[int | None]) -> int | None:
@@ -207,7 +206,7 @@ async def _extract_one_core(
     started_at = perf_counter()
     prepared_pdf = state["prepared_pdf"]
     messages = build_core_messages(state["core_context"], definition)
-    settings = get_settings().mllm
+    settings = get_settings().mllm.for_contract_extraction()
     generation = settings.generation
     audits: list[FieldToolCallAudit] = []
     extracted_objects: list[ExtractedFieldObject] = []
@@ -234,17 +233,14 @@ async def _extract_one_core(
                     messages=messages,
                     tools=tools,
                     tool_choice=FIELD_TOOL_CHOICE,
-                    max_completion_tokens=min(
-                        generation.max_completion_tokens,
-                        _MAXIMUM_COMPLETION_TOKENS,
-                    ),
+                    max_completion_tokens=generation.max_completion_tokens,
                     temperature=generation.temperature,
                     top_p=generation.top_p,
                     top_k=generation.top_k,
                     presence_penalty=generation.presence_penalty,
                     repetition_penalty=generation.repetition_penalty,
                     seed=generation.seed,
-                    enable_thinking=False,
+                    enable_thinking=True,
                     tool_placement="after_task",
                 )
         except (MLLMRequestError, MLLMUnavailableError) as exc:
@@ -533,7 +529,7 @@ async def extract_core(
         raise ValueError("核心字段输入 PDF 与 Core 公共前缀的 document_id 不一致")
 
     definitions = state["core_definitions"]
-    settings = get_settings().mllm
+    settings = get_settings().mllm.for_contract_extraction()
     semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
     progress = ParallelProgressTracker(len(definitions.definitions))
     await progress.report_counted()

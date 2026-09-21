@@ -1,0 +1,10 @@
+# 中文词语分词；索引与查询必须使用同一份配置。
+segmenter:
+  mode: normal
+  dictionary: embedded://jieba
+  keep_whitespace: false
+character_filters:
+  - kind: unicode_normalize
+    args:
+      kind: nfkc
+token_filters: []

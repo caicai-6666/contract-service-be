@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.infrastructure.model_json import load_model_json, validate_model_payload
 import json
 from typing import Any, Final, Literal, TypeAlias
 
@@ -19,7 +20,7 @@ class StrictCandidateJudgmentToolModel(BaseModel):
 StrictFullDocumentToolModel = StrictCandidateJudgmentToolModel
 
 
-FULL_DOCUMENT_JUDGMENT_TOOL_VERSION: Final = "full-document-relation-tool-v3"
+FULL_DOCUMENT_JUDGMENT_TOOL_VERSION: Final = "full-document-relation-tool-v4"
 
 
 class ContractRelationEvidence(StrictCandidateJudgmentToolModel):
@@ -55,10 +56,11 @@ class ThinkArguments(StrictCandidateJudgmentToolModel):
     """单轮 think 的真实推理工作空间。"""
 
     reasoning: str = Field(
+        max_length=2000,
         description=(
             "实际分析与推理；用于比较双侧页面证据、建立或排除 duplicate、similar、"
             "different 假设、分析版本连续性和冲突并选择下一步动作。应保持简洁，"
-            "使包含工具结构在内的整轮响应不超过 1024 completion tokens；"
+            "reasoning 最多 2000 个字符；"
             "这里不提交正式关系决定。"
         ),
     )
@@ -184,7 +186,7 @@ THINK_TOOL: Final[dict[str, Any]] = build_candidate_judgment_function_tool(
     name="think",
     description=(
         "提供一次真实推理空间，用于比较双侧证据与关系假设；应保持简洁，"
-        "使包含工具结构在内的整轮响应不超过 1024 completion tokens。"
+        "reasoning 最多 2000 个字符。"
         "该动作不提交正式结果。"
     ),
     arguments_model=ThinkArguments,
@@ -224,21 +226,6 @@ _ARGUMENT_MODELS: Final[dict[str, type[StrictCandidateJudgmentToolModel]]] = {
 }
 
 
-def _decode_embedded_json(value: Any) -> Any:
-    """兼容 Qwen XML parser 把嵌套对象编码成 JSON 字符串。"""
-    if isinstance(value, str) and value.lstrip().startswith(("{", "[")):
-        try:
-            decoded = json.loads(value)
-        except json.JSONDecodeError:
-            return value
-        return _decode_embedded_json(decoded)
-    if isinstance(value, list):
-        return [_decode_embedded_json(item) for item in value]
-    if isinstance(value, dict):
-        return {key: _decode_embedded_json(item) for key, item in value.items()}
-    return value
-
-
 def parse_full_document_tool_arguments(
     name: str,
     raw_arguments: str,
@@ -263,10 +250,10 @@ def parse_candidate_judgment_arguments(
 ) -> StrictCandidateJudgmentToolModel:
     """解析任一候选判断工具参数，并兼容嵌套 JSON 字符串。"""
     try:
-        payload = json.loads(raw_arguments)
+        payload = load_model_json(raw_arguments)
     except json.JSONDecodeError as exc:
         raise ValueError(f"工具 {name} 的参数不是有效 JSON") from exc
-    return arguments_model.model_validate(_decode_embedded_json(payload))
+    return validate_model_payload(arguments_model, payload)
 
 
 __all__ = [

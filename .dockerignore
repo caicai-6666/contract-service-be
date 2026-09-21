@@ -6,6 +6,12 @@
 !data/definition/
 !data/definition/**
 !data/tool-tag/
-!data/tool-tag/qwen3.6-35b-a3b-fp8.txt
+!data/tool-tag/qwen3.8-flash-next-nvfp4.txt
 **/__pycache__/
 **/*.pyc
+
+!data/template/
+!data/template/deepseek-v4.1-flash.jinja
+!data/tool-tag/deepseek-v4.1-flash.txt
+!data/template/glm-5.3-flash.jinja
+!data/tool-tag/glm-5.3-flash.txt

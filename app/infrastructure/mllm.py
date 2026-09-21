@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import perf_counter
@@ -36,6 +37,13 @@ class MLLMUnavailableError(RuntimeError):
     """MLLM 暂时不可用，调用方可以降级或重试。"""
 
 
+MODEL_PROVIDER_NOT_READY_MESSAGE = "模型服务提供方尚未准备好，请稍后重试。"
+
+
+class MLLMProviderNotReadyError(MLLMUnavailableError):
+    """模型接口或模型名称返回 404；不作为输入不合法或业务拒绝处理。"""
+
+
 ToolPlacement = Literal["before_task", "after_task"]
 
 
@@ -49,6 +57,10 @@ class MLLMCompletion:
     completion_tokens: int | None
     cached_tokens: int | None
     finish_reason: str | None = None
+    content: str | None = None
+    raw_response: dict | None = None
+    has_tool_calls: bool = False
+    refusal: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,9 +138,7 @@ class MLLMClient:
 
         extra_body: dict[str, Any] = {
             "min_tokens": min_tokens,
-            "chat_template_kwargs": {
-                "enable_thinking": enable_thinking,
-            },
+            "chat_template_kwargs": self._settings.thinking_template_kwargs(enable_thinking),
         }
         if self._cache_salt is not None:
             extra_body["cache_salt"] = self._cache_salt
@@ -158,6 +168,8 @@ class MLLMClient:
                 error=exc,
                 status_code=exc.status_code,
             )
+            if exc.status_code == 404:
+                raise MLLMProviderNotReadyError(MODEL_PROVIDER_NOT_READY_MESSAGE) from exc
             if exc.status_code >= 500 or exc.status_code in {408, 409, 429}:
                 raise MLLMUnavailableError(
                     f"MLLM 服务暂时不可用：HTTP {exc.status_code}"
@@ -178,6 +190,10 @@ class MLLMClient:
             getattr(usage, "prompt_tokens_details", None) if usage else None
         )
         return MLLMCompletion(
+            content=response.choices[0].message.content if response.choices else None,
+            raw_response=response.model_dump(mode="json"),
+            has_tool_calls=bool(response.choices[0].message.tool_calls) if response.choices else False,
+            refusal=getattr(response.choices[0].message, 'refusal', None) if response.choices else None,
             response_id=response.id,
             model=response.model,
             prompt_tokens=usage.prompt_tokens if usage else None,
@@ -199,6 +215,13 @@ class MLLMClient:
         self, *, messages: list[dict[str, Any]], max_completion_tokens: int,
         json_schema: dict[str, Any],
         schema_name: str = "visual_readability",
+        enable_thinking: bool = False,
+        temperature: float = 0,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        min_p: float | None = None,
+        presence_penalty: float | None = None,
+        repetition_penalty: float | None = None,
     ) -> MLLMJSONCompletion:
         """使用 JSON Schema 约束解码；调用方仍须严格校验业务关系。
 
@@ -206,22 +229,28 @@ class MLLMClient:
         """
         if self._settings.endpoint != "chat_completions":
             raise MLLMRequestError(f"不支持的 MLLM endpoint：{self._settings.endpoint}")
+        chat_template_kwargs = self._settings.thinking_template_kwargs(enable_thinking)
         started_at, request_started_at = datetime.now(UTC), perf_counter()
+        # 可选采样参数仅影响显式传入的节点，其他JSON调用保持既有默认行为。
+        sampling = {k: v for k, v in {'top_p': top_p, 'presence_penalty': presence_penalty}.items() if v is not None}
+        extra_sampling = {k: v for k, v in {'top_k': top_k, 'min_p': min_p, 'repetition_penalty': repetition_penalty}.items() if v is not None}
         try:
             response = await self._create_completion_with_media_references(
                 model=self._settings.model, messages=messages,
-                max_completion_tokens=max_completion_tokens, temperature=0,
+                max_completion_tokens=max_completion_tokens, temperature=temperature, **sampling,
                 response_format={"type": "json_schema", "json_schema": {
                     "name": schema_name, "strict": True, "schema": json_schema,
                 }},
                 seed=self._settings.generation.seed, stream=False,
-                extra_body={"chat_template_kwargs": {"enable_thinking": False},
+                extra_body={"chat_template_kwargs": chat_template_kwargs, **extra_sampling,
                             **({"cache_salt": self._cache_salt} if self._cache_salt else {})},
             )
         except (APITimeoutError, APIConnectionError, APIStatusError) as exc:
             status = getattr(exc, "status_code", None)
             self._observe_failed_request(started_at=started_at,
                 request_started_at=request_started_at, error=exc, status_code=status)
+            if status == 404:
+                raise MLLMProviderNotReadyError(MODEL_PROVIDER_NOT_READY_MESSAGE) from exc
             if status is None or status >= 500 or status in {408, 409, 429}:
                 raise MLLMUnavailableError("MLLM 服务暂时不可用") from exc
             raise MLLMRequestError(f"MLLM 请求被拒绝：HTTP {status}") from exc
@@ -251,10 +280,12 @@ class MLLMClient:
         repetition_penalty: float,
         seed: int,
         enable_thinking: bool = False,
+        min_p: float | None = None,
         tool_placement: ToolPlacement | None = None,
         tool_task_index: int | None = None,
+        on_tool_delta: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> MLLMToolCompletion:
-        """异步调用 strict function tools，并返回可继续追加的助手消息。"""
+        """调用函数工具；传入增量回调时启用流式接收，仍返回完整待校验响应。"""
         if self._settings.endpoint != "chat_completions":
             raise MLLMRequestError(
                 f"不支持的 MLLM endpoint：{self._settings.endpoint}"
@@ -262,9 +293,8 @@ class MLLMClient:
         if not tools:
             raise ValueError("工具调用请求至少需要一个工具")
 
-        chat_template_kwargs: dict[str, Any] = {
-            "enable_thinking": enable_thinking,
-        }
+        # 所有节点统一读取配置，不接受单次调用覆盖强度。
+        chat_template_kwargs = self._settings.thinking_template_kwargs(enable_thinking)
         # 布局由节点契约决定；未指定时不覆盖服务端模板默认值，便于尚未
         # 完成消息边界设计的节点继续保持现状。
         if tool_placement is not None:
@@ -284,6 +314,8 @@ class MLLMClient:
             "repetition_penalty": repetition_penalty,
             "chat_template_kwargs": chat_template_kwargs,
         }
+        if min_p is not None:
+            extra_body['min_p'] = min_p
         if self._cache_salt is not None:
             extra_body["cache_salt"] = self._cache_salt
 
@@ -301,7 +333,9 @@ class MLLMClient:
                 top_p=top_p,
                 presence_penalty=presence_penalty,
                 seed=seed,
-                stream=False,
+                stream=on_tool_delta is not None,
+                **({"stream_options": {"include_usage": True}, "on_tool_delta": on_tool_delta}
+                   if on_tool_delta is not None else {}),
                 extra_body=extra_body,
             )
         except (APITimeoutError, APIConnectionError) as exc:
@@ -318,6 +352,8 @@ class MLLMClient:
                 error=exc,
                 status_code=exc.status_code,
             )
+            if exc.status_code == 404:
+                raise MLLMProviderNotReadyError(MODEL_PROVIDER_NOT_READY_MESSAGE) from exc
             if exc.status_code >= 500 or exc.status_code in {408, 409, 429}:
                 raise MLLMUnavailableError(
                     f"MLLM 服务暂时不可用：HTTP {exc.status_code}"
@@ -364,6 +400,11 @@ class MLLMClient:
             "role": "assistant",
             "content": message.content,
         }
+        # 保留服务端分离的原生推理供多轮节点审计和续接，不混入业务正文。
+        for field in ("reasoning", "reasoning_content", "refusal"):
+            value = getattr(message, field, None)
+            if value is not None:
+                assistant_message[field] = value
         if assistant_tool_calls:
             assistant_message["tool_calls"] = assistant_tool_calls
 
@@ -456,9 +497,31 @@ class MLLMClient:
         async with get_model_request_limiter(
             "mllm", self._settings.max_concurrent_requests,
         ):
-            return await self._client.chat.completions.create(
-                messages=materialize_image_messages(messages), **request,
-            )
+            on_tool_delta = request.pop("on_tool_delta", None)
+            from app.infrastructure.development_trace import record, safe_value
+            entry = record('model', '模型生成', input=messages, status='running',
+                           summary=request.get('model', ''), request_options=request)
+            started = perf_counter()
+            try:
+                response = await self._client.chat.completions.create(
+                    messages=materialize_image_messages(messages), **request,
+                )
+                if on_tool_delta is not None:
+                    from app.infrastructure.tool_stream import collect_tool_stream
+                    response = await collect_tool_stream(response, on_tool_delta)
+                if entry is not None:
+                    elapsed = perf_counter() - started
+                    raw = safe_value(response)
+                    usage = raw.get('usage') or {} if isinstance(raw, dict) else {}
+                    entry.update(status='completed', output=raw, duration=elapsed,
+                        model_metrics={'elapsed_seconds': elapsed,
+                                       'completion_tokens': usage.get('completion_tokens')})
+                return response
+            except BaseException as exc:
+                if entry is not None:
+                    entry.update(status='error', duration=perf_counter() - started,
+                                 output={'error_type': type(exc).__name__})
+                raise
 
     def _observe_successful_request(
         self,

@@ -1,6 +1,6 @@
 # 上下文相关性判断
 
-> **当前状态：** 已接入正式门禁：服务端选取最近最多五轮有效历史，使用 `context-relevance-v11` 规则与随机四例构造轻量输入，通过严格 JSON Schema 约束解码和有限纠错生成判断及关联依据，交给聚合节点分级计分。核心问答上下文组装尚未实现。
+> **当前状态：** 已接入正式门禁：服务端选取最近最多五轮有效历史，使用 `context-relevance-v12` 规则与随机四例构造轻量输入，通过严格 JSON Schema 约束解码和有限纠错生成判断及关联依据，交给聚合节点分级计分。核心问答上下文组装及主循环已接入，详见[主助手生成循环](agent-runtime.md)。
 
 ---
 
@@ -33,7 +33,7 @@
 
 源码为 `app/agent/contract_communication/business_gate/prompt/context_relevance.py`，导出：
 
-- `CONTEXT_RELEVANCE_PROMPT_VERSION`：`context-relevance-v11`。
+- `CONTEXT_RELEVANCE_PROMPT_VERSION`：`context-relevance-v12`。
 - `CONTEXT_RELEVANCE_SYSTEM_PROMPT`：固定系统规则，不再内嵌全部示例。
 
 `build_context_relevance_messages(history=..., text=..., file_summaries=..., examples=None, rng=None)` 返回 system 与 user 两条消息。system 为固定规则前缀、本次抽出的四组示例及与约束解码同源的 JSON Schema；user 依次组织近 5 轮上下文、本轮文字、本轮文件摘要，各区域以分割线分隔。独立渲染器位于同目录 `context_rendering.py`，只处理调用方已选的 0～5 轮历史，不读取数据库、不发起模型请求、不修改原记录。
@@ -116,7 +116,7 @@ history_continuation 的证据必须同时覆盖可见业务历史与当前输�
 
 `node.py` 提供同步 `check_context_relevance` 和原生异步 `check_context_relevance_async`，图装配绑定二者。输入为已选 `context` 任务元组、当前文字与有序文件摘要，不接收页面或文件字节；没有本轮文字且缺少历史或文件摘要时返回 skipped；有文字时允许空历史判断。
 
-调用复用全局 MLLM 配置和并发配额，通过 `create_json_chat_completion` 提交 `schema_name=context_relevance`、`strict=true`、`enable_thinking=false`；输出 token 上限为配置值与 1200 的较小值。`max_attempts` 默认 3，允许 1～3 次，不新增环境变量或工具。
+调用复用全局 MLLM 配置和并发配额，通过 `create_json_chat_completion` 提交 `schema_name=context_relevance`、`strict=true`、`enable_thinking=true`；思考与最终 JSON 共用全局 max_completion_tokens，不再另设 1200 上限。`max_attempts` 默认 3，允许 1～3 次，不新增环境变量或工具。
 
 只接受正常 stop、无拒答/工具调用、非空且完整的 JSON；重复字段、NaN/Infinity、代码块、缺失/额外字段、空白理由和错误类型均拒收。格式失败以 user 追加具体字段问题和修正要求，同次判断稳定消息不变；全部校验通过或结束时清理整段反馈，原始失败仅保留私有审计，遵循[上下文规范](../../../standard/agent-context-management.md)，不回显无效原响应，不使用 tool-tag 或 system_guidence。
 
@@ -132,7 +132,6 @@ history_continuation 的证据必须同时覆盖可见业务历史与当前输�
 
 正式执行器在激活时读取上述可信历史并传入子图，无需前端提交历史或增加接口参数。门禁全过程继续使用 thinking；拒绝提示先按规整格式流式输出，再同步 rejected 至 SSE、快照与驻留历史，并沿用后台 SQLite 备份。模型依据和审计不进入用户展示事件。
 
-门禁通过只表示允许进入下一层，当前核心问答尚未接入；默认明确提示并以 completed 收束，不批准附件。启用[混合联调](../../../capability/application/communication-ui-demo.md)时，完整门禁通过后批准附件，继续同轮模拟问答，由模拟阶段交付最终消息与终态。门禁期间禁止用户取消/替换已实现，见[门禁阶段的用户中断限制](user-context.md#门禁阶段的用户中断限制)。
 
 ---
 
@@ -143,3 +142,6 @@ v11通过 `experiment/context-weight-guard/run.py --reference-boundary` 执行45
 当前权重防护的真实验收入口为 `experiment/context-weight-guard/run.py`；v9/v6 同集 18 条请求的最终状态与上下文依据均符合预标注。该集已用于提示词优化，属于定向回归；仍有一条文字分类偏保守及拒绝回复的上传指引问题，不能视为整体准确率保证。详见 [实验分析](../../../../experiment/context-weight-guard/output/20260911T041203.777905Z/analysis.md)。实验目录按项目约定不进入 Git，分享给其他环境时需另附产物。
 
 `tests/test_context_relevance_prompt.py` 检查版本、十例正负配比、输出字段顺序与类型、证据原文可定位、实际渲染格式、冻结样例、无放回四例抽样、可复现随机源及无固定标签配额。`tests/test_context_relevance_rendering.py` 检查元数据白名单、选样固定后的稳定排序与消息、不同抽样间的固定规则前缀、同一 final 的片段恢复、取消/失败/调整的回答可见性、旧数据缺省、多行原文隔离及非法候选拒绝。`tests/test_context_relevance_node.py` 验证正式 Schema、有文字时空历史判断、纯文件空历史跳过、非法历史、协议/请求失败、连续纠错清理、抽样固定、取消传播、并发隔离及实际子图的上下文独立计分。`tests/test_communication_gate_history.py` 验证摘要边界、五轮筛选、拒绝与过期排除、所有权、fresh/SQLite 恢复一致，以及 SSE/快照/历史备份的终态一致性。回归使用模拟模型与临时 SQLite，不代表新增真实模型准确率测量。
+
+
+历史任务包含 `input.contracts` 时，输入投影增加“引用合同”区域，保留任务当时的合同 ID、文件名及摘要快照；不回查当前合同元数据。

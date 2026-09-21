@@ -33,7 +33,8 @@ def display_payload(record) -> ConversationDisplayPayload:
     if not isinstance(source, dict):
         source = {"text": source if isinstance(source, str) else None}
     return ConversationDisplayPayload(
-        input={"text": source.get("text"), "files": deepcopy(source.get("files", []))},
+        input={"text": source.get("text"), "files": deepcopy(source.get("files", [])),
+               "contracts": deepcopy(source.get("contracts", []))},
         events=events, streaming_messages=streaming,
         last_sequence=payload.get("event_cursor", 0) if recorded else None,
         event_source="recorded" if recorded else "legacy",

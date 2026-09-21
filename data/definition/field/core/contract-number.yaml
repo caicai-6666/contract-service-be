@@ -16,5 +16,7 @@ properties:
     aliases: []
     type: string
     required: true
+    constraints: {}
+    extraction_rule: 仅根据合同明确证据提取，遵循 meaning 与 excludes；无法确定时不补造默认值。
     meaning: 合同正文明确标注的唯一识别编号。
     excludes: 不包括订单、项目、产品、报价单或发票编号。

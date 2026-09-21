@@ -13,7 +13,7 @@ from app.agent.contract_communication.business_gate.state import FileSummary
 from app.service.communication_trace import ToolCallTrace, ToolResultTrace
 
 from app.schema.communication import (
-    TERMINAL_STATUSES, CommunicationEvent, CommunicationSnapshot, ErrorData,
+    ContractReference, TERMINAL_STATUSES, CommunicationEvent, CommunicationSnapshot, ErrorData,
     ConversationHistoryRecord, EventData, MessageCompletedData, MessageDeltaData,
     MessageSnapshot, TaskProgressData, TurnStatusData,
 )
@@ -51,10 +51,12 @@ class StagedPDF:
 class TurnInput:
     text: str | None = None
     files: tuple[StagedPDF, ...] = ()
+    contracts: tuple[ContractReference, ...] = ()
 
     @property
     def size_bytes(self) -> int:
-        return len((self.text or "").encode("utf-8")) + sum(len(file.content) for file in self.files)
+        return len((self.text or "").encode("utf-8")) + sum(len(file.content) for file in self.files) + sum(
+            len(contract.model_dump_json().encode("utf-8")) for contract in self.contracts)
 
 
 @dataclass
@@ -77,7 +79,7 @@ _EVENT_ADAPTER = TypeAdapter(EventData)
 class CommunicationEventService:
     """先提交日志和快照，再唤醒订阅者；慢订阅者不阻塞生产者。"""
 
-    # 通用事件源与独立演示没有门禁；正式执行器必须显式解锁。
+    # 通用事件源没有门禁；正式执行器必须显式解锁。
     requires_business_gate = False
 
     @staticmethod
@@ -221,7 +223,7 @@ class CommunicationEventService:
         # context_status 是只读派生语义，不接收调用方注入，重新校验时从原始状态重建。
         payload = _EVENT_ADAPTER.validate_json(_EVENT_ADAPTER.dump_json(data, exclude={"context_status"}))
         if isinstance(payload, MessageCompletedData) and payload.status == "interrupted":
-            raise ValueError("中断消息只能由运行时随任务终态自动生成")
+            raise ValueError("中断消息只能由运行时内部方法生成")
         if isinstance(payload, TurnStatusData) and payload.status in {"superseded", "pending_activation", "processing", "expired"}:
             raise ValueError("注册、激活、过期及替代状态只能由生命周期管理产生")
         async with self._condition:
@@ -235,6 +237,34 @@ class CommunicationEventService:
             event = self._commit(turn, payload)
             self._condition.notify_all()
             return event
+
+    async def publish_tool_progress(self, conversation_id, turn_id, *, owner, progress):
+        """统一工具执行层更新展示状态；在同一会话锁内去重并阻断迟到反馈。"""
+        data = TaskProgressData(type=progress.type, message=progress.message)
+        async with self._condition:
+            turn = self._get(conversation_id, turn_id, owner)
+            if turn.snapshot.status != 'processing' or any(
+                m.message_kind == 'final' and m.status == 'completed' for m in turn.snapshot.messages
+            ):
+                # 最终答复已完成或任务被取消时，不再恢复 thinking、覆盖终态。
+                return
+            if turn.snapshot.progress == data:
+                return
+            self._commit(turn, data)
+            self._condition.notify_all()
+
+    async def interrupt_output(self, conversation_id, turn_id, *, owner, message_id):
+        """内部执行器关闭失败的流式预览；不结束任务，也不允许调用方指定正文。"""
+        async with self._condition:
+            turn = self._get(conversation_id, turn_id, owner)
+            if turn.snapshot.status != 'processing' or turn.active_message_id != message_id:
+                # 取消、替代等终态已经收束消息，迟到的生成回调不能恢复它。
+                return
+            message = next(m for m in turn.snapshot.messages if m.message_id == message_id)
+            self._commit(turn, MessageCompletedData(message_id=message_id,
+                message_kind=message.message_kind, text=message.text,
+                references=message.references, status='interrupted'), internal_interruption=True)
+            self._condition.notify_all()
 
     async def cancel_turn(self, conversation_id: str, turn_id: str, *, owner: str) -> CommunicationSnapshot:
         """原子取消本人的非终态轮次；重复取消不增加事件或延长保留期。"""
@@ -481,7 +511,7 @@ class CommunicationEventService:
                 self._history.accept_tool_locked(conversation_id, turn_id, item)
             turn.touched_at = time.monotonic()
 
-    def _commit(self, turn: _Turn, data: EventData, *, record_history=True, collected=None) -> CommunicationEvent:
+    def _commit(self, turn: _Turn, data: EventData, *, record_history=True, collected=None, internal_interruption=False) -> CommunicationEvent:
         # 在副本上校验整批事件，取消/替代即使需要两条事件也不留下半提交状态。
         candidate = replace(turn, events=deque(turn.events, maxlen=self._buffer_size))
         entries = []
@@ -493,7 +523,7 @@ class CommunicationEventService:
                 text=message.text, references=message.references, status="interrupted",
             ), internal_interruption=True)
             entries.append((interrupted, candidate.snapshot))
-        event = self._commit_one(candidate, data)
+        event = self._commit_one(candidate, data, internal_interruption=internal_interruption)
         entries.append((event, candidate.snapshot))
         if record_history and turn.history_registered and self._history is not None:
             self._history.accept_events_locked(turn.snapshot.conversation_id, turn.snapshot.turn_id, entries)

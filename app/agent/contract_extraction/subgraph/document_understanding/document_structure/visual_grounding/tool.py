@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.infrastructure.model_json import load_model_json, validate_model_payload
 import json
 from itertools import pairwise
 from typing import Annotated, Any, Final, Literal, TypeAlias
@@ -225,21 +226,6 @@ _ARGUMENT_MODELS: Final[dict[str, type[StrictVisualGroundingModel]]] = {
 }
 
 
-def _decode_embedded_json(value: Any) -> Any:
-    """兼容 Qwen 工具解析器把嵌套参数编码成 JSON 字符串的情况。"""
-    if isinstance(value, str) and value.lstrip().startswith(("{", "[")):
-        try:
-            decoded = json.loads(value)
-        except json.JSONDecodeError:
-            return value
-        return _decode_embedded_json(decoded)
-    if isinstance(value, list):
-        return [_decode_embedded_json(item) for item in value]
-    if isinstance(value, dict):
-        return {key: _decode_embedded_json(item) for key, item in value.items()}
-    return value
-
-
 def parse_visual_grounding_tool_arguments(
     name: str,
     raw_arguments: str,
@@ -250,10 +236,10 @@ def parse_visual_grounding_tool_arguments(
     except KeyError as exc:
         raise ValueError(f"未知的单元视觉定位工具：{name}") from exc
     try:
-        payload = json.loads(raw_arguments)
+        payload = load_model_json(raw_arguments)
     except json.JSONDecodeError as exc:
         raise ValueError(f"工具 {name} 的参数不是有效 JSON") from exc
-    return arguments_model.model_validate(_decode_embedded_json(payload))
+    return validate_model_payload(arguments_model, payload)
 
 
 def _validate_anchor_configuration(

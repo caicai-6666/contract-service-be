@@ -35,7 +35,7 @@ SQLite 是正式合同文件管理的权威目录，Elasticsearch 是完整合�
 
 自动合同处理的原始 PDF 只在创建请求期间存在，随后释放；按视觉预算重新封装的处理版 PDF、同源页面缓存、阶段状态和草稿不写入 Elasticsearch，只驻留当前 API 进程内存。只有审核用户通过正式入库接口提交的最终对象才允许进入正式索引；完整边界见[合同提取应用运行时](../../architecture/system/contract-extraction-runtime.md)。
 
-需要访问 Elasticsearch 的路由或服务复用应用生命周期中的共享客户端。正式文件列表只读取 SQLite 中的 `ready` 记录，不依赖 ES。SQLite 目录见[合同 SQLite 元数据结构](../../architecture/data/contract-sqlite-metadata.md)，目标索引结构和启动同步边界见[合同 Elasticsearch 文档结构](../../architecture/data/contract-elasticsearch-document.md)；三处持久化流程见[复核后合同正式入库](contract-ingestion.md)。
+需要访问 Elasticsearch 的路由或服务复用应用生命周期中的共享客户端。正式文件列表只读取 SQLite 中的 `ready` 记录，不依赖 ES。SQLite 目录见[合同 SQLite 元数据结构](../../architecture/data/contract-sqlite-metadata.md)，目标索引结构和启动同步边界见[合同 Elasticsearch 文档结构](../../architecture/data/contract-elasticsearch-document.md)；四处持久化流程见[复核后合同正式入库](contract-ingestion.md)。
 
 ---
 
@@ -80,7 +80,7 @@ python -m pip install -r requirements.txt
 python -m app.main
 ```
 
-运行依赖统一维护在项目根目录的 `requirements.txt`，使用兼容版本区间而不是应用打包元数据。`.venv` 只用于本机隔离且已被 Git 忽略。`app.main` 的 `__main__` 分支直接调用 `uvicorn.run`，因此可以在 IDE 中运行该文件；监听地址、端口、日志级别和热重载开关均在入口代码中显式列出。默认监听 `127.0.0.1:10000` 并开启源码热重载，避免与默认监听 `8000` 的 MLLM 冲突。
+运行依赖统一维护在项目根目录的 `requirements.txt`，使用兼容版本区间而不是应用打包元数据。 网页能力预备依赖包括 `ddgs>=9.16,<10.0`（网页搜索）与 `trafilatura>=2.2,<3.0`（本地 HTML 正文提取）；搜索和结果列表工具已接入会话缓存、分页与主循环；网页子图已实现 HTTP、正文提取和模型精炼，打开工具已注册主循环并接入正文缓存与分页，详见[网页工具](../../architecture/workflow/contract-communication/web-search.md)。 独立搜索与正文提取验证见[网页可行性实验](../../../experiment/web-search-extraction/REPORT.md)，已记录误召回、权限限制提示遗漏及附件链接丢失等边界。`.venv` 只用于本机隔离且已被 Git 忽略。`app.main` 的 `__main__` 分支直接调用 `uvicorn.run`，因此可以在 IDE 中运行该文件；监听地址、端口、日志级别和热重载开关均在入口代码中显式列出。默认监听 `127.0.0.1:10000` 并开启源码热重载，避免与默认监听 `8000` 的 MLLM 冲突。
 
 热重载会重启唯一工作进程并清空内存合同任务，只适合本地开发。部署入口应由外部 ASGI 进程管理器加载 `app.main:app`，关闭热重载，并继续保持单 worker。
 
@@ -92,42 +92,28 @@ python -m app.main
 
 两个本地 vLLM 服务均通过环境变量配置，API 密钥分别从 `VLLM_MLLM_API_KEY` 和 `VLLM_EMBEDDING_API_KEY` 读取。
 
-`VLLM_MLLM_TOOL_TAG_FILE` 指定 `data/tool-tag` 下的工具格式模板文件名，默认 `qwen3.6-35b-a3b-fp8.txt`。应用启动时校验并加载为进程级共享文本，文件错误会阻止启动，运行期间不热更新；读取入口及工作流接入边界见[模型工具调用格式资产](../infrastructure/vllm-chat-template.md#模型工具调用格式资产)。
+`VLLM_MLLM_TOOL_TAG_FILE` 指定 `data/tool-tag` 下的工具格式模板文件名，默认 `qwen3.8-flash-next-nvfp4.txt`。应用启动时校验并加载为进程级共享文本，文件错误会阻止启动，运行期间不热更新；读取入口及工作流接入边界见[模型工具调用格式资产](../infrastructure/vllm-chat-template.md#模型工具调用格式资产)。
 
 | 模型 | 默认地址 | 端点 | 主要职责 |
 | --- | --- | --- | --- |
 | MLLM | `http://127.0.0.1:8000/v1` | `chat_completions` | 合同的 Core、Clause 与 Retrieval Question 生成。 |
 | Embedding | `http://127.0.0.1:8001/v1` | `embeddings` | 字段、合同与候选的向量化。 |
 
-单 worker 内所有合同、业务线路与后台任务共享 `VLLM_MLLM_MAX_CONCURRENT_REQUESTS=20`；文本及页面向量化独立共用 `VLLM_EMBEDDING_MAX_CONCURRENT_REQUESTS=10`。节点局部限制继续保留，最终发送由统一客户端执行全局准入；配置与排队边界见[模型全局并发额度](../infrastructure/model-concurrency.md)。应用使用官方异步 `AsyncOpenAI` 客户端和自定义 `base_url` 对接 vLLM；本地服务没有配置 key 时，适配器仅为满足 SDK 初始化提供非敏感占位值。`VLLM_MLLM_USE_MEDIA_REFERENCES=true` 默认启用媒体 UUID 协议，使同页首次上传后只传引用；服务版本、缓存失效和回退要求见[vLLM 多模态媒体引用](../infrastructure/vllm-media-reference.md)。严格 JSON 提取必须使用 `VLLM_MLLM_ENABLE_THINKING=false`，不能继承模型默认思考模式。
+单 worker 内所有合同、业务线路与后台任务共享 `VLLM_MLLM_MAX_CONCURRENT_REQUESTS=20`；文本及页面向量化独立共用 `VLLM_EMBEDDING_MAX_CONCURRENT_REQUESTS=10`。节点局部限制继续保留，最终发送由统一客户端执行全局准入；配置与排队边界见[模型全局并发额度](../infrastructure/model-concurrency.md)。应用使用官方异步 `AsyncOpenAI` 客户端和自定义 `base_url` 对接 vLLM；本地服务没有配置 key 时，适配器仅为满足 SDK 初始化提供非敏感占位值。`VLLM_MLLM_USE_MEDIA_REFERENCES=true` 默认启用媒体 UUID 协议，使同页首次上传后只传引用；服务版本、缓存失效和回退要求见[vLLM 多模态媒体引用](../infrastructure/vllm-media-reference.md)。全局通过 `VLLM_MLLM_ENABLE_THINKING=false` 默认关闭思考；节点可以显式开启。思考开关与 JSON Schema 输出约束分别配置，不能仅因使用结构化输出就要求关闭思考。
 
 MLLM 默认使用 `262144` token 上下文。视觉预算从上下文中扣除 `8192` 最大生成、`4096` 公共提示词和 `10240` 多轮工具历史与安全余量后动态计算；实际视觉预算再随 PDF 页数增长，最大为 `239616`。`VLLM_MLLM_MAX_VISUAL_TOKENS_PER_REQUEST` 留空表示启用动态预算，也可以设置更小的人工上限。
 
 本地 vLLM 必须以相同或更大的上下文启动：
 
-```bash
-export OMP_NUM_THREADS=8
-export MKL_NUM_THREADS=8
-
-vllm serve ~/autodl-tmp/model/Qwen3.6-35B-A3B-FP8 \
-    --trust-remote-code \
-    --quantization fp8 \
-    --gpu-memory-utilization 0.58 \
-    --max-model-len 262144 \
-    --max-num-seqs 512 \
-    --enable-prefix-caching \
-    --enable-auto-tool-choice \
-    --tool-call-parser qwen3_xml \
-    --chat-template data/template/qwen3.6-tools-placement.jinja \
-    --chat-template-content-format openai \
-    --structured-outputs-config '{"backend":"xgrammar"}' \
-    --host 0.0.0.0 \
-    --port 8000 \
-    --served-model-name qwen3.6-35b-a3b-fp8
-```
+启动命令统一维护在 [vLLM 启动方式](../infrastructure/vllm-chat-template.md#启动方式)，使用当前模型 `Qwen3.8-Flash-Next-NVFP4` 和服务名称 `qwen38-flash-next`。应用默认地址仍为 `8000`；若按该部署示例使用 `6006`，将 `VLLM_MLLM_BASE_URL` 设置为 `http://127.0.0.1:6006/v1`。
 
 该模板及 `tool_placement` 接入契约见 [vLLM 自定义聊天模板](../infrastructure/vllm-chat-template.md)。命令应从项目根目录执行；若从其他目录启动，应将 `--chat-template` 改为模板的绝对路径。
 
 若 vLLM 因 KV cache 容量不足而拒绝 `262144`，应优先降低 `--max-num-seqs`，再根据实际显存调整 `--gpu-memory-utilization`，不能让应用配置的上下文大于服务端上限。配置模型同时校验 MLLM 的非视觉预留和显式视觉上限不超过上下文窗口、重排 `top_n` 不超过候选上限，以及 Embedding 输出维度与 Elasticsearch 向量维度一致。
 
 所有业务路由统一使用 `/contract/api` 前缀。`GET /contract/api/health` 和审核用户登录保持公开，其他路由在聚合时统一注入免登码校验依赖；依赖从 `Authorization: Bearer <login_code>` 解析当前审核人名称。应用启动时装配合同文档识别图和 PDF 查重图；合同提取服务先执行合同门禁，再使用共享 Elasticsearch 客户端和 `data/contract` 候选加载器执行查重。暂停事件只返回 Elasticsearch 中的友好文件名和 `file_uri`，不内联合同字节或生成运行级下载 URL。应用同时装配受限本地合同文件存储，供[资源文件 API](../../api/resource.md)按 `file_uri` 流式返回正式合同 PDF。登录接口见[审核用户登录 API](../../api/auth.md)，合同上传、合同文档判断、查重暂停、继续、状态、SSE 与重试接口见[合同 API](../../api/contract.md)。ASGI 服务器应加载 `app.main:app`。
+
+
+## Neo4j 生命周期
+
+`app.bootstrap` 创建共享 `Neo4jClient` 和 `ContractGraphStore`，分别注入 `app.state.neo4j`、`app.state.contract_graph_store`。入库服务初始化时检查连接、创建合同 ID 唯一约束、恢复未完成入库/删除并补建历史节点；失败阻止 API 就绪。正常关闭及启动失败时均释放驱动连接池。具体配置见 [Neo4j 部署与开发连接](../infrastructure/neo4j-development.md)。

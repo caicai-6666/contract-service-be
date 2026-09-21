@@ -105,12 +105,13 @@ Elasticsearch 主文档只保存复核后的最终合同数据，不保存自动
 
 ## 最终 Core
 
+合同名称统一由合同概览生成、用户确认后保存为顶层 `file_name`（SQLite 同名字段用于名称检索）。Core 已移除 `contract_name` 定义，不再重复提取正文标题。既有 ES 文档及 mapping 中的旧字段本次不清除，启动兼容检查允许保留历史字段；新建索引不再定义、新入库不再写入该字段。币种、角色等标准值及数值约束由 [Core 定义](field-definition.md#标准值约束与转换) 统一约束；历史文档不自动规范化。
+
 `core` 只保存复核后的最终值。单值定义写入标量，多值定义写入对象数组；没有最终值的字段直接省略，不写入 `null`、`abandoned` 或 `failed`。
 
 ```json
 {
   "core": {
-    "contract_name": "设备采购合同",
     "contract_number": "CG-2026-001",
     "contract_subjects": [
       {
@@ -129,11 +130,11 @@ Elasticsearch 主文档只保存复核后的最终合同数据，不保存自动
     "related_parties": [
       {
         "name": "甲方有限公司",
-        "role": "甲方"
+        "role": "party_a"
       },
       {
         "name": "乙方有限公司",
-        "role": "乙方"
+        "role": "party_b"
       }
     ],
     "signed": true,
@@ -150,32 +151,31 @@ Elasticsearch 主文档只保存复核后的最终合同数据，不保存自动
 
 | 字段 | ES 类型 | 说明 |
 | --- | --- | --- |
-| `contract_name` | `text` | 支持中文全文检索。 |
 | `contract_number` | `keyword` | 合同编号不分词。 |
 | `contract_subjects` | `nested` | 保证同一标的的名称、数量和单价保持关联。 |
 | `contract_total_amount` | `double` | 支持数值范围查询。 |
 | `currency` | `keyword` | 入库前规范化为稳定币种值。 |
 | `related_parties` | `nested` | 保证主体名称与角色保持关联。 |
 | `signed` | `boolean` | 最终签章结果。 |
-| `signing_date` | `keyword` | 入库前规范化为 ISO 日期文本并精确匹配。 |
+| `signing_date` | `date` | `format: strict_date`；输入输出仍为 YYYY-MM-DD，支持日期区间与排序。 |
 | `tax_included` | `boolean` | 最终含税结果。 |
-| `tax_rate` | `double` | 百分数中的数值，例如 `13%` 写入 `13`。 |
+| `tax_rate` | `double` | 百分数数值，例如 13% 写入 13；应用校验限定 1～100 的整数值。 |
 
-Core 标量 mapping 由[模型提取对象定义结构](field-definition.md#elasticsearch-mapping-元数据)中的属性定义驱动：`string` 属性只有显式配置 `tokenize: true` 时才映射为 `text`，并将 `analyzer` 与 `search_analyzer` 都设置为 `ELASTICSEARCH_TEXT_ANALYZER`；未配置或配置为 `false` 时映射为 `keyword`，且分词字段不附加精确值多字段。数值和布尔类型按自身类型映射，不能声明 `tokenize`。
+Core 标量 mapping 由[模型提取对象定义结构](field-definition.md#elasticsearch-mapping-元数据)中的属性定义驱动：`string` 属性只有显式配置 `tokenize: true` 时才映射为 `text`，并将 `analyzer` 与 `search_analyzer` 都设置为 `ELASTICSEARCH_TEXT_ANALYZER`；未声明 `index_format` 且未配置分词或配置为 `false` 时映射为 `keyword`，且分词字段不附加精确值多字段。字符串属性声明 `index_format: strict_date` 时映射为 date，禁止同时启用分词；接口仍是 string。数值和布尔类型按自身类型映射，不能声明 `tokenize` 或 `index_format`。
 
 当前 Core 根据检索价值使用以下分词策略：
 
 | Core 对象属性 | 是否分词 | 检索考虑 |
 | --- | --- | --- |
-| 合同名称 | 是 | 用户通常按合同标题中的中文词语检索。 |
 | 合同标的 / 标的名称 | 是 | 需要按产品、服务或工程名称中的词语召回。 |
 | 合同标的 / 范围说明 | 是 | 需要按范围与配置描述中的词语召回。 |
 | 相关方 / 名称 | 是 | 需要按主体完整名称及名称词语召回。 |
-| 合同编号、币种、签订日期 | 否 | 主要用于精确筛选或标准化后的精确匹配。 |
+| 合同编号、币种 | 否 | 精确筛选。 |
+| 签订日期 | 不适用 | strict_date 日期索引，支持日期范围与排序。 |
 | 标的类型、品牌、规格型号、单位、相关方角色 | 否 | 值较短或具有枚举、代码、型号特征，优先精确匹配。 |
 | 金额、数量、单价、税率、签章与含税状态 | 不适用 | 使用数值或布尔 mapping，不属于字符串分词范围。 |
 
-`code` 与 `tokenize` 只参与 Core mapping 投影，不进入字段提取提示词、工具 Schema 或最终 Core 值。启动同步和正式入库已经按上述规则消费通过校验的 Core 定义；入库请求中的未知字段、缺失目录字段、错误基数、未知对象属性和错误基本类型都会被拒绝。
+`code`、`tokenize` 与 `index_format` 只参与 Core mapping 投影，不进入字段提取提示词、工具 Schema 或最终 Core 值。启动同步和正式入库已经按上述规则消费通过校验的 Core 定义；入库请求中的未知字段、缺失目录字段、错误基数、未知对象属性和错误基本类型都会被拒绝。
 
 ---
 
@@ -338,3 +338,22 @@ flowchart TD
 同步允许增加缺失的 Core 对象、对象属性及顶层 `retrieval_questions`，不删除索引中已有字段，也不尝试原地修改已有字段类型与分析器。检索问题字段若已存在但不是 `text` 或未关闭索引，则启动失败，要求显式迁移。配置删除不会自动删除历史 mapping；同一个 Core `code` 的类型或分析器与现有索引不一致时，应用必须启动失败。Elasticsearch 不可达、SmartCN 插件缺失或索引元数据操作未确认同样会阻止启动。索引创建不等待活动分片，分片能否分配仍由 Elasticsearch 的磁盘水位和集群策略决定；运行环境必须另外监控索引健康状态。
 
 开发 Elasticsearch 的启动、SmartCN 插件和安全限制见[Elasticsearch 本地开发部署](../../capability/infrastructure/elasticsearch-development.md)。
+
+
+---
+
+## 签订日期索引迁移
+
+签订日期的 Core 属性仍为 `type: string`，新增 `index_format: strict_date` 仅决定索引投影；接口字段、提取工具参数和 SQLite TEXT 存储不变，继续由入库服务校验并规范化为 `YYYY-MM-DD`。启动同步会检查日期 format，旧 keyword mapping 不自动覆盖。
+
+旧索引使用以下显式迁移命令（执行前暂停入库与删除业务）：
+
+```bash
+python scripts/migrate_contract_signing_date.py --source contracts-v1 --target contracts-v2-date
+```
+
+脚本为源实体索引建立写屏障，在不存在的目标索引保留源 mapping 并仅修改 signing_date，然后执行 reindex，核对全部文档 ID、可读取原文摘要及数量，并验证日期范围查询和排序。源中的非法日期会导致迁移失败，不会静默丢弃文档。目标存在时拒绝覆盖；失败时恢复原写状态并保留目标供排查。实现依据 [Elasticsearch Reindex API](https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-reindex)。
+
+成功后将 `ELASTICSEARCH_INDEX_NAME` 切换到目标并重启后端；源索引继续只读保留，脚本不删除任何索引、不自动修改配置或重启服务。旧进程未重启前写入旧索引会被拒绝，应完成切换再恢复业务。若尚未产生新库写入，可以改回旧配置、解除旧索引写屏障并使用旧版 mapping 代码回退；新库产生写入后须另行同步增量，不能直接回退。
+
+开发环境本次已从 contracts-v1 迁移到 contracts-v2-date，2 份合同校验一致，项目 `.env` 已切换。旧索引保留只读备份，服务重启由运行方执行。

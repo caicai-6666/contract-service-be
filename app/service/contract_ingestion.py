@@ -1,13 +1,16 @@
-"""将人工复核结果一致地写入 SQLite、PDF 文件与正式合同索引。"""
+"""将人工复核结果一致地写入 SQLite、PDF 文件、正式合同索引与图节点。"""
 
 from __future__ import annotations
+
+from app.agent.contract_extraction.subgraph.field_extraction.constraints import constraint_violation
 
 import asyncio
 import hashlib
 import logging
 import math
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -27,12 +30,16 @@ from app.agent.contract_extraction.subgraph.field_extraction.definition import (
     FieldValueType,
 )
 from app.core.contract_date import normalize_contract_date
+from app.core.config import EmbeddingSettings
+from app.service.contract_summary_embedding import embed_contract_summary
+from app.infrastructure.contract_graph_store import ContractGraphStore
 from app.infrastructure.contract_file_store import LocalContractFileStore
 from app.infrastructure.contract_metadata_store import (
     ContractCategoryAssignment,
     ContractCategoryMetadata,
     ContractMetadata,
     ContractMetadataStatus,
+    ContractTextEmbedding,
     SQLiteContractMetadataStore,
 )
 
@@ -52,7 +59,7 @@ class ContractReviewValidationError(ValueError):
 
 
 class ContractPersistenceError(RuntimeError):
-    """SQLite、处理版 PDF 或 ES 未能形成一致的正式合同。"""
+    """SQLite、处理版 PDF、ES 或 Neo4j 未能形成一致的正式合同。"""
 
 
 class ContractDocumentNotFoundError(LookupError):
@@ -131,18 +138,20 @@ class ContractIngestionResult:
 
 
 class ContractIngestionService:
-    """校验审核值，并协调 SQLite、处理版 PDF 与正式 ES。"""
+    """校验审核值，并协调 SQLite、处理版 PDF、正式 ES 与 Neo4j。"""
 
     def __init__(
         self,
         *,
         elasticsearch: AsyncElasticsearch,
+        graph_store: ContractGraphStore,
         index_name: str,
         file_store: LocalContractFileStore,
         metadata_store: SQLiteContractMetadataStore,
         category_catalog: ContractCategoryCatalog,
         field_catalog: FieldDefinitionCatalog,
         vector_dimensions: int,
+        embedding_settings: EmbeddingSettings,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         normalized_index_name = index_name.strip()
@@ -150,6 +159,7 @@ class ContractIngestionService:
             raise ValueError("合同索引名称不能为空")
         if vector_dimensions <= 0:
             raise ValueError("合同向量维度必须大于 0")
+        self._graph_store = graph_store
         self._elasticsearch = elasticsearch
         self._index_name = normalized_index_name
         self._file_store = file_store
@@ -163,10 +173,19 @@ class ContractIngestionService:
         )
         self._field_catalog = field_catalog
         self._vector_dimensions = vector_dimensions
+        self._embedding_settings = embedding_settings
         self._clock = clock or (lambda: datetime.now(UTC))
         # 当前部署限定单进程；同内容合同必须串行，避免并发覆盖使
         # SQLite 元数据与最后到达的 ES 文档属于不同入库尝试。
         self._document_locks: dict[str, asyncio.Lock] = {}
+
+    @asynccontextmanager
+    async def lock_documents(self, *document_ids: str) -> AsyncIterator[None]:
+        """关系创建复用入库/删除的文档锁，固定顺序获取避免反向请求死锁。"""
+        async with AsyncExitStack() as stack:
+            for document_id in sorted(set(document_ids)):
+                await stack.enter_async_context(self._document_locks.setdefault(document_id, asyncio.Lock()))
+            yield
 
     async def initialize(self) -> None:
         """初始化 SQLite，并恢复上次进程中断留下的非就绪记录。"""
@@ -182,8 +201,21 @@ class ContractIngestionService:
         except Exception as exc:
             raise ContractPersistenceError("合同 SQLite 元数据初始化失败") from exc
 
+        await self._graph_store.initialize()
         for metadata in unfinished:
-            await self._reconcile_unfinished(metadata)
+            if metadata.status is ContractMetadataStatus.DELETING:
+                await self._finish_deletion(metadata)
+            else:
+                await self._reconcile_unfinished(metadata)
+        # 已有 ready 合同也幂等补建，覆盖升级前数据及图节点缺失的情况。
+        for metadata in await asyncio.to_thread(self._metadata_store.list_ready):
+            await self._ensure_graph(metadata)
+
+    async def _ensure_graph(self, metadata: ContractMetadata) -> None:
+        try:
+            await self._graph_store.ensure_contract(metadata.document_id)
+        except Exception as exc:
+            raise ContractPersistenceError("Neo4j 合同节点同步失败，保留入库状态供重试") from exc
 
     async def ingest(
         self,
@@ -192,6 +224,7 @@ class ContractIngestionService:
         processed_pdf_bytes: bytes,
         page_count: int,
         file_name: str,
+        summary: str,
         reviewer: str,
         classification: ContractClassificationView,
         category_reasoning: Mapping[str, str],
@@ -203,6 +236,12 @@ class ContractIngestionService:
     ) -> ContractIngestionResult:
         """形成最终文档；任一持久化步骤失败时不伪造成功结果。"""
         normalized_file_name = self._validate_file_name(file_name)
+        # 即使绕过 HTTP 调用服务，也不能将空摘要写入正式元数据。
+        if not isinstance(summary, str) or not summary.strip():
+            raise ContractReviewValidationError("合同摘要不能为空")
+        normalized_summary = summary.strip()
+        if len(normalized_summary) > 3000:
+            raise ContractReviewValidationError("合同摘要不能超过 3000 个字符")
         normalized_reviewer = reviewer.strip()
         if not normalized_reviewer:
             raise ContractReviewValidationError("入库审核人不能为空")
@@ -279,6 +318,7 @@ class ContractIngestionService:
         )
         ingestion_id = str(uuid4())
         metadata = ContractMetadata(
+            summary=normalized_summary,
             document_id=document_id,
             file_name=normalized_file_name,
             category=self._category_summary(classification),
@@ -296,14 +336,22 @@ class ContractIngestionService:
             asyncio.Lock(),
         )
         async with document_lock:
+            # 仅编码用户最终确认的摘要；失败时尚未触碰任何持久化存储。
+            try:
+                summary_embedding = await embed_contract_summary(
+                    normalized_summary, self._embedding_settings,
+                )
+            except Exception as exc:
+                raise ContractPersistenceError("合同摘要向量化失败，请稍后重试") from exc
             return await self._persist(
+                summary_embedding=summary_embedding,
                 metadata=metadata,
                 document=document,
                 processed_pdf_bytes=processed_pdf_bytes,
             )
 
     async def delete_document(self, document_id: str, *, reviewer: str) -> None:
-        """与同文档入库串行，依次清理 ES、PDF 和 SQLite。"""
+        """与同文档入库串行，先登记删除意图，再清理 Neo4j、ES、PDF 和 SQLite。"""
         if re.fullmatch(r"[0-9a-f]{64}", document_id) is None:
             raise ValueError("document_id 必须是 64 位小写 SHA-256")
         document_lock = self._document_locks.setdefault(document_id, asyncio.Lock())
@@ -314,50 +362,61 @@ class ContractIngestionService:
                 raise ContractPersistenceError("读取合同 SQLite 元数据失败") from exc
             if metadata is None:
                 raise ContractDocumentNotFoundError(document_id)
-            if metadata.status is not ContractMetadataStatus.READY:
+            if metadata.status not in (ContractMetadataStatus.READY, ContractMetadataStatus.DELETING):
                 raise ContractDocumentConflictError("合同尚未完成入库，不能删除")
             if metadata.file_uri != f"/{document_id}.pdf":
                 raise ContractPersistenceError("合同文件地址与文档身份不一致，拒绝删除")
 
-            # 保留 SQLite 作为失败重试入口；不把跨存储删除伪装成原子事务。
-            # ES 或 PDF 已不存在时允许继续，以收敛上次部分完成的删除。
             try:
-                try:
-                    await self._elasticsearch.delete(
-                        index=self._index_name, id=document_id, refresh="wait_for"
-                    )
-                except NotFoundError:
-                    pass
+                await asyncio.to_thread(self._metadata_store.mark_deleting,
+                    document_id=document_id, ingestion_id=metadata.ingestion_id)
             except Exception as exc:
-                raise ContractPersistenceError("删除 Elasticsearch 合同失败，可重试") from exc
-            try:
-                await asyncio.to_thread(self._file_store.delete_processed_pdf, document_id)
-            except Exception as exc:
-                raise ContractPersistenceError("删除合同 PDF 失败，可重试") from exc
-            try:
-                await asyncio.to_thread(
-                    self._metadata_store.delete_ingestion,
-                    document_id=document_id,
-                    ingestion_id=metadata.ingestion_id,
-                )
-            except Exception as exc:
-                raise ContractPersistenceError("删除 SQLite 合同摘要失败，可重试") from exc
+                raise ContractPersistenceError("保存合同删除状态失败") from exc
+            await self._finish_deletion(metadata)
             logger.info("正式合同删除完成：document_id=%s reviewer=%s", document_id, reviewer)
+
+    async def _finish_deletion(self, metadata: ContractMetadata) -> None:
+        """删除意图已持久化；每一步都可重放，最后才删除恢复入口。"""
+        document_id = metadata.document_id
+        if metadata.file_uri != f"/{document_id}.pdf":
+            raise ContractPersistenceError("合同文件地址与文档身份不一致，拒绝删除")
+        try:
+            await self._graph_store.delete_contract(document_id)
+        except Exception as exc:
+            raise ContractPersistenceError("删除 Neo4j 合同节点及关联失败，可重试") from exc
+        try:
+            try:
+                await self._elasticsearch.delete(index=self._index_name, id=document_id, refresh="wait_for")
+            except NotFoundError:
+                pass
+        except Exception as exc:
+            raise ContractPersistenceError("删除 Elasticsearch 合同失败，可重试") from exc
+        try:
+            await asyncio.to_thread(self._file_store.delete_processed_pdf, document_id)
+        except Exception as exc:
+            raise ContractPersistenceError("删除合同 PDF 失败，可重试") from exc
+        try:
+            await asyncio.to_thread(self._metadata_store.delete_ingestion,
+                document_id=document_id, ingestion_id=metadata.ingestion_id)
+        except Exception as exc:
+            raise ContractPersistenceError("删除 SQLite 合同元数据失败，可重试") from exc
 
     async def _persist(
         self,
         *,
         metadata: ContractMetadata,
+        summary_embedding: ContractTextEmbedding | None,
         document: _ContractIndexDocument,
         processed_pdf_bytes: bytes,
     ) -> ContractIngestionResult:
-        """按统一文档身份串行执行三处持久化与状态发布。"""
+        """按统一文档身份串行执行四处持久化与状态发布。"""
         # SQLite 事务只登记本次尝试，不跨越后续文件 I/O 和 ES 网络请求。
         # 普通文件管理只读取 ready，因此不会暴露半完成记录。
         try:
             await asyncio.to_thread(
                 self._metadata_store.begin_ingestion,
                 metadata,
+                summary_embedding=summary_embedding,
             )
         except Exception as exc:
             raise ContractPersistenceError("合同 SQLite 元数据写入失败") from exc
@@ -371,13 +430,13 @@ class ContractIngestionService:
             if stored_file_uri != metadata.file_uri:
                 raise RuntimeError("合同文件存储返回了非预期地址")
         except Exception as exc:
-            await self._cleanup_failed_ingestion(
+            await self._fail_ingestion(
                 metadata,
                 reason="处理版 PDF 保存失败",
                 cause=exc,
             )
 
-        # ES 是正式内容的最后一个外部写入；固定 document_id 使未知结果
+        # ES 保存正式内容，随后同步图节点；固定 document_id 使未知结果
         # 或重试都安全覆盖同一文档，而不是生成重复记录。
         try:
             await self._elasticsearch.index(
@@ -390,11 +449,13 @@ class ContractIngestionService:
             # 超时或连接中断不代表 ES 一定没有接收写入；立即按实时 GET
             # 核对本次完整元数据，匹配时按成功收敛，避免错误回滚状态。
             if not await self._elasticsearch_matches(metadata):
-                await self._cleanup_failed_ingestion(
+                await self._fail_ingestion(
                     metadata,
                     reason="合同写入 Elasticsearch 失败",
                     cause=exc,
                 )
+
+        await self._ensure_graph(metadata)
 
         try:
             await asyncio.to_thread(
@@ -406,7 +467,7 @@ class ContractIngestionService:
             # 此时 ES 可能已经成功，不能伪造回滚；保留 ingesting 供启动
             # 对账或同一 run_id 的幂等重试修复。
             raise ContractPersistenceError(
-                "Elasticsearch 已写入，但 SQLite 就绪状态提交失败"
+                "Elasticsearch 与 Neo4j 已写入，但 SQLite 就绪状态提交失败"
             ) from exc
 
         return ContractIngestionResult(
@@ -418,25 +479,15 @@ class ContractIngestionService:
             ingested_at=metadata.ingested_at,
         )
 
-    async def _cleanup_failed_ingestion(
+    async def _fail_ingestion(
         self,
         metadata: ContractMetadata,
         *,
         reason: str,
         cause: Exception,
     ) -> None:
-        """删除明确失败的当前尝试；清理失败时仍不返回成功。"""
-        try:
-            await asyncio.to_thread(
-                self._metadata_store.delete_ingestion,
-                document_id=metadata.document_id,
-                ingestion_id=metadata.ingestion_id,
-            )
-        except Exception as metadata_error:
-            raise ContractPersistenceError(
-                f"{reason}，且 SQLite 尝试记录清理失败"
-            ) from metadata_error
-        raise ContractPersistenceError(reason) from cause
+        """保留恢复入口；超时不能证明外部写入未发生，不能丢弃对账依据。"""
+        raise ContractPersistenceError(reason + "，保留入库状态供重试或启动恢复") from cause
 
     async def _reconcile_unfinished(self, metadata: ContractMetadata) -> None:
         """按文件身份与 ES 内容核验中断尝试，再原子发布或标记失败。"""
@@ -464,27 +515,19 @@ class ContractIngestionService:
                 ):
                     failure_reason = "启动恢复时 Elasticsearch 文档与 SQLite 不一致"
 
-        try:
-            if failure_reason is None:
-                await asyncio.to_thread(
-                    self._metadata_store.mark_ready,
-                    document_id=metadata.document_id,
-                    ingestion_id=metadata.ingestion_id,
-                )
-            else:
-                logger.warning(
-                    "启动对账清理失败的 SQLite 入库尝试："
-                    "document_id=%s reason=%s",
-                    metadata.document_id,
-                    failure_reason,
-                )
-                await asyncio.to_thread(
-                    self._metadata_store.delete_ingestion,
-                    document_id=metadata.document_id,
-                    ingestion_id=metadata.ingestion_id,
-                )
-        except Exception as exc:
-            raise ContractPersistenceError("启动恢复结果写入 SQLite 失败") from exc
+        if failure_reason is None:
+            await self._ensure_graph(metadata)
+            try:
+                await asyncio.to_thread(self._metadata_store.mark_ready,
+                    document_id=metadata.document_id, ingestion_id=metadata.ingestion_id)
+            except Exception as exc:
+                raise ContractPersistenceError("启动恢复结果写入 SQLite 失败") from exc
+        else:
+            # 持久化删除意图后才清理外部数据，重启不能把部分删除恢复为 ready。
+            logger.warning("启动对账清理不完整入库：document_id=%s reason=%s", metadata.document_id, failure_reason)
+            await asyncio.to_thread(self._metadata_store.mark_deleting,
+                document_id=metadata.document_id, ingestion_id=metadata.ingestion_id)
+            await self._finish_deletion(metadata)
 
     async def _elasticsearch_matches(self, metadata: ContractMetadata) -> bool:
         """在写入结果不确定时，实时核验 ES 是否已经接收本次文档。"""
@@ -508,8 +551,11 @@ class ContractIngestionService:
         try:
             path = self._file_store.resolve(metadata.file_uri)
             actual_document_id = hashlib.sha256(path.read_bytes()).hexdigest()
-        except Exception:
-            return "启动恢复时合同 PDF 不存在或不可读"
+        except FileNotFoundError:
+            return "启动恢复时合同 PDF 不存在"
+        except Exception as exc:
+            # 读取权限或 I/O 故障不代表数据不存在，不能据此启动删除。
+            raise ContractPersistenceError("启动恢复时无法核验合同 PDF") from exc
         if actual_document_id != metadata.document_id:
             return "启动恢复时合同 PDF 内容身份不一致"
         return None
@@ -757,6 +803,9 @@ class ContractIngestionService:
             raise ContractReviewValidationError(
                 f"Core 属性 {path} 必须是有效的 {expected.value}"
             )
+        problem = constraint_violation(definition, value)
+        if problem:
+            raise ContractReviewValidationError(f"Core 属性 {path}：{problem}")
         return value
 
     @staticmethod

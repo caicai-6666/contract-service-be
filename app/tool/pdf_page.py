@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import wraps
-from math import ceil, sqrt
+from math import ceil, isfinite
 from pathlib import Path
 from threading import RLock
 from typing import Callable, ParamSpec, Protocol, TypeVar
@@ -123,18 +123,31 @@ def calculate_render_scale(
     if rect.width <= 0 or rect.height <= 0:
         raise ValueError("PDF 页面尺寸必须大于 0")
 
-    scale = config.max_render_scale
-    for _ in range(8):
-        estimated_tokens = estimate_visual_tokens(
+    if not all(isfinite(value) for value in (rect.width, rect.height, config.max_render_scale)):
+        raise ValueError("PDF 页面尺寸和渲染比例必须为有限数值")
+
+    def fits(scale: float) -> bool:
+        return estimate_visual_tokens(
             ceil(rect.width * scale),
             ceil(rect.height * scale),
             patch_size=config.visual_token_patch_size,
-        )
-        if estimated_tokens <= config.max_visual_tokens_per_page:
-            return scale
-        scale *= sqrt(config.max_visual_tokens_per_page / estimated_tokens)
+        ) <= config.max_visual_tokens_per_page
 
-    return scale
+    if fits(config.max_render_scale):
+        return config.max_render_scale
+    # patch 向上取整使 token 数呈阶梯变化；固定次数乘面积比例可能仍停在超限台阶。
+    # 二分始终保留已满足预算的下界，不能把未经校验的最后一次缩放值交给渲染器。
+    lower, upper = 0.0, config.max_render_scale
+    for _ in range(64):
+        middle = (lower + upper) / 2
+        if fits(middle):
+            lower = middle
+        else:
+            upper = middle
+    if lower <= 0:
+        raise ValueError("当前页面尺寸无法在视觉预算内渲染")
+    # MuPDF 矩阵使用浮点数，略留余量，避免边界舍入多生成一行或一列像素。
+    return lower * (1 - 1e-6)
 
 
 @serialized_pdf_operation
@@ -152,6 +165,16 @@ def compress_pdf_page(
             raise IndexError(f"页面 {page_number} 超出 PDF 页数 {document.page_count}")
         page = document[page_number - 1]
         return _compress_open_pdf_page(page, page_number, config)
+
+
+@serialized_pdf_operation
+def compress_open_pdf_page(
+    page: pymupdf.Page,
+    page_number: int,
+    config: PDFPageRenderConfig = _DEFAULT_RENDER_CONFIG,
+) -> CompressedPDFPage:
+    """渲染调用方持有的已打开页面；文件生命周期仍由调用方管理。"""
+    return _compress_open_pdf_page(page, page_number, config)
 
 
 def _compress_open_pdf_page(

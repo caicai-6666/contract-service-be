@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Literal
 
-ModelRequestKind = Literal["mllm", "embedding"]
+ModelRequestKind = Literal["mllm", "embedding", "deepseek"]
 _LOOP_LIMITS_ATTRIBUTE = "_contract_service_model_request_limits"
 
 
@@ -25,7 +25,7 @@ def get_model_request_limiter(
     同类配额。配额由事件循环持有，避免全局字典通过信号量反向引用旧
     事件循环，导致测试或重复启动留下失效等待者。关闭单个客户端不重置额度。
     """
-    if kind not in {"mllm", "embedding"}:
+    if kind not in {"mllm", "embedding", "deepseek"}:
         raise ValueError("未知模型请求类别")
     if type(maximum) is not int or maximum <= 0:
         raise ValueError("模型全局并发额度必须是正整数")

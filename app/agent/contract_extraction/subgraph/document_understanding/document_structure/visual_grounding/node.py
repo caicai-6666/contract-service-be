@@ -56,7 +56,6 @@ from app.infrastructure.mllm import (
 )
 
 _MAXIMUM_CONSECUTIVE_THINKS = 2
-_MAXIMUM_COMPLETION_TOKENS = 1024
 
 
 def _sum_optional(values: Iterable[int | None]) -> int | None:
@@ -243,17 +242,14 @@ async def _locate_one_unit(
                     messages=messages,
                     tools=list(VISUAL_GROUNDING_TOOLS),
                     tool_choice=VISUAL_GROUNDING_TOOL_CHOICE,
-                    max_completion_tokens=min(
-                        generation.max_completion_tokens,
-                        _MAXIMUM_COMPLETION_TOKENS,
-                    ),
+                    max_completion_tokens=generation.max_completion_tokens,
                     temperature=0,
                     top_p=generation.top_p,
                     top_k=generation.top_k,
                     presence_penalty=generation.presence_penalty,
                     repetition_penalty=generation.repetition_penalty,
                     seed=generation.seed,
-                    enable_thinking=False,
+                    enable_thinking=True,
                     # 三个工具对所有单元完全一致；单元专属目标位于工具之后，
                     # 使相同页面集合的并发会话尽量复用“页面 + 规则 + 工具”。
                     tool_placement="before_task",
@@ -473,7 +469,7 @@ async def locate_document_units(
     if not structure.units:
         raise ValueError("视觉定位至少需要一个文档单元")
 
-    settings = get_settings().mllm
+    settings = get_settings().mllm.for_contract_extraction()
     semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
     async with MLLMClient(settings) as client:
         unit_results = tuple(

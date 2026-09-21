@@ -2,6 +2,14 @@
 
 > **用途：** 本文定义正式合同 PDF、提取任务处理版 PDF，以及已驻留会话任务附件的读取接口。三者的标识与授权边界不同。全局鉴权和错误约定见 [API 参考](readme.md)。
 
+## 接口目录
+
+| 接口 | 方法 | 完整路径 |
+| --- | --- | --- |
+| [读取合同 PDF](#读取合同-pdf) | `GET` | `/contract/api/resource/contract` |
+| [读取提取任务的内存处理版 PDF](#读取提取任务的内存处理版-pdf) | `GET` | `/contract/api/resource/extraction-pdf/{file_id}` |
+| [读取已驻留会话任务的 PDF 附件](#读取已驻留会话任务的-pdf-附件) | `GET` | `/contract/api/resource/conversations/{conversation_id}/files/{file_id}` |
+
 ---
 
 ## 读取合同 PDF
@@ -48,7 +56,7 @@ GET /contract/api/resource/extraction-pdf/{file_id}
 Authorization: Bearer <login_code>
 ```
 
-读取合同提取流程已经渲染、按视觉预算压缩并重新封装的 PDF，供刷新或重新打开提取任务时恢复预览。只允许当前任务所有者读取，三个权限等级均可访问本人的资源；UUID 不是免鉴权凭证。
+读取合同提取流程已经渲染、按视觉预算压缩并重新封装的 PDF，供刷新或重新打开提取任务时恢复预览。只允许当前任务所有者读取，所有已登录用户均可访问本人的资源；UUID 不是免鉴权凭证。
 
 ### 请求参数
 
@@ -105,7 +113,7 @@ Authorization: Bearer <login_code>
 
 ### 认证方式
 
-使用登录接口取得的 Bearer 免登码。三个权限等级均可读取本人附件，所有权按用户 `secret_key` 校验，不按展示用户名匹配；UUID 本身不是访问凭证。
+使用登录接口取得的 Bearer 免登码。所有已登录用户均可读取本人附件，所有权按用户 `secret_key` 校验，不按展示用户名匹配；UUID 本身不是访问凭证。
 
 ### 请求参数
 

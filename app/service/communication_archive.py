@@ -5,8 +5,10 @@ import logging
 import math
 from typing import Any, Protocol
 
-from app.agent.conversation_memory.state import MemoryGenerationInput, MemoryGenerationOutput, MemoryTaskInput
-from app.schema.communication import ConversationHistoryRecord
+from app.agent.conversation_memory.node import TaskMemoryOutput
+from app.schema.communication_retrieval import TaskRetrievalRecord
+from app.core.config import get_settings
+from app.schema.communication import ConversationHistoryRecord, TERMINAL_STATUSES
 from app.service.communication_history import ArchiveCandidate, ConversationHistoryService
 
 
@@ -31,17 +33,29 @@ def partition_memory_tasks(records: tuple[ConversationHistoryRecord, ...], *, mi
         remaining = remaining[end:]
 
 
+def should_index_task(record: ConversationHistoryRecord) -> bool:
+    """外层筛选只依据真实终态和准入标记，不再让MLLM判断任务是否值得记忆。"""
+    if record.kind != 'task' or record.status not in TERMINAL_STATUSES:
+        raise ValueError('归档筛选仅接受终态任务')
+    return record.status not in {'rejected', 'expired'} and record.payload.get('agent_core_ready') is not False
+
+
 class CommunicationArchiveService:
     def __init__(
         self, graph: ConversationMemoryGraph, history: ConversationHistoryService, *,
         scan_interval_seconds: float = 600, minimum_batch_size: int = 10,
         idle_scan_limit: int = 3, idle_seconds: float = 1800,
-        processing_timeout_seconds: float = 600,
+        processing_timeout_seconds: float = 600, task_concurrency: int | None = None,
     ) -> None:
         if any(not math.isfinite(v) or v <= 0 for v in (scan_interval_seconds, idle_seconds, processing_timeout_seconds)):
             raise ValueError('扫描、空闲与加工超时必须为有限正数')
         if any(type(v) is not int or v <= 0 for v in (minimum_batch_size, idle_scan_limit)):
             raise ValueError('批量大小与空闲扫描次数必须为正整数')
+        task_concurrency = get_settings().embedding.max_concurrent_requests if task_concurrency is None else task_concurrency
+        if type(task_concurrency) is not int or task_concurrency <= 0:
+            raise ValueError('任务并发数必须为正整数')
+        self.task_concurrency = task_concurrency
+        self._task_slots = asyncio.Semaphore(task_concurrency)
         self._graph, self._history = graph, history
         self.scan_interval_seconds = scan_interval_seconds
         self.minimum_batch_size = minimum_batch_size
@@ -50,7 +64,7 @@ class CommunicationArchiveService:
         self._worker: asyncio.Task | None = None
         self._jobs: dict[str, asyncio.Task] = {}
         self._scan_lock = asyncio.Lock()
-        # 跨会话只执行一个图；图内仍使用既有 Send 并发配额，避免批间叠加压垮模型。
+        # 会话批次串行、批内任务有界并发；实际Embedding请求仍共用进程级额度。
         self._model_slot = asyncio.Semaphore(1)
         self._closed = False
 
@@ -94,22 +108,17 @@ class CommunicationArchiveService:
             async with self._model_slot:
                 records = await self._history.memory_backlog(candidate)
                 for batch in partition_memory_tasks(records, minimum=self.minimum_batch_size, force=candidate.force):
-                    request = MemoryGenerationInput(tasks=tuple(MemoryTaskInput(
-                        task_id=r.record_id, status=r.status, payload=r.payload,
-                        created_at=r.created_at, activated_at=r.activated_at,
-                        processing_duration_ms=r.processing_duration_ms,
-                    ) for r in batch))
                     async with asyncio.timeout(self.processing_timeout_seconds):
-                        raw = await self._graph.ainvoke({'request': request.model_copy(deep=True)})
-                    result = MemoryGenerationOutput.model_validate(raw)
-                    # 整批通过后才落库；部分失败不拆散原批的上下文，下一扫描重试原批。
-                    if result.execution_status != 'summarized' or result.pending_records is None:
-                        raise ValueError('记忆加工未完整成功')
-                    if [r.task_id for r in result.pending_records] != [r.task_id for r in request.tasks]:
-                        raise ValueError('记忆图返回任务范围或顺序错误')
-                    await self._history.commit_archive(candidate, batch, result.pending_records)
+                        results = await asyncio.gather(*(self._process_task(r) for r in batch), return_exceptions=True)
+                    # 等待本批在途任务清理后才报告失败；取消不转成普通任务失败。
+                    for result in results:
+                        if isinstance(result, BaseException):
+                            raise result
+                    await self._history.commit_archive(candidate, batch, tuple(r.retrieval for r in results))
                     logger.info('会话记忆归档成功：conversation_id=%s tasks=%s vectors=%s',
-                                candidate.conversation_id, len(batch), sum(r.embedding is not None for r in result.pending_records))
+                                candidate.conversation_id, len(batch), sum(
+                                    getattr(r.retrieval, area+'_embedding') is not None
+                                    for r in results for area in ('user_input','intermediate_output','final_output')))
                 if candidate.force and await self._history.evict_archived(candidate):
                     logger.info('空闲会话已安全驱逐：conversation_id=%s', candidate.conversation_id)
         except asyncio.CancelledError:
@@ -117,6 +126,18 @@ class CommunicationArchiveService:
         except Exception as exc:
             logger.warning('会话记忆归档未完成，保留内存：conversation_id=%s error_type=%s',
                            candidate.conversation_id, type(exc).__name__)
+
+    async def _process_task(self, record: ConversationHistoryRecord) -> TaskMemoryOutput:
+        original = record.model_copy(deep=True)
+        if not should_index_task(original):
+            return TaskMemoryOutput(execution_status='completed', record=original,
+                                    retrieval=TaskRetrievalRecord(record_id=original.record_id))
+        async with self._task_slots:
+            raw = await self._graph.ainvoke({'request':original.model_copy(deep=True)})
+        result = TaskMemoryOutput.model_validate(raw)
+        if result.execution_status != 'completed' or result.record != original:
+            raise ValueError('任务加工失败或改变了原任务内容/身份')
+        return result
 
     async def wait_idle(self) -> None:
         """内部测试/运维入口：等待当前已派发作业，不触发额外扫描。"""

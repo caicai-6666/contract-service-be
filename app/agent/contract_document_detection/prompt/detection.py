@@ -12,12 +12,12 @@ from app.agent.contract_extraction.subgraph.document_understanding.prompt import
 from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
 
 ContractDocumentDetectionPromptVersion = Literal[
-    "contract-document-detection-v3"
+    "contract-document-detection-v4"
 ]
 
 CONTRACT_DOCUMENT_DETECTION_PROMPT_VERSION: Final[
     ContractDocumentDetectionPromptVersion
-] = "contract-document-detection-v3"
+] = "contract-document-detection-v4"
 
 # 工具将在任务描述之后由统一聊天模板渲染，后续增加 think 历史时不得
 # 把动态内容插回页面图像与本任务之间，以免破坏稳定视觉前缀。
@@ -56,7 +56,7 @@ CONTRACT_DOCUMENT_DETECTION_TASK_PROMPT: Final = """你是具有采购、财务�
 
 CONTRACT_DOCUMENT_DETECTION_TOOL_INSTRUCTION_PROMPT: Final = f"""工具使用：
 1. 每轮必须且只能调用一个当前提供的工具，不得输出普通文本或用代码块、工具名加 JSON 等文本模拟工具调用。
-2. think 是允许进行实际分析和推理的工作空间。你可以在 reasoning 中综合页面证据、检验合同与非合同假设，并决定下一步动作；包含工具结构在内的整轮响应最多使用 1024 completion tokens，think 不提交正式决定。
+2. think 是允许进行实际分析和推理的工作空间。你可以在 reasoning 中综合页面证据、检验合同与非合同假设，并决定下一步动作；reasoning 最多 2000 个字符，think 不提交正式决定。
 3. think 可以按需调用，不要求为了形式固定调用，但不得连续调用超过两次。证据充分时应调用 submit_contract_document_judgment，不得无界继续推理。
 4. submit_contract_document_judgment 是唯一终止工具。必须依次提交页面证据、简洁推理摘要和 is_contract；is_contract 只能使用 JSON 布尔值 true 或 false。
 5. 判定为合同时，证据至少覆盖相对方关系和实质性权利义务；判定为非合同时，证据应说明页面实际呈现的文档性质及缺失的决定性协议结构。

@@ -14,7 +14,7 @@ from .schema import (ContextRelevanceGeneration, ContextRelevanceValidationError
                      validate_context_relevance, build_context_relevance_validation_feedback)
 from .state import ContextRelevanceResult
 from app.core.config import MLLMSettings, get_settings
-from app.infrastructure.mllm import MLLMClient, MLLMRequestError, MLLMUnavailableError
+from app.infrastructure.mllm import MLLMProviderNotReadyError, MLLMClient, MLLMRequestError, MLLMUnavailableError
 from .prompt.file_summary import FILE_SUMMARY_PROMPT_VERSION, build_file_summary_messages
 from .prompt.text_business_relevance import (
     TEXT_BUSINESS_RELEVANCE_PROMPT_VERSION, build_text_business_relevance_messages,
@@ -45,7 +45,7 @@ def _rejection_logs(state):
     """只投影已接受的业务反馈；不序列化检查结果中的页面、模型理由或私有审计。"""
     feedbacks = [getattr(state.get(key), 'feedback', None)
                  for key in ('open_check', 'render_check', 'visual_check')]
-    feedbacks += [state.get(key) for key in ('file_summary_feedback', 'file_business_relevance_feedback',
+    feedbacks += [state.get(key) for key in ('file_summary_feedback', 'file_topic_conflict_feedback', 'file_business_relevance_feedback',
         'text_business_relevance_feedback', 'file_text_relevance_feedback', 'context_relevance_feedback')]
     logs = []
     for feedback in feedbacks:
@@ -80,7 +80,7 @@ def _rejection_file_summaries(state):
             or item.original_file_name != files[item.file_index].file_name for item in summaries
         ):
             return ()
-        return summaries
+        return _relevance_files({'file_summaries': summaries, 'contracts': state.get('contracts', ())})
     except (ValueError, TypeError, AttributeError):
         # 绑定异常不能使拒绝出口再失败，也不能错指文件；继续依据既有错误日志回复。
         return ()
@@ -121,11 +121,13 @@ async def reject_request_async(state: BusinessGateSubgraphState, *, settings=Non
     if file_count or (isinstance(state.get('text'), str) and state['text'].strip()):
         try:
             settings = settings or get_settings().mllm
+            settings = settings.for_business_gate()
             async with client_factory(settings) as client:
                 for attempt in range(1, max_attempts + 1):
                     response = await client.create_json_chat_completion(messages=messages,
                         json_schema=RejectionReplyGeneration.model_json_schema(), schema_name='rejection_reply',
-                        max_completion_tokens=min(2048, settings.generation.max_completion_tokens))
+                        enable_thinking=True,
+                        max_completion_tokens=settings.generation.max_completion_tokens)
                     record = {'attempt': attempt, 'prompt_version': REJECTION_REPLY_PROMPT_VERSION,
                               'response': response.raw_response, 'accepted': False}
                     audit.append(record)
@@ -145,6 +147,8 @@ async def reject_request_async(state: BusinessGateSubgraphState, *, settings=Non
                     record['accepted'] = True
                     message, used_fallback = generation.message, False
                     break
+        except MLLMProviderNotReadyError:
+            raise
         except Exception as exc:
             # 回复属于已拒绝任务的展示兜底边界；任何生成故障均不能恢复准入。
             # CancelledError 是 BaseException，仍由调用方取消并清理，不在此吞掉。
@@ -167,7 +171,7 @@ def _relevance_feedback(node, result):
         '文件业务相关性': {
             'related': '本轮上传的文件中包含业务相关材料。',
             'uncertain': '根据文件名称与摘要，暂时无法确认本轮文件的业务属性；不能据此认定文件与业务无关。',
-            'unrelated': '根据文件名称与摘要，本轮文件均未体现与可处理业务范围的联系。',
+            'unrelated': '根据文件名称与摘要，本轮文件整体属于业务范围之外，或包含独立的非业务实质内容；具体问题以已提供的文件摘要为准，不代表所有部分都无关。',
             'failed': '本轮文件的业务相关性检查未能全部完成，尚未取得有效的整体判断；不代表文件内容存在问题。',
         },
         '文字业务相关性': {
@@ -210,12 +214,14 @@ async def generate_file_summary(file, *, settings: MLLMSettings,
     audit = []
     failure = '文件摘要多次返回无效结果，暂时无法继续处理，请稍后重试。'
     try:
+        settings = settings.for_business_gate()
         async with client_factory(settings) as client:
             for attempt in range(1, max_attempts + 1):
                 response = await client.create_json_chat_completion(
                     messages=messages, json_schema=FileSummaryGeneration.model_json_schema(),
                     schema_name='file_summary',
-                    max_completion_tokens=min(2048, settings.generation.max_completion_tokens),
+                    enable_thinking=True,
+                    max_completion_tokens=settings.generation.max_completion_tokens,
                 )
                 record = {'attempt': attempt, 'prompt_version': FILE_SUMMARY_PROMPT_VERSION,
                           'response': response.raw_response, 'accepted': False,
@@ -240,6 +246,9 @@ async def generate_file_summary(file, *, settings: MLLMSettings,
                 record.update(accepted=True, message_count_after_cleanup=len(messages))
                 return FileSummaryResult(file_index=file.file_index, file_name=file.file_name,
                     status='completed', generation=generation, audit=tuple(audit))
+    except MLLMProviderNotReadyError:
+        # 服务入口故障直接交给会话层，不能转换为业务判断或再次请求反馈模型。
+        raise
     except (MLLMRequestError, MLLMUnavailableError) as exc:
         audit.append({'error_type': type(exc).__name__, 'accepted': False})
         failure = '模型服务暂时无法生成文件摘要，请稍后重试。'
@@ -335,6 +344,8 @@ def initialize_business_gate(
                 'user_hints': ('文件摘要未能完整生成，暂时无法继续处理，请稍后重试。',)}
     # 始终重新生成状态，不沿用调用方传入的结论，避免占位节点被误用为放行节点。
     return {"status": "not_implemented", "file_business_relevance": "skipped",
+            "file_topic_conflict": "skipped", "file_topic_conflict_results": (),
+            "file_topic_conflict_feedback": None,
             "text_business_relevance": "skipped", "file_text_relevance": "skipped",
             "file_text_relevance_result": None,
             "context_relevance": "skipped", "context_relevance_result": None,
@@ -353,9 +364,22 @@ def route_after_file_readability(state: BusinessGateSubgraphState) -> str:
     return 'summarize' if state.get('rendered_files') else 'continue'
 
 
+def _relevance_files(state):
+    """合同快照仅在相关性阶段转为轻量文件输入，不混入上传附件摘要及准入结果。"""
+    from app.schema.communication import ContractReference
+    files = list(state.get('file_summaries', ()))
+    offset = len(files)
+    for index, raw in enumerate(state.get('contracts', ())):
+        item = ContractReference.model_validate(raw)
+        files.append(FileSummary(file_index=offset + index,
+            original_file_name=f'引用合同：{item.file_name}', display_name=item.file_name,
+            summary=item.summary or '该合同尚未保存摘要，仅可根据文件名判断，不推测正文。'))
+    return tuple(files)
+
+
 def _applicable_relevance(state: BusinessGateSubgraphState) -> dict[str, bool]:
     """路由与聚合复用同一适用条件，避免双方对缺失维度的理解不一致。"""
-    has_files = bool(state.get('file_summaries'))
+    has_files = bool(_relevance_files(state))
     has_text = bool((state.get('text') or '').strip())
     has_context = bool(state.get('context'))
     # 有文字时即使历史窗口为空，也需识别先前文件操作意图；仅文件仍需历史比较对象。
@@ -389,16 +413,19 @@ async def inspect_file_business_relevance(file: FileSummary, *, settings: MLLMSe
 async def _inspect_relevance_json(*, identity, settings, max_attempts, client_factory,
         messages, generation_type, result_type, schema_name, prompt_version, validate, error_type, build_feedback):
     """纯文字 JSON 判断共用协议恢复；各调用独占消息、反馈边界与审计。"""
+    # 思考与最终 JSON 共用输出预算，不再用旧的 1K 上限裁切。
     if type(max_attempts) is not int or not 1 <= max_attempts <= 3:
         raise ValueError('文件相关性判断允许 1 至 3 次尝试')
     stable_length, audit = len(messages), []
     try:
+        settings = settings.for_business_gate()
         async with client_factory(settings) as client:
             for attempt in range(1, max_attempts + 1):
                 response = await client.create_json_chat_completion(
                     messages=messages, json_schema=generation_type.model_json_schema(),
                     schema_name=schema_name,
-                    max_completion_tokens=min(1024, settings.generation.max_completion_tokens))
+                    enable_thinking=True,
+                    max_completion_tokens=settings.generation.max_completion_tokens)
                 record = {'attempt': attempt, 'prompt_version': prompt_version,
                           'response': response.raw_response, 'accepted': False, 'message_count': len(messages)}
                 audit.append(record)
@@ -421,6 +448,9 @@ async def _inspect_relevance_json(*, identity, settings, max_attempts, client_fa
                 record.update(accepted=True, message_count_after_cleanup=len(messages))
                 return result_type(**identity, status='completed', result=generation.result,
                     reasoning=generation.reasoning, audit=tuple(audit))
+    except MLLMProviderNotReadyError:
+        # 服务入口故障直接交给会话层，不能转换为业务判断或再次请求反馈模型。
+        raise
     except (MLLMRequestError, MLLMUnavailableError) as exc:
         audit.append({'error_type': type(exc).__name__, 'accepted': False})
     finally:
@@ -456,7 +486,7 @@ async def check_file_business_relevance_async(state: FileRelevanceInput, *,
     if type(max_attempts) is not int or not 1 <= max_attempts <= 3:
         raise ValueError('max_attempts 必须为 1 至 3 的整数')
     try:
-        files = tuple(sorted((FileSummary.model_validate(f) for f in state.get('file_summaries', ())),
+        files = tuple(sorted((FileSummary.model_validate(f) for f in _relevance_files(state)),
                              key=lambda f: f.file_index))
         if len({f.file_index for f in files}) != len(files):
             raise ValueError('文件下标不能重复')
@@ -508,12 +538,14 @@ async def check_text_business_relevance_async(state: TextRelevanceInput, *,
     settings = settings or get_settings().mllm
     audit = []
     try:
+        settings = settings.for_business_gate()
         async with client_factory(settings) as client:
             for attempt in range(1, max_attempts + 1):
                 response = await client.create_json_chat_completion(
                     messages=messages, json_schema=TextBusinessRelevanceGeneration.model_json_schema(),
                     schema_name='text_business_relevance',
-                    max_completion_tokens=min(1024, settings.generation.max_completion_tokens))
+                    enable_thinking=True,
+                    max_completion_tokens=settings.generation.max_completion_tokens)
                 record = {'attempt': attempt, 'prompt_version': TEXT_BUSINESS_RELEVANCE_PROMPT_VERSION,
                           'response': response.raw_response, 'accepted': False, 'message_count': len(messages)}
                 audit.append(record)
@@ -538,6 +570,9 @@ async def check_text_business_relevance_async(state: TextRelevanceInput, *,
                         'text_business_relevance_feedback': _relevance_feedback('文字业务相关性', generation.result),
                         'text_business_relevance_result': TextBusinessRelevanceResult(
                             status='completed', generation=generation, audit=tuple(audit))}
+    except MLLMProviderNotReadyError:
+        # 服务入口故障直接交给会话层，不能转换为业务判断或再次请求反馈模型。
+        raise
     except (MLLMRequestError, MLLMUnavailableError) as exc:
         audit.append({'error_type': type(exc).__name__, 'accepted': False})
     finally:
@@ -567,7 +602,7 @@ async def check_file_text_relevance_async(state: FileTextRelevanceInput, *,
     try:
         if not isinstance(text, str):
             raise ValueError('用户文字必须是字符串')
-        inputs = state.get('file_summaries', ())
+        inputs = _relevance_files(state)
         if isinstance(inputs, (tuple, list)) and not inputs:
             return empty
         files = prepare_file_text_summaries(inputs)
@@ -602,7 +637,7 @@ async def check_context_relevance_async(state: ContextRelevanceInput, *,
         raise ValueError('上下文相关性判断允许 1 至 3 次尝试')
     history = state.get('context', ())
     text = state.get('text')
-    files = state.get('file_summaries', ())
+    files = _relevance_files(state)
     has_text = isinstance(text, str) and bool(text.strip())
     if not has_text and not (history and files):
         return {'context_relevance': 'skipped', 'context_relevance_result': None, 'context_relevance_basis': None,
@@ -619,12 +654,14 @@ async def check_context_relevance_async(state: ContextRelevanceInput, *,
     settings = settings or get_settings().mllm
     audit = []
     try:
+        settings = settings.for_business_gate()
         async with client_factory(settings) as client:
             for attempt in range(1, max_attempts + 1):
                 response = await client.create_json_chat_completion(
                     messages=messages, json_schema=ContextRelevanceGeneration.model_json_schema(),
                     schema_name='context_relevance',
-                    max_completion_tokens=min(1200, settings.generation.max_completion_tokens))
+                    enable_thinking=True,
+                    max_completion_tokens=settings.generation.max_completion_tokens)
                 record = {'attempt': attempt, 'prompt_version': CONTEXT_RELEVANCE_PROMPT_VERSION,
                           'example_ids': tuple(example.example_id for example in examples),
                           'response': response.raw_response, 'accepted': False, 'message_count': len(messages)}
@@ -658,6 +695,9 @@ async def check_context_relevance_async(state: ContextRelevanceInput, *,
                             }[generation.basis]),
                         'context_relevance_result': ContextRelevanceResult(
                             status='completed', generation=generation, audit=tuple(audit))}
+    except MLLMProviderNotReadyError:
+        # 服务入口故障直接交给会话层，不能转换为业务判断或再次请求反馈模型。
+        raise
     except (MLLMRequestError, MLLMUnavailableError) as exc:
         audit.append({'error_type': type(exc).__name__, 'accepted': False})
     finally:

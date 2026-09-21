@@ -16,5 +16,30 @@ properties:
     aliases: []
     type: string
     required: true
+    constraints:
+      enum:
+      - value: CNY
+        label: 人民币
+      - value: USD
+        label: 美元
+      - value: EUR
+        label: 欧元
+      - value: GBP
+        label: 英镑
+      - value: JPY
+        label: 日元
+      - value: HKD
+        label: 港元
+      - value: AUD
+        label: 澳元
+      - value: CAD
+        label: 加元
+      - value: CHF
+        label: 瑞士法郎
+      - value: SGD
+        label: 新加坡元
+      - value: KRW
+        label: 韩元
+    extraction_rule: 将合同总金额的结算币种转换为枚举代码。人民币、RMB 转为 CNY；美元、美金、US dollar 转为 USD；其他币种按明确名称转换。裸 $ 或 ¥ 有歧义时需结合明确币种说明，不得猜测；不在枚举内或无法确定时不提交该对象。
     meaning: 合同总金额使用的法定货币。
     excludes: 不包括金额数值、汇率、税率或参考换算币种。
