@@ -61,7 +61,6 @@ class MLLMSettings(BaseModel):
     progress_reminder_interval_seconds: float = Field(default=60, ge=0, allow_inf_nan=False, description='主模型中途反馈提醒间隔秒数；0关闭。成功emit_progress后重计，未响应提醒时每轮重注入。')
     page_display_rounds: int = Field(default=5, ge=1, description='临时页面保留的完整模型生成轮数；从首次展示开始计数，落盘仅保存隐藏占位。')
     reasoning_window_rounds: int = Field(default=3, ge=0, description='独立思考 FIFO 的保留轮数，0 表示不回注。')
-    reasoning_window_max_tokens: int = Field(default=16384, ge=0, description='思考 FIFO 的 token 上限，按最早完整条目驱逐，0 表示不保留。')
     provider: str = "vllm"
     base_url: str = "http://127.0.0.1:8000/v1"
     api_key: str | None = None
@@ -185,6 +184,27 @@ class MLLMSettings(BaseModel):
         )
 
 
+class BochaSettings(BaseModel):
+    """博查普搜连接参数；密钥不出现在配置日志中。"""
+    model_config = ConfigDict(frozen=True)
+    api_key: SecretStr = SecretStr('')
+    base_url: str = 'https://api.bochaai.com'
+    timeout_seconds: float = Field(default=45, gt=0, le=300, allow_inf_nan=False)
+    trust_env: bool = False
+    web_search_count: int = Field(default=10, ge=1, le=50)
+
+
+    @field_validator('base_url')
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        from urllib.parse import urlsplit
+        parts = urlsplit(value)
+        if (parts.scheme != 'https' or not parts.hostname or parts.username or parts.password
+                or parts.query or parts.fragment or parts.path not in ('', '/')):
+            raise ValueError('博查地址必须为不含凭据、路径和查询参数的 HTTPS 服务地址')
+        return value.rstrip('/')
+
+
 class DeepSeekSettings(BaseModel):
     """外部专家 Responses 连接及生成配置；由宿主显式创建客户端。"""
 
@@ -265,8 +285,6 @@ class Settings(BaseModel):
     communication_web_page_chars: int = Field(default=3000, gt=0, description='网页精炼内容每页最大字符数。')
     communication_web_search_cache_max_queries: int = Field(default=10, gt=0, description='每个会话驻留网页搜索结果集上限。')
     communication_web_search_page_size: int = Field(default=5, gt=0, description='网页搜索每页候选数量。')
-    communication_web_search_max_results: int = Field(default=20, gt=0, description='单次网页搜索最多获取的候选数量。')
-    communication_web_search_timeout_seconds: int = Field(default=10, gt=0, description='DDGS底层请求超时秒数。')
     communication_web_search_max_concurrent_requests: int = Field(default=2, gt=0, description='网页搜索并发调用上限。')
     communication_contract_search_page_size: int = Field(default=5, gt=0, description='合同检索结果每页合同数。')
     communication_contract_retrieval_cache_max_queries: int = Field(default=10, ge=1, description='每会话最终合同候选结果集独立LRU容量。')
@@ -323,6 +341,7 @@ class Settings(BaseModel):
     elasticsearch_number_of_replicas: int = Field(default=0, ge=0)
     mllm: MLLMSettings = MLLMSettings()
     embedding: EmbeddingSettings = EmbeddingSettings()
+    bocha: BochaSettings = BochaSettings()
     deepseek: DeepSeekSettings = DeepSeekSettings()
     pdf_deduplication: PDFDeduplicationSettings = PDFDeduplicationSettings()
 
@@ -426,8 +445,6 @@ def get_settings() -> Settings:
         communication_web_page_chars=_env("COMMUNICATION_WEB_PAGE_CHARS", "3000"),
         communication_web_search_cache_max_queries=_env("COMMUNICATION_WEB_SEARCH_CACHE_MAX_QUERIES", "10"),
         communication_web_search_page_size=_env("COMMUNICATION_WEB_SEARCH_PAGE_SIZE", "5"),
-        communication_web_search_max_results=_env("COMMUNICATION_WEB_SEARCH_MAX_RESULTS", "20"),
-        communication_web_search_timeout_seconds=_env("COMMUNICATION_WEB_SEARCH_TIMEOUT_SECONDS", "10"),
         communication_web_search_max_concurrent_requests=_env("COMMUNICATION_WEB_SEARCH_MAX_CONCURRENT_REQUESTS", "2"),
         communication_contract_search_page_size=_env("COMMUNICATION_CONTRACT_SEARCH_PAGE_SIZE", "5"),
         communication_contract_retrieval_cache_max_queries=int(_env("COMMUNICATION_CONTRACT_RETRIEVAL_CACHE_MAX_QUERIES", "10")),
@@ -512,6 +529,13 @@ def get_settings() -> Settings:
         elasticsearch_vector_dimensions=_env("ELASTICSEARCH_VECTOR_DIMENSIONS", "4096"),
         elasticsearch_number_of_shards=_env("ELASTICSEARCH_NUMBER_OF_SHARDS", "1"),
         elasticsearch_number_of_replicas=_env("ELASTICSEARCH_NUMBER_OF_REPLICAS", "0"),
+        bocha=BochaSettings(
+            api_key=_env("BOCHA_API_KEY", ""),
+            base_url=_env("BOCHA_BASE_URL", "https://api.bochaai.com"),
+            timeout_seconds=_env("BOCHA_TIMEOUT_SECONDS", "45"),
+            trust_env=_env("BOCHA_TRUST_ENV", "false"),
+            web_search_count=_env("BOCHA_WEB_SEARCH_COUNT", "10"),
+        ),
         deepseek=DeepSeekSettings(
             base_url=_env("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
             api_key=_optional_env("DEEPSEEK_API_KEY"),
@@ -525,7 +549,6 @@ def get_settings() -> Settings:
             progress_reminder_interval_seconds=_env("VLLM_MLLM_PROGRESS_REMINDER_INTERVAL_SECONDS", "60"),
             page_display_rounds=_env("VLLM_MLLM_PAGE_DISPLAY_ROUNDS", "5"),
             reasoning_window_rounds=_env("VLLM_MLLM_REASONING_WINDOW_ROUNDS", "3"),
-            reasoning_window_max_tokens=_env("VLLM_MLLM_REASONING_WINDOW_MAX_TOKENS", "16384"),
             provider=_env("VLLM_MLLM_PROVIDER", "vllm"),
             base_url=_env("VLLM_MLLM_BASE_URL", "http://127.0.0.1:8000/v1"),
             api_key=_optional_env("VLLM_MLLM_API_KEY"),

@@ -54,11 +54,13 @@ context = assemble_agent_core_context(
 )
 ```
 
-返回 `AgentCoreContext(workspace, summary, tasks, text, messages, fifo)`。text 只包含“工作区 → 最新摘要（若有）→ 已结束任务块 → 当前任务用户输入”，不包含当前执行轨迹。当前输入使用 `render_task_input`，不附加执行轨迹或最终输出标题。
+返回 `AgentCoreContext(workspace, summary, tasks, text, messages, fifo)`。正式请求只使用 messages；text 是该序列的 JSON 诊断视图，不再整体注入 user。
 
-**messages 是动态上下文的实际消息序列。** 第一条 user 消息携带 text；随后保留当前任务真实 assistant.tool_calls 与 tool.tool_call_id 消息，系统提示继续以独立 user 消息出现。程序持有的 source 留在原记录和 FIFO 中，传给模型的消息去掉该非协议字段。不能只发送 text，否则会遗漏当前执行轨迹。
+消息顺序为：最新摘要（若有，独立 user）→ 各历史任务的原生消息 → 最新工作区（独立 user）→ 当前任务用户输入 → 当前任务原生交互。任务首条 user 保留标识、时间、附件与引用合同的局部格式化；不再将整份任务渲染成文本。工作区每轮刷新，紧邻当前输入之前。
 
-fifo 为管理子图提供逐任务快照：已结束任务同时具有派生 rendered_content 和用于摘要过滤的来源消息；当前任务仅持有用户输入及原生消息，不得携带 rendered_content。派生对象不另行写入数据库。
+每个历史任务保留真实 assistant.tool_calls 与 tool.tool_call_id 配对，包括 emit_progress 和 finish_task，不重复追加公开输出正文。终态清除来源明确的操作提示，追加程序生成的任务结束状态；取消、替代和失败不编造结论。旧记录若没有 agent_messages，只逐条提供已有的展示说明及实际输出，不猜测原始调用参数。历史与当前思考均按 task_id/call_id 回注原生 assistant 字段。
+
+内部 source 标记仅供类型管理与摘要过滤，发送前移除。临时页面继续紧随对应工具回执注入，历史页面只保留折叠回执。fifo 使用同一任务消息列表，工作区和累计摘要不混入任务；不再生成 rendered_content。摘要输入过滤系统来源和思考字段，保留真实角色及调用配对。
 
 摘要仅接受 `fifo-topic-summary-v2` 的完整 `FIFOTopicSummary`，或 None。存储侧新增 `append_topic_summary(summary=..., expected_sequence=...)`，复用原 summary 记录及尾部乐观检查；此装配入口不读取旧 text 摘要，也不将其虚构为主题。旧 `append_summary(text=...)` 接口仍用于既有独立流程，本次不迁移其数据。主循环压缩使用 insert_agent_summary 在驻留历史中按实际前缀插入；后续备份原子保存新摘要与排序，不使用尾部追加接口。
 
@@ -80,7 +82,7 @@ fifo 为管理子图提供逐任务快照：已结束任务同时具有派生 re
 
 ```python
 async def runner(service, conversation_id, turn_id, owner, *, context):
-    # context.messages 包含历史文本与当前原生调用；尚需组合完整 system 和 tools。
+    # context.messages 包含历史与当前原生交互；尚需组合完整 system 和 tools。
     ...
 
 service = CommunicationWorkflowService(agent_core_runner=runner)
@@ -94,7 +96,7 @@ context = await service.get_agent_core_context(conversation_id, turn_id, owner=o
 
 该方法重新读取同一份驻留数据并渲染。因此工作区工具完成版本提交后，下次读取立即使用最新工作区；旧 context 只是旧请求的快照，不会被后台隐式修改。主循环在工作区提交与原生交互保存之后、下一次模型请求之前重新读取，不复用旧 messages。
 
-FIFO 计数版本为 fifo-task-mixed-v2：有 rendered_content 的已结束任务按实际历史块文本计数，当前任务按带原生消息的 JSON 进行接口记账，仍包括系统提示。后者不是 vLLM 聊天模板展开后的精确计数；角色、工具定义和特殊 token 由主循环另外通过聊天分词接口进行整请求校验。摘要过滤前移除派生 rendered_content，再按原始来源去除系统提示，避免通过历史块夹带提示。
+FIFO 任务级容量按消息 JSON 进行接口记账，包括本次注入的思考和程序状态。该口径不等于聊天模板展开后的精确计数；主循环通过 /tokenize 对完整 messages、tools 和模板参数另外校验总容量。rendered_content 仅保留为旧子图调用者的兼容字段，Agent Core 不再填充。
 
 装配层只生成动态部分；主循环注入按实际工作区/摘要渲染文本计数的回调，并负责稳定前缀、工具定义和聊天模板的完整请求校验。
 
@@ -115,9 +117,9 @@ context = await service.get_agent_core_context(conversation_id, turn_id, owner=o
 
 每个完整交互批次原子追加到当前任务 payload.agent_messages。相同 ID 和内容重复保存无副作用，不同内容复用 ID 则拒绝。failed/unknown 结果、待执行调用及临时纠错不写入已接受列表，由主循环持有其临时消息和私有审计。该方法不重新执行工具。
 
-任务 completed、cancelled、superseded 或 failed 时，终态投影在提交前调用单任务渲染函数验收完整历史表示，然后冻结同一任务记录。正常最终正文只出现在最终输出区，原生 finish_task 配对不再重复展示；终止、替代或失败无正文时仅展示结束方式。最终消息及原生成功回执须在终态封闭前记录，封闭后拒绝写入。
+任务 completed、cancelled、superseded 或 failed 时，终态投影在提交前校验任务数据契约，然后冻结同一任务记录，不再为校验生成整段渲染文本。模型历史保留 finish_task 的真实调用与回执，不重复追加公开最终正文；旧记录若无 finish_task，则以 assistant 消息保留已有的最终输出。终止、替代或失败无正文时只提供程序终态。最终消息及原生成功回执须在终态封闭前记录，封闭后拒绝写入。
 
-下一轮装配按终态将该记录放入历史任务区，不再把它的原生消息追加到模型消息列表；新的当前任务建立自己的原生轨迹。数据库仍只有同一条任务记录，保存原始已接受消息与用户展示投影；渲染文本不重复落库，也不额外追加一条“历史任务”记录。后续装配允许重新渲染，避免维护第二份缓存状态。
+下一轮装配按终态将该记录放入历史任务区，继续按原生消息序列展开；新的当前任务建立自己的原生轨迹。数据库仍只有同一条任务记录，保存原始已接受消息与用户展示投影；渲染文本不重复落库，也不额外追加一条“历史任务”记录。后续装配允许重新渲染，避免维护第二份缓存状态。
 
 ---
 
@@ -125,7 +127,7 @@ context = await service.get_agent_core_context(conversation_id, turn_id, owner=o
 
 `tests/test_agent_core_context.py` 使用临时 SQLite 和模拟门禁/执行入口，覆盖最新摘要边界、refresh 不回填、当前请求、终止状态、未准入历史过滤、附件元数据、工作区更新后的读取、用户隔离、半成品/错误过滤、结构化摘要存储及非法数据拒绝。相关工作流、执行器生命周期和三类渲染测试同时回归；不调用真实模型，也不修改业务数据库。
 
-原生轨迹与终态转换另由 `tests/test_agent_native_context.py` 验证：正常完成、用户终止、方向调整、配对和参数保真、回执防重、终态写入拒绝、当前原生消息与历史块不重复、混合 FIFO 计数及系统提示过滤。
+原生轨迹与终态转换另由 `tests/test_agent_native_context.py` 验证：正常完成、用户终止、方向调整、配对和参数保真、回执防重、终态写入拒绝、历史与当前原生消息不重复、FIFO 消息计数及系统提示过滤。
 
 
 ---
@@ -137,3 +139,9 @@ context = await service.get_agent_core_context(conversation_id, turn_id, owner=o
 活动任务仍保留提示并计入 FIFO 容量；已结束任务的驻留 payload、后台备份和重新加载结果均不携带这些提示。历史渲染额外过滤旧记录中的操作提示，不修改旧数据库。工具结果引用同名标签的普通文本保持原样。执行错误继续只进入临时纠错及私有审计；清理有效任务轨迹不删除私有审计。
 
 `tests/test_agent_native_context.py` 覆盖四种结束方式、备份/重新加载、活动期保留、非法配对不能靠清理通过，以及终态验收失败时的原子性。
+
+---
+
+## 原生历史消息实测
+
+[新旧布局对照实验](../../../../experiment/agent-core-native-messages/README.md)使用虚构短/长历史、真实主循环与 vLLM，对比工具协议遵循、工作区写入、事实提取及模型请求耗时。2026-09-30 的四组运行均正常结束；原生布局本地模板验证恢复了角色及工具标签，但单次样本不能证明稳定提速，长样本还存在额外事实推算，详见[实验分析](../../../../experiment/agent-core-native-messages/output/20260930T022442.243129Z/analysis.md)。

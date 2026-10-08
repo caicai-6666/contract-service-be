@@ -2,7 +2,9 @@
 
 > **状态：** `search_web`、`view_web_search_results`、会话 LRU 结果池及主循环接入已实现。首次打开网页的 `web_page` 子图已实现 HTTP 拉取、Trafilatura 正文提取及模型精炼；`open_web_page`、会话正文缓存、分页和主循环接入均已实现。
 
-本模块让主助手先搜索候选网页，再自行选择来源读取正文。搜索摘要只能帮助选择来源，不能等同于已经读取网页。实验入口见[网页搜索与提取报告](../../../../experiment/web-search-extraction/REPORT.md)，工具接入遵循[主助手工具执行](tool-execution.md)，展示与资源生命周期遵循[页面内容折叠与资源建模](page-content-management.md)。
+`search_web` 通过工具文件中的 WebSearchService 直接异步调用博查 Web Search，不使用搜索子图或模型意图路由。企业 Agent Search 已按官方下架信息移除。
+
+本模块让主助手先搜索候选网页，再自行选择来源读取正文。搜索摘要只能帮助选择来源，不能等同于已经读取网页。历史实验见[网页搜索与提取归档报告](../../../../experiment/web-search-extraction/REPORT.md)，工具接入遵循[主助手工具执行](tool-execution.md)，展示与资源生命周期遵循[页面内容折叠与资源建模](page-content-management.md)。
 
 ---
 
@@ -10,13 +12,13 @@
 
 | 工具 | 参数 | 职责与成功返回 |
 | --- | --- | --- |
-| `search_web` | `query` | 使用 DDGS 搜索，建立候选结果集，仅返回 `result_id`、`count`，不自动展示第一页。 |
+| `search_web` | `query` | 直接调用博查搜索服务，建立网页结果集，有结果时仅返回 `result_id`、`count`；无结果给出统一提示，不自动展示第一页。 |
 | `view_web_search_results` | `result_id`、可选 `page` | 查看搜索结果集指定页；省略页码时查看下一页。 |
 | `open_web_page` | `source_id`、`focus`（首次必填）、可选 `page` | 首次拉取、提取并缓存网页正文；再次调用读取缓存并翻页。 |
 
 只暴露这三个工具。网页正文的首次打开和后续翻页由同一个 `open_web_page` 承担。
 
-`query` 使用简洁搜索关键词或短语，组合检索对象、关键条件以及必要的时间、地域，避免寒暄、冗长背景和输出格式指令。例如“上海 企业采购合同 电子签章 效力”。`result_id` 必须使用工具返回的完整结果集标识。每条候选由程序分配稳定的 `source_id`，同时展示标题、URL 和明确标注的搜索摘要；`source_id` 不使用随翻页变化的行号，打开时必须原样传入。页码从 1 开始。
+`query` 使用完整简洁的自然语言需求，组合检索对象、关键条件以及必要的时间、地域，避免寒暄、冗长背景和输出格式指令。例如“上海 企业采购合同 电子签章 效力”。`result_id` 必须使用工具返回的完整结果集标识。网页候选由程序分配稳定的 `source_id`，展示标题、URL 和搜索摘要；`source_id` 不使用随翻页变化的行号，打开时必须原样传入。页码从 1 开始。
 
 搜索成功但没有结果时，返回“未找到符合条件的网页”等提示，不生成结果集 ID。服务异常、网络失败或超时应反馈对应错误，不伪装成零结果。
 
@@ -93,7 +95,7 @@ HTTP 成功、提取文本非空，都不代表获取了有效正文。页面带
 
 ## 依赖与后续验证
 
-已安装依赖见[后端应用依赖](../../../capability/application/backend-application.md)。DDGS 搜索和 Trafilatura 提取为同步调用，接入异步主循环时应采用受限线程执行；HTTP 拉取可使用异步客户端。需设置底层请求超时和并发上限，不能把取消等待误认为已经停止同步线程。
+已安装依赖见[后端应用依赖](../../../capability/application/backend-application.md)。博查 HTTP 请求异步执行，共享搜索并发上限；取消会传递至 HTTP 请求并释放额度。Trafilatura 提取继续在线程中执行。
 
 验证范围及后续验收边界：
 
@@ -112,19 +114,24 @@ HTTP 成功、提取文本非空，都不代表获取了有效正文。页面带
 
 工具、池、渲染器及参数模型位于 `app/agent/contract_communication/agent_core/tool/web_search.py`。`CommunicationFileTools` 为驻留会话创建独立池，复用应用内搜索并发额度；会话驱逐时关闭池并清除来源映射。页引用由池签发并校验，正文打开工具使用池的 `source(source_id)` 解析来源。
 
-列表按 DDGS 返回顺序去重保存，仅去掉 URL 片段进行去重，保留查询参数。该顺序是搜索引擎相关性顺序，不输出未计算的相似度分数，也未引入向量或模型重排。网络或供应商异常返回失败，不当作空结果。
+搜索服务条目按供应商顺序原样缓存，不重新排名。仅缓存网页资料；open_web_page 对缺少链接的来源返回 source_not_openable。快照及私有审计保留 status/hint，模型可见反馈与分页不展示内部诊断。每会话最多保留与结果池容量相同数量的私有搜索审计，会话释放时清除。
 
 | 环境变量 | 默认值 | 用途 |
 | --- | --- | --- |
 | `COMMUNICATION_WEB_SEARCH_CACHE_MAX_QUERIES` | 10 | 每个会话最多驻留结果集数 |
 | `COMMUNICATION_WEB_SEARCH_PAGE_SIZE` | 5 | 每页候选条数 |
-| `COMMUNICATION_WEB_SEARCH_MAX_RESULTS` | 20 | 单次搜索候选上限 |
-| `COMMUNICATION_WEB_SEARCH_TIMEOUT_SECONDS` | 10 | DDGS 底层请求超时秒数，并非整个聚合搜索的硬截止时间 |
 | `COMMUNICATION_WEB_SEARCH_MAX_CONCURRENT_REQUESTS` | 2 | 应用装配的搜索服务并发上限 |
 
-以上配置均为正整数。搜索不创建持久化记录，进程重启后结果集失效。同步工作线程在取消请求后可能继续到其底层超时；线程完成前仍占用并发额度，完成后也不能复活已释放的会话池。
+以上配置均为正整数。搜索不创建持久化记录，进程重启后结果集失效。搜索完成后重新检查会话授权，迟到结果不能复活已释放的会话池。博查条数与超时使用 BOCHA_WEB_SEARCH_COUNT、BOCHA_TIMEOUT_SECONDS。
 
 离线验证：`python -m unittest discover -s tests -p test_web_search.py -q`。
+
+
+
+博查候选服务的独立验证位于 [博查搜索实验](../../../../experiment/bocha-search/README.md)。`.env` / `.env.example` 增加 `BOCHA_API_KEY`、`BOCHA_BASE_URL`、`BOCHA_TIMEOUT_SECONDS`、`BOCHA_TRUST_ENV`、`BOCHA_EXPERIMENT_MAX_RESULTS`；其中 BOCHA_EXPERIMENT_MAX_RESULTS 仅实验使用，其余现已由生产搜索复用；复用 httpx，无新增 SDK。默认启用搜索摘要、每次 5 条，不下载目标网页；保留原始请求/响应、耗时、片段和摘要，并区分 HTTP 错误、业务错误与合法零结果。网站名称仅作为查询意图，不能当成硬过滤。2026-09-24 首轮 9 个真实请求均成功，但企业人员查询存在主体错配、负例返回其他企业，该历史实验本身不代表生产质量验收；具体证据与边界见实验 output 各运行目录的 analysis.md。
+
+
+AI Search 实验入口为 `experiment/bocha-search/ai_run.py`，复用博查实验密钥，按现行文档请求 `https://api.bocha.cn/v1/ai-search`。2026-09-24 的 8 次非流式请求均成功返回来源，天气触发 `weather_china_v2`，但两次 `answer=true` 的答案字符串均为空。实际网页参考源可在一个消息中包含 `value` 列表，非文本 `content` 需要二次 JSON 解码；卡片可能以 Markdown 摘要承载字段值，不假设字段平铺。结果、来源质量及同域名 Web Search 对照分别记录于实验 output，尚未接入生产。
 
 ---
 
@@ -206,3 +213,39 @@ Trafilatura 在线程中输出 Markdown，保留链接和表格、排除评论�
 
 
 `search_web` 的动态状态直接来自已校验的 `query`：按空白、逗号、顿号和分隔符拆分展示为 `关键词 | 关键词`，不增加模型参数，不改变实际搜索词。状态总长遵守2000字符限制，超出时省略；仍通过 `online-search` 的 `task.progress.message` 发布，执行结束恢复“正在思考”。
+
+
+---
+
+## 搜索工具结果契约
+
+工具反馈隐藏供应商失败细节。有结果时，统一为正常工具结果，仅包含 result_id/count；不展示 status、hint、供应商错误码。全部成功但零条时，返回 count=0 和“未找到符合条件的结果，请调整搜索需求。”，不生成 ID。请求失败时（error），返回失败工具反馈，统一 code=search_failed、message=“本次搜索未取得可用结果，请稍后重试或调整搜索需求。”，不将故障解释为没有匹配信息。
+
+外层分页展示网页标题、来源标识、链接和摘要，保留摘要内容。结果按供应商顺序显示连续序号，不展示内部诊断。私有审计仍保留原始请求记录及 search_outcome 中的完整状态、错误码、hint 和数量，便于排障。
+
+搜索不自动展示第一页，view 工具继续使用 foldable 引用与分页规则。会话失效、非法页码等与用户操作有关的错误仍保留精确反馈。
+
+当前直连搜索的本地验证共 14 项通过，包括注册工具到服务请求的隔离 HTTP 联调、成功和零条结果、失败反馈、分页/LRU、取消与会话释放。搜索过程中不再有模型路由、企业分支或 partial 状态。
+
+
+---
+
+## 博查直接调用与配置
+
+搜索所需的 SearchEntry、WebSearchResult、请求、解析和失败映射统一定义在 `tool/web_search.py`。WebSearchService.search 获取并发额度后直接请求并返回 WebSearchResult；已删除原 subgraph/web_search 包、StateGraph 调度、状态字典和尾节点。网页正文精炼的 web_page 子图不受影响。
+
+请求：`POST BOCHA_BASE_URL/v1/web-search`，固定 summary=true、freshness=noLimit，query 直接取已校验的工具输入，count 使用配置。
+
+| 环境变量 | 默认值 | 用途 |
+| --- | --- | --- |
+| BOCHA_API_KEY | 空 | Bearer 密钥；缺失时不发请求 |
+| BOCHA_BASE_URL | https://api.bochaai.com | HTTPS 服务根地址 |
+| BOCHA_TIMEOUT_SECONDS | 45 | 整个请求截止时间，(0,300] 秒 |
+| BOCHA_TRUST_ENV | false | 是否使用环境代理 |
+| BOCHA_WEB_SEARCH_COUNT | 10 | 搜索条数，1～50 |
+
+使用 Settings.bocha 和 httpx，不新增依赖。兼容直接搜索对象与 code/data 信封，解析 webPages.value；摘要优先使用非空 summary，再回退 snippet。标题、HTTP(S) URL 或字段类型错误时返回内部格式错误，明确空数组则为成功零条。不自动重试、不跟随重定向，不改排。真实 HTTP 失败和业务状态失败统一映射到内部错误码，工具层对模型返回简洁失败提示；细节留在私有审计。
+
+`test_web_search_service.py` 覆盖请求与顺序、摘要回退、空结果、缺少密钥、鉴权/权限/限流/供应商错误、非法响应、网络异常及取消。`test_web_search.py` 覆盖注册调用、缓存、分页、会话释放及取消后的额度释放。历史子图实验保留归档，不能作为当前结构的运行入口。
+
+扩展主循环回归：连同 test_communication_file_tools 共 47 项通过，其中搜索→分页→正文注入与任务落盘折叠使用当前服务契约模拟；不发起真实搜索请求。

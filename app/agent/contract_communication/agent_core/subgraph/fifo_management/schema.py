@@ -8,8 +8,8 @@ from app.schema.communication_workspace import WorkspaceObject, WorkspaceText
 class FIFOTask(WorkspaceObject):
     task_id: WorkspaceText = Field(description='程序分配的任务标识，FIFO 内唯一并按时间排序。')
     status: Literal['completed', 'active', 'interrupted', 'failed'] = Field(description='任务状态；当前活动任务不可驱逐，压缩末项必须 completed。')
-    messages: list[dict] = Field(description='已做来源封装的交互；当前任务保留原生工具协议，历史用于摘要输入，包含系统提示但不包含私有审计。')
-    rendered_content: WorkspaceText | None = Field(default=None, description='已封闭任务的完整展示文本，用于实际历史块计数；当前任务不得设置。')
+    messages: list[dict] = Field(description='已做来源封装的任务交互；主循环历史与当前均保留原生工具协议，包含本次注入的思考与程序提示，不包含私有审计。')
+    rendered_content: WorkspaceText | None = Field(default=None, description='兼容旧子图调用者的已封闭任务展示文本；主循环不再填充，统一按 messages 计数，当前任务不得设置。')
 
     @model_validator(mode='after')
     def validate_rendering(self):

@@ -888,7 +888,7 @@ class ConversationHistoryService:
             self._owners.clear()
 
 
-    async def save_agent_reasoning_locked(self, conversation_id, turn_id, *, call_id, fields, tokens, max_rounds, max_tokens):
+    async def save_agent_reasoning_locked(self, conversation_id, turn_id, *, call_id, fields, tokens, max_rounds):
         """调用者持共享锁；只为已接受的响应追加思考，先落盘再发布内存窗口。"""
         record = self._record(conversation_id, turn_id)
         if record.status != 'processing' or not record.payload.get('agent_core_ready'):
@@ -899,7 +899,7 @@ class ConversationHistoryService:
         resident = self._resident[conversation_id]
         original = resident.reasoning_window
         updated = original.append(task_id=record.record_id, call_id=call_id, fields=fields,
-            tokens=tokens, max_rounds=max_rounds, max_tokens=max_tokens)
+            tokens=tokens, max_rounds=max_rounds)
         if not resident.ephemeral:
             await run_in_threadpool(self._store.save_reasoning_window, conversation_id,
                 secret_key=self._owners[conversation_id], window=updated, expected_position=original.next_position)

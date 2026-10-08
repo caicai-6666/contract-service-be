@@ -6,9 +6,9 @@ import json
 from app.schema.communication import ConversationHistoryRecord
 from app.schema.communication_workspace import WorkspaceSnapshot
 from app.schema.reasoning_window import ReasoningWindow
-from .context_rendering import render_summary_section, render_workspace_section, render_task_section, render_task_input, TaskRenderInput
+from .context_rendering import render_summary_section, render_workspace_section, render_task_input, TaskRenderInput
 from .subgraph.fifo_management.fifo_summary.schema import FIFOTopicSummary
-from .native_messages import validate_native_messages, native_trace_entries
+from .native_messages import validate_native_messages, native_trace_entries, close_native_messages
 from .subgraph.fifo_management.schema import FIFOTask
 
 
@@ -17,7 +17,7 @@ class AgentCoreContext:
     workspace: WorkspaceSnapshot
     summary: dict | None
     tasks: tuple[TaskRenderInput, ...]
-    text: str  # 稳定资料与当前用户输入文本，不包含当前原生工具消息。
+    text: str  # messages 的 JSON 诊断视图；不是给模型的整体渲染文本。
     messages: tuple[dict, ...]  # 动态上下文的实际消息序列；完整 system/tools 仍由主循环装配。
     fifo: tuple[FIFOTask, ...]
 
@@ -117,38 +117,51 @@ def assemble_agent_core_context(*, workspace: WorkspaceSnapshot, summary: dict |
     if summary is not None:
         summary = FIFOTopicSummary.model_validate(summary).model_dump()
     summary_text = render_summary_section(summary)
-    # 历史只占可读文本；当前执行只占原生消息，不并存同一任务的两种表示。
-    history_texts = []
-    for task, record in zip(tasks[:-1], records[:-1], strict=True):
-        thoughts = {entry.call_id: entry for entry in reasoning_window.entries if entry.task_id == task.task_id}
-        final_call = next((m['tool_calls'][0]['id'] for m in record.payload.get('agent_messages', [])
-                           if m.get('role') == 'assistant' and m['tool_calls'][0]['function']['name'] == 'finish_task'), None)
-        history_texts.append(render_task_section(task, reasoning_by_call=thoughts, final_call_id=final_call))
-    current_input = render_task_input(tasks[-1])
-    sections = [render_workspace_section(workspace.payload), summary_text, *history_texts, current_input]
-    text = '\n\n'.join(section for section in sections if section)
-    native = validate_native_messages(records[-1].payload.get('agent_messages', []))
-    injected_native = reasoning_window.inject(native, task_id=tasks[-1].task_id)
-    messages = ({'role': 'user', 'content': text},
-                *({key: value for key, value in message.items() if key != 'source'} for message in injected_native))
+    messages = []
+    if summary_text:
+        messages.append({'role': 'user', 'content': summary_text})
     fifo = []
-    for record, task, rendered in zip(records[:-1], tasks[:-1], history_texts, strict=True):
-        # 摘要输入保留独立的来源消息；计数单独使用模型实际看到的历史块。
-        business_messages = [{'role': 'user', 'content': render_task_input(task.model_copy(update={'final_output': None}))}]
-        for entry in task.execution_trace:
-            content = (json.dumps({'type': entry.kind, 'name': entry.name, 'call_id': entry.call_id,
-                                   'content': entry.content}, ensure_ascii=False)
-                       if entry.kind in {'tool_call', 'tool_result'} else entry.content)
-            business_messages.append({'role': 'user' if entry.kind == 'system_guidence' else 'assistant',
-                                      'content': content,
-                                      **({'source': 'system_guidence'} if entry.kind == 'system_guidence' else {})})
-        if task.final_output.content is not None:
-            business_messages.append({'role': 'assistant', 'content': task.final_output.content})
+    for record, task in zip(records, tasks, strict=True):
+        active = record.turn_id == current_turn_id
+        task_messages = [{'role': 'user', 'content': render_task_input(
+            task.model_copy(update={'final_output': None}))}]
+        if 'agent_messages' in record.payload:
+            # 历史与当前任务使用同一原生契约；历史清除程序提示，但保留真实调用和回执。
+            validate = validate_native_messages if active else close_native_messages
+            native = validate(record.payload['agent_messages'])
+            task_messages.extend(reasoning_window.inject(native, task_id=task.task_id))
+            # 兼容已有工具轨迹、但通过服务接口直接结束的旧任务，保留其真实最终正文。
+            if (not active and task.final_output.content is not None and not any(
+                    call['function']['name'] == 'finish_task'
+                    for message in native for call in message.get('tool_calls', []))):
+                task_messages.append({'role': 'assistant', 'content': task.final_output.content})
+        elif not active:
+            # 旧记录只有展示投影，不能把 input_summary 猜成真实工具参数。
+            # 仅逐条提供明确标注的历史说明，实际输出仍使用 assistant 角色。
+            for entry in task.execution_trace:
+                content = entry.content
+                if entry.kind in {'tool_call', 'tool_result'}:
+                    content = f'旧记录的工具展示摘要（非原始调用）：{entry.name or entry.kind}\n{content}'
+                task_messages.append({'role': 'assistant', 'content': content})
+            if task.final_output.content is not None:
+                task_messages.append({'role': 'assistant', 'content': task.final_output.content})
+        if not active:
+            # 终态是程序记录，不伪造助手结论；摘要按 FIFOTask.status 获知状态。
+            labels = {'completed': '已完成', 'cancelled': '用户终止',
+                      'superseded': '用户调整方向', 'failed': '执行失败'}
+            task_messages.append({'role': 'user', 'source': 'system', 'content':
+                f'任务结束记录：{json.dumps(task.task_id, ensure_ascii=False)}；{labels[record.status]}。这是历史状态，不是新的用户请求。'})
+        else:
+            # 工作区独立注入且紧邻本轮输入，不混入 FIFO 任务或重复计数。
+            messages.append({'role': 'user', 'content': render_workspace_section(workspace.payload)})
+        messages.extend({key: value for key, value in message.items() if key != 'source'}
+                        for message in task_messages)
         fifo.append(FIFOTask(task_id=task.task_id,
-            status={'completed': 'completed', 'cancelled': 'interrupted', 'superseded': 'interrupted', 'failed': 'failed'}[record.status],
-            messages=business_messages, rendered_content=rendered))
-    fifo.append(FIFOTask(task_id=tasks[-1].task_id, status='active',
-                         messages=[{'role': 'user', 'content': current_input}, *injected_native]))
+            status='active' if active else {'completed': 'completed', 'cancelled': 'interrupted',
+                'superseded': 'interrupted', 'failed': 'failed'}[record.status],
+            messages=deepcopy(task_messages)))
+    # text 仅供诊断兼容；正式请求始终使用 messages，禁止将其作为整体 user 注入。
+    text = json.dumps(messages, ensure_ascii=False)
     return AgentCoreContext(workspace=workspace, summary=deepcopy(summary), tasks=tuple(tasks),
                             text=text, messages=tuple(deepcopy(messages)), fifo=tuple(fifo))
 
@@ -161,6 +174,6 @@ def validate_closed_agent_task(record: ConversationHistoryRecord) -> None:
     source = record.payload['input']
     files = [{key: file.get(key) for key in ('file_id', 'file_name', 'display_name', 'summary', 'page_count')}
              for file in source.get('files', []) if file.get('admission') == 'accepted']
-    render_task_section({'task_number': record.sequence, 'task_id': record.record_id, 'created_at': record.created_at,
+    TaskRenderInput.model_validate({'task_number': record.sequence, 'task_id': record.record_id, 'created_at': record.created_at,
                          'user_input': {'content': source.get('text'), 'files': files, 'contracts': source.get('contracts', [])},
                          'execution_trace': entries, 'final_output': ending})

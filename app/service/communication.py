@@ -315,6 +315,9 @@ class CommunicationEventService:
 
         async def iterate() -> AsyncIterator[CommunicationEvent | None]:
             cursor = after_sequence
+            loop = asyncio.get_running_loop()
+            heartbeat_interval = min(self.heartbeat_seconds, self._ttl)
+            heartbeat_deadline = loop.time() + heartbeat_interval
             while True:
                 async with self._condition:
                     # 持有锁完成检查及等待注册，避免回放切换实时订阅时丢失唤醒。
@@ -325,19 +328,24 @@ class CommunicationEventService:
                     batch = tuple(event for event in turn.events if event.sequence > cursor)
                     terminal = turn.snapshot.status in TERMINAL_STATUSES
                     if not batch and not terminal:
-                        try:
-                            await asyncio.wait_for(
-                                self._condition.wait(), timeout=min(self.heartbeat_seconds, self._ttl),
-                            )
+                        # 清理和其他轮次也会唤醒共享条件；仅真实输出重置截止时间，
+                        # 否则频繁的无关通知会使空闲心跳永远等不到超时。
+                        remaining = heartbeat_deadline - loop.time()
+                        if remaining > 0:
+                            try:
+                                await asyncio.wait_for(self._condition.wait(), timeout=remaining)
+                            except TimeoutError:
+                                pass
+                            # 超时也重新检查事件、终态和 TTL，避免使用等待前的状态。
                             continue
-                        except TimeoutError:
-                            pass
                 for event in batch:
                     cursor = event.sequence
+                    heartbeat_deadline = loop.time() + heartbeat_interval
                     yield event
                 if terminal:
                     return
                 if not batch:
+                    heartbeat_deadline = loop.time() + heartbeat_interval
                     yield None
 
         return iterate()

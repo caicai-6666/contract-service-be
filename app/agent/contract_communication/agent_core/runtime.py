@@ -76,7 +76,7 @@ async def run_agent_core(service, conversation_id, turn_id, owner, *, context=No
 
     async def read_context():
         return await service.get_agent_core_context(conversation_id, turn_id, owner=owner, include_reasoning=generation.enable_thinking,
-                reasoning_limits=(settings.reasoning_window_rounds, settings.reasoning_window_max_tokens))
+                reasoning_max_rounds=settings.reasoning_window_rounds)
 
     async def read_workspace():
         return (await read_context()).workspace
@@ -256,7 +256,7 @@ async def run_agent_core(service, conversation_id, turn_id, owner, *, context=No
                         tokens = sum([await text_counter(value) for value in fields.values()])
                         await service.record_agent_reasoning(conversation_id, turn_id, owner=owner,
                             call_id=call.call_id, fields=fields, tokens=tokens,
-                            max_rounds=settings.reasoning_window_rounds, max_tokens=settings.reasoning_window_max_tokens)
+                            max_rounds=settings.reasoning_window_rounds)
                 if operation.name == 'finish_task' and result.tool_result.get('finish_requested') is True:
                     # 最终输出成功后即使容量处理失败也应封闭本轮，不能重发最终正文。
                     await service.publish(conversation_id, turn_id, owner=owner, data=TurnStatusData(status='completed'))

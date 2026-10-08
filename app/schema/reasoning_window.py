@@ -34,8 +34,8 @@ class ReasoningWindow(WorkspaceObject):
             raise ValueError('思考不能重复绑定同一响应')
         return self
 
-    def append(self, *, task_id, call_id, fields, tokens, max_rounds, max_tokens):
-        if type(max_rounds) is not int or max_rounds < 0 or type(max_tokens) is not int or max_tokens < 0:
+    def append(self, *, task_id, call_id, fields, tokens, max_rounds):
+        if type(max_rounds) is not int or max_rounds < 0:
             raise ValueError('思考窗口限制必须为非负整数')
         entry = ReasoningEntry(position=self.next_position, task_id=task_id, call_id=call_id, fields=fields, tokens=tokens)
         previous = next((item for item in self.entries if (item.task_id,item.call_id)==(task_id,call_id)),None)
@@ -44,15 +44,15 @@ class ReasoningWindow(WorkspaceObject):
                 raise ValueError('思考响应标识冲突')
             return self.model_copy(deep=True)
         values = [*self.entries, entry]
-        while values and (len(values) > max_rounds or sum(item.tokens for item in values) > max_tokens):
+        while values and len(values) > max_rounds:
             values.pop(0)
         return ReasoningWindow(next_position=self.next_position+1, entries=values)
 
-    def limited(self, *, max_rounds, max_tokens):
-        if type(max_rounds) is not int or max_rounds < 0 or type(max_tokens) is not int or max_tokens < 0:
+    def limited(self, *, max_rounds):
+        if type(max_rounds) is not int or max_rounds < 0:
             raise ValueError('思考窗口限制必须为非负整数')
         values = list(self.entries)
-        while values and (len(values) > max_rounds or sum(item.tokens for item in values) > max_tokens):
+        while values and len(values) > max_rounds:
             values.pop(0)
         return ReasoningWindow(next_position=self.next_position, entries=values)
 

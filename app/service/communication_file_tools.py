@@ -28,8 +28,7 @@ class CommunicationFileTools:
         self.contract_pool = FileModelCache(max_files=settings.communication_contract_file_cache_max_files)
         from app.agent.contract_communication.agent_core.tool.web_search import WebSearchService
         self._web_search = WebSearchService(
-            timeout=settings.communication_web_search_timeout_seconds,
-            max_results=settings.communication_web_search_max_results,
+            settings=settings,
             concurrency=settings.communication_web_search_max_concurrent_requests)
         self._sessions = {}
         self._cleanups = set()

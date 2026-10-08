@@ -98,6 +98,8 @@ class WebPageViewer:
                         source = self.sources.source(source_id)
                     except ValueError:
                         return _failure('source_expired', '网页来源已失效，请重新搜索并取得来源标识。')
+                    if not source.url:
+                        return _failure('source_not_openable', '该来源没有可打开的网页链接，请重新搜索。')
                     records = []
                     self.audit.append(records)
                     graph = self._graph_factory(settings=self.settings, audit=records)

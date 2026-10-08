@@ -126,7 +126,7 @@ class CommunicationWorkflowService(CommunicationEventService):
         await self._history.insert_agent_summary(conversation_id, turn_id,
             expected_summary=expected_summary, summary=summary, scope=scope)
 
-    async def get_agent_core_context(self, conversation_id, turn_id, *, owner, include_reasoning=True, reasoning_limits=None):
+    async def get_agent_core_context(self, conversation_id, turn_id, *, owner, include_reasoning=True, reasoning_max_rounds=None):
         """读取一致快照后在锁外渲染；每次读取都取得最新权威工作区。"""
         async with self._condition:
             turn = self._get(conversation_id, turn_id, owner)
@@ -134,8 +134,8 @@ class CommunicationWorkflowService(CommunicationEventService):
                 raise ValueError('Agent Core 需要仍在处理且已驻留的会话任务')
             workspace, summary, records = self._history.get_agent_core_snapshot_locked(conversation_id, turn_id)
             reasoning = self._history._resident[conversation_id].reasoning_window.model_copy(deep=True) if include_reasoning else None
-            if reasoning is not None and reasoning_limits is not None:
-                reasoning = reasoning.limited(max_rounds=reasoning_limits[0], max_tokens=reasoning_limits[1])
+            if reasoning is not None and reasoning_max_rounds is not None:
+                reasoning = reasoning.limited(max_rounds=reasoning_max_rounds)
         return assemble_agent_core_context(workspace=workspace, summary=summary,
                                            records=records, current_turn_id=turn_id, reasoning_window=reasoning)
 

@@ -80,7 +80,7 @@ python -m pip install -r requirements.txt
 python -m app.main
 ```
 
-运行依赖统一维护在项目根目录的 `requirements.txt`，使用兼容版本区间而不是应用打包元数据。 网页能力预备依赖包括 `ddgs>=9.16,<10.0`（网页搜索）与 `trafilatura>=2.2,<3.0`（本地 HTML 正文提取）；搜索和结果列表工具已接入会话缓存、分页与主循环；网页子图已实现 HTTP、正文提取和模型精炼，打开工具已注册主循环并接入正文缓存与分页，详见[网页工具](../../architecture/workflow/contract-communication/web-search.md)。 独立搜索与正文提取验证见[网页可行性实验](../../../experiment/web-search-extraction/REPORT.md)，已记录误召回、权限限制提示遗漏及附件链接丢失等边界。`.venv` 只用于本机隔离且已被 Git 忽略。`app.main` 的 `__main__` 分支直接调用 `uvicorn.run`，因此可以在 IDE 中运行该文件；监听地址、端口、日志级别和热重载开关均在入口代码中显式列出。默认监听 `127.0.0.1:10000` 并开启源码热重载，避免与默认监听 `8000` 的 MLLM 冲突。
+运行依赖统一维护在项目根目录的 `requirements.txt`，使用兼容版本区间而不是应用打包元数据。 网页搜索复用 `httpx` 异步请求博查，`trafilatura>=2.2,<3.0` 用于本地 HTML 正文提取；搜索和结果列表工具已接入会话缓存、分页与主循环；网页子图已实现 HTTP、正文提取和模型精炼，打开工具已注册主循环并接入正文缓存与分页，详见[网页工具](../../architecture/workflow/contract-communication/web-search.md)。 历史搜索与正文提取验证见[归档报告](../../../experiment/web-search-extraction/REPORT.md)，已记录误召回、权限限制提示遗漏及附件链接丢失等边界。`.venv` 只用于本机隔离且已被 Git 忽略。`app.main` 的 `__main__` 分支直接调用 `uvicorn.run`，因此可以在 IDE 中运行该文件；监听地址、端口、日志级别和热重载开关均在入口代码中显式列出。默认监听 `127.0.0.1:10000` 并开启源码热重载，避免与默认监听 `8000` 的 MLLM 冲突。
 
 热重载会重启唯一工作进程并清空内存合同任务，只适合本地开发。部署入口应由外部 ASGI 进程管理器加载 `app.main:app`，关闭热重载，并继续保持单 worker。
 

@@ -1,11 +1,15 @@
 """通过 vLLM 原生接口计数纯文本，不执行模型生成或下载 tokenizer。"""
 
+import asyncio
+import logging
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
 from app.core.config import MLLMSettings
 from app.infrastructure.model_concurrency import get_model_request_limiter
+
+logger = logging.getLogger(__name__)
 
 
 class TokenizationError(RuntimeError):
@@ -26,7 +30,7 @@ def build_tokenize_url(base_url: str) -> str:
 async def count_text_tokens(
     text: str, settings: MLLMSettings, *, transport: httpx.AsyncBaseTransport | None = None,
 ) -> int:
-    """复用 MLLM 配置；连接按调用关闭，取消传播，不重试或回退字符估算。
+    """复用 MLLM 配置；瞬时连接故障有限重试，取消传播，不回退字符估算。
 
     transport 仅供 HTTP 测试替换传输层。请求沿用全局 MLLM 并发额度，
     但不计入模型生成指标，避免将分词请求误报为推理。
@@ -56,8 +60,22 @@ async def _count_tokens(payload, settings, *, transport=None):
             async with httpx.AsyncClient(
                 timeout=settings.timeout_seconds, transport=transport, follow_redirects=False,
             ) as client:
-                response = await client.post(url, headers=headers, json={'model': settings.model, **payload})
-                response.raise_for_status()
+                # /tokenize 是只读请求；只在本层重试，不重放外层已成功工具。
+                for attempt in range(1, 4):
+                    try:
+                        response = await client.post(url, headers=headers, json={'model': settings.model, **payload})
+                        response.raise_for_status()
+                        break
+                    except (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError,
+                            httpx.HTTPStatusError) as exc:
+                        status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+                        transient = status is None or status in {429, 502, 503, 504}
+                        # 不记录请求、响应正文或 URL，避免泄露会话内容和凭据。
+                        logger.warning('vLLM 分词请求失败：attempt=%s/3 type=%s status=%s retry=%s',
+                                       attempt, type(exc).__name__, status, transient and attempt < 3)
+                        if not transient or attempt == 3:
+                            raise
+                        await asyncio.sleep(0.2 * attempt)
                 data = response.json()
         # bool、浮点和数字字符串均不接受；同时校验 token ID 数量以免误信异常响应。
         count = data.get('count') if isinstance(data, dict) else None
