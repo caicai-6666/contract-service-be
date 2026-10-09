@@ -72,7 +72,7 @@
 - 八个用户业务阶段技术失败后可在次数限制内从失败点重试并复用成功前置结果；文件准入业务拒绝禁止原文件重试；任一阶段一旦成功便不允许重跑。
 - 支持审核用户主动取消自己的内存任务，终止后台协程与 SSE，并立即释放处理版 PDF、草稿和中间结果。
 - 正式入库按生成顺序将检索问题原文保存至 ES `retrieval_questions`，供后续更换 Embedding 模型时重算问题融合向量；旧合同不自动回填。
-- 支持任务所有者提交最终展示文件名、完整 Core 和 Clause；服务端补齐分类、两个合同级向量、处理版 PDF 身份和审核信息后，以 SQLite 状态机协调文件与正式 Elasticsearch 写入，并释放对应运行。
+- 任务所有者提交最终名称、摘要、必填 note、完整 Core 和 Clause 后，服务端补齐分类、问题、融合向量、PDF 和提交人，保存独立待审快照并释放运行。后台经中间件送审，批准后以 passport 关联正式 SQLite/PDF/ES/Neo4j；拒绝仅更新待审状态，见[待审提交与正式入库](capability/application/contract-ingestion.md)。
 - 支持有界事件回放、心跳、任务 TTL 和慢订阅者隔离。
 
 ### 基础设施
@@ -101,7 +101,7 @@
 - 系统只支持固定 Core 提取，不包含候选字段生成、归并、统计或治理流程。
 - Core 只能来自启动期通过严格校验的固定字段目录；运行时不得创建目录外字段。
 - 合同提取任务的原始 PDF 只在创建请求期间存在；任务长期只保存页面 PNG 与元数据，Base64 和整份处理版 PDF 均按需生成、不写回任务。communication 附件注册时只暂存内存，只有已准入附件随终态备份写入 upload；运行时终态释放输入，已准入字节在历史层保留至记忆归档成功。已备份的会话轨迹可跨进程重启读取；实时 SSE 和尚未备份轨迹、附件不可保证恢复。
-- 当前没有独立的专家编辑版本或审核历史；正式入库接口直接接收有新增权限的任务所有者提交的最终文件名、Core 和 Clause。
+- 前端确认接口只提交不可变待审申请，外部审核备注与入库员 note 分开保存；审核通过才正式入库。已提供[待审查询 API](api/pending-review.md)，包含清理配置、保留中的申请列表和临时 PDF；暂未实现已提交申请修改或重审。
 - 当前注册表不跨进程共享，开发热更新会清空任务；合同处理服务必须使用单 worker。
 - 免登校验确认审核人身份，结合三级操作权限和合同任务所有权隔离；免登码缓存和任务注册表均不跨进程共享，重启即清空。
 - 系统不替代合同审阅、法律意见或合同效力判断。
@@ -165,7 +165,7 @@ flowchart TD
     internal_result["内存聚合<br/>分类、PDF 身份与两个向量"]
     review_result["用户审核结果<br/>仅 Core 与 Clause"]
     snapshot["HTTP 快照"]
-    ingestion["最终审核值校验<br/>保存 PDF 并正式入库"]
+    ingestion["最终确认值与 note 校验<br/>保存待审快照和 PDF"]
     sse["SSE 阶段状态、进度<br/>与结果更新通知"]
 
     pdf --> preparation --> detection
@@ -186,6 +186,9 @@ flowchart TD
     review_result --> snapshot
     review_result --> ingestion
     internal_result -->|按 run_id 补齐数据| ingestion
+    ingestion --> middleware["后台发布中间件并接收审核反馈"]
+    middleware -->|批准| formal["正式 SQLite / PDF / ES / Neo4j 入库"]
+    middleware -->|拒绝| review_rejected["记录拒绝，不入正式库"]
     understanding -.-> sse
     detection -.-> sse
     dedup -.-> sse

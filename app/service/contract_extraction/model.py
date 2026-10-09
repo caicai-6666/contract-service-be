@@ -21,7 +21,7 @@ class RunStatus(StrEnum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     EXPIRED = "expired"
-    INGESTED = "ingested"
+    SUBMITTED = "submitted"
 
 
 class RunListStatus(StrEnum):
@@ -80,7 +80,7 @@ class EventType(StrEnum):
     RUN_REVIEW_READY = "run.review_ready"
     RUN_CANCELLED = "run.cancelled"
     RUN_EXPIRED = "run.expired"
-    RUN_INGESTED = "run.ingested"
+    RUN_SUBMITTED = "run.submitted"
 
 
 class ResultStatus(StrEnum):
@@ -149,9 +149,9 @@ class DeduplicationCandidateView(ContractExtractionViewModel):
         min_length=1,
         description="Elasticsearch 合同文档中的原始文件地址。",
     )
-    reviewer: str = Field(
+    uploader: str = Field(
         min_length=1,
-        description="确认候选合同最终结果并执行入库的审核人。",
+        description="在本平台提交该候选合同待审申请的上传人。",
     )
     page_count: int = Field(gt=0)
     reasoning_summary: str = Field(min_length=1)

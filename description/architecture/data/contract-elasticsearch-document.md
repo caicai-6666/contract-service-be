@@ -17,7 +17,7 @@ Elasticsearch 主文档只保存复核后的最终合同数据，不保存自动
 - Schema 版本字段。
 - PDF 文件字节和文件大小。
 - 模型、提示词、目录指纹、运行轮次、token、耗时和工具调用等提取信息。
-- 审核状态、审核版本和审核过程；只保留最终审核人与入库时间。
+- 审核状态、审核版本和审核过程；只保留上传人与入库时间。
 - Core 和 Clause 的自动提取状态、证据、推理、失败信息与候选结果。
 - 检索问题的证据、推理与运行审计，单个问题向量和单页向量；问题原文单独保存。
 
@@ -50,7 +50,7 @@ Elasticsearch 主文档只保存复核后的最终合同数据，不保存自动
 | `file_name` | 是 | 供业务界面展示的文件名。 |
 | `file_uri` | 是 | 处理版 PDF 在外部文件存储中的位置，不参与检索。 |
 | `page_count` | 是 | 处理版 PDF 的物理页数，用于解释条款页码。 |
-| `ingestion` | 是 | 最终审核人与实际入库时间。 |
+| `ingestion` | 是 | 上传人与实际入库时间。 |
 | `classification` | 是 | 复核后的合同分类最终值。 |
 | `core` | 是 | 复核后的固定 Core 最终值。 |
 | `clauses` | 是 | 复核后的最终条款目录和正文。 |
@@ -68,7 +68,7 @@ Elasticsearch 主文档只保存复核后的最终合同数据，不保存自动
 ```json
 {
   "ingestion": {
-    "reviewer": "张三",
+    "uploader": "张三",
     "ingested_at": "2026-09-01T15:30:00+08:00"
   }
 }
@@ -76,7 +76,7 @@ Elasticsearch 主文档只保存复核后的最终合同数据，不保存自动
 
 | 字段 | ES 类型 | 说明 |
 | --- | --- | --- |
-| `reviewer` | `keyword` | 确认本次最终结果并允许入库的审核人。 |
+| `uploader` | `keyword` | 本平台提交待审申请的上传人，取自 submitted_by。 |
 | `ingested_at` | `date` | Elasticsearch 成功接收入库请求的业务时间，必须包含时区。 |
 
 ---
@@ -298,7 +298,7 @@ flowchart LR
     projection --> elasticsearch
 ```
 
-投影器接收运行中已经确认的分类、检索问题原文与两个合同级向量，以及用户提交的最终 Core、Clause 和展示文件名。写入时由服务端设置 `ingestion.ingested_at`，并使用当前登录且通过运行所有权校验的审核人名称；请求体不能覆盖审核人。
+投影器接收运行中已经确认的分类、检索问题原文与两个合同级向量，以及用户提交的最终 Core、Clause 和展示文件名。写入时由服务端设置 `ingestion.ingested_at`，并使用待审快照 `submitted_by` 作为 `ingestion.uploader`；不使用外部审核反馈中的 reviewer。
 
 正式写入使用 `ELASTICSEARCH_INDEX_NAME`，并以 `document_id` 执行覆盖式 `index`。服务先在 SQLite 登记 `ingesting`，再按 `data/contract/<document_id>.pdf` 幂等保存处理版 PDF 并写入 ES；SQLite 最终转为 `ready` 后才释放内存运行，失败时保留运行供相同请求重试。轻量目录结构见[合同 SQLite 元数据结构](contract-sqlite-metadata.md)，完整应用边界见[复核后合同正式入库](../../capability/application/contract-ingestion.md)。
 
@@ -357,3 +357,12 @@ python scripts/migrate_contract_signing_date.py --source contracts-v1 --target c
 成功后将 `ELASTICSEARCH_INDEX_NAME` 切换到目标并重启后端；源索引继续只读保留，脚本不删除任何索引、不自动修改配置或重启服务。旧进程未重启前写入旧索引会被拒绝，应完成切换再恢复业务。若尚未产生新库写入，可以改回旧配置、解除旧索引写屏障并使用旧版 mapping 代码回退；新库产生写入后须另行同步增量，不能直接回退。
 
 开发环境本次已从 contracts-v1 迁移到 contracts-v2-date，2 份合同校验一致，项目 `.env` 已切换。旧索引保留只读备份，服务重启由运行方执行。
+
+
+---
+
+## 上传人字段与旧数据兼容
+
+新正式入库只保存 `uploader`（待审快照的 `submitted_by`），不保存外部审核员或审核备注。外部审核身份仍留在待审记录的 `reviewed_by`，由待审详情 `review.reviewer` 展示。SQLite 启动时将旧 `reviewer` 列重命名为 `uploader`，不额外保留人员列；新 ES 文档只写 `ingestion.uploader`，启动同步补齐该 keyword mapping。旧 ES 字段无法原地删除，历史文档读取与恢复核验暂兼容 ingestion.reviewer，不向新文档回写它。
+
+旧列值迁移时原样保留。历史若曾保存外部审核员，仅字段重命名无法恢复真实上传人，不能将兼容值视为已核实上传身份；本次不猜测或批量改写历史人员数据。前端正式合同元数据和查重候选应改读 `uploader`。

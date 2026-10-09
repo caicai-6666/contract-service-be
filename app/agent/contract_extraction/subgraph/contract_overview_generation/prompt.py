@@ -9,9 +9,9 @@ from app.agent.contract_extraction.state import ContractBaseContext
 from app.agent.contract_extraction.subgraph.classification.state import (
     ContractClassificationResult,
 )
-from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
+from app.core.tool_tag import TOOL_TAG_PLACEHOLDER, render_mllm_tool_tag
 
-CONTRACT_OVERVIEW_GENERATION_PROMPT_VERSION = "contract-overview-generation-v2"
+CONTRACT_OVERVIEW_GENERATION_PROMPT_VERSION = "contract-overview-generation-v3"
 
 _STATUS_LABELS = {
     "classified": "完整分类；以下分组是全部已确认命中的类别。",
@@ -80,8 +80,7 @@ CONTRACT_OVERVIEW_GENERATION_TASK = f"""你已获得当前合同按原始顺序�
 8. 工具返回 `ok=false` 时，根据反馈指出的字段和修正方向重新调用；失败内容不得作为正式结果。
 9. `think` 与正式提交是互斥的单次工具动作；任何一轮调用工具后都不得追加说明文字。
 
-工具调用格式：
-{TOOL_CALL_XML_INSTRUCTION}"""
+{TOOL_TAG_PLACEHOLDER}"""
 
 
 def _inline_markdown_value(value: str, *, field_name: str) -> str:
@@ -176,7 +175,7 @@ def build_contract_overview_generation_messages(
             },
             {
                 "type": "text",
-                "text": f"任务：\n{CONTRACT_OVERVIEW_GENERATION_TASK}",
+                "text": f"任务：\n{render_mllm_tool_tag(CONTRACT_OVERVIEW_GENERATION_TASK)}",
             },
         )
     )

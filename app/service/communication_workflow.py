@@ -52,7 +52,7 @@ class CommunicationWorkflowService(CommunicationEventService):
                  agent_core_runner: Callable[..., Awaitable[None]] | None = None, file_tools=None,
                  deepseek_settings=None, expert_session_capacity=10,
                  relation_cache_capacity=10, relation_page_size=5, relation_search_settings=None,
-                 notes_cache_capacity=10, notes_page_size=5, **kwargs):
+                 notes_cache_capacity=10, notes_page_size=5, passport_cache_capacity=10, passport_page_size=5, **kwargs):
         super().__init__(**kwargs)
         if not math.isfinite(stream_delay) or stream_delay < 0:
             raise ValueError("流式间隔必须为有限非负数")
@@ -67,6 +67,9 @@ class CommunicationWorkflowService(CommunicationEventService):
         self._relation_search_pools = {}
         self._relation_search_settings = relation_search_settings
         self._notes_viewers = {}
+        self._passport_viewers = {}
+        self._passport_cache_capacity = passport_cache_capacity
+        self._passport_page_size = passport_page_size
         self._notes_cache_capacity = notes_cache_capacity
         self._notes_page_size = notes_page_size
         self._expert_session_capacity = expert_session_capacity
@@ -215,6 +218,9 @@ class CommunicationWorkflowService(CommunicationEventService):
     def _evict_conversation_locked(self, conversation_id):
         super()._evict_conversation_locked(conversation_id)
         self._memory_viewers.pop(conversation_id, None)
+        passport_viewer = self._passport_viewers.pop(conversation_id, None)
+        if passport_viewer is not None:
+            passport_viewer.close()
         notes_viewer = self._notes_viewers.pop(conversation_id, None)
         if notes_viewer is not None:
             notes_viewer.close()
@@ -287,6 +293,9 @@ class CommunicationWorkflowService(CommunicationEventService):
         for viewer in self._notes_viewers.values():
             viewer.close()
         self._notes_viewers.clear()
+        for viewer in self._passport_viewers.values():
+            viewer.close()
+        self._passport_viewers.clear()
 
     async def _stream_final(self, conversation_id, turn_id, owner, text, status):
         message_id = "gate-final"
@@ -382,9 +391,17 @@ class CommunicationWorkflowService(CommunicationEventService):
                     tools.extend(build_external_expert_registrations(
                         get_pool=lambda: self._get_expert_pool(conversation_id)))
                     notes_viewer = None
+                    passport_viewer = None
                     if self._contract_metadata is not None:
                         from app.agent.contract_communication.agent_core.tool.contract_metadata import build_contract_metadata_registration
+                        from app.agent.contract_communication.agent_core.tool.contract_passport import ContractPassportViewer, build_contract_passport_registration
                         tools.append(build_contract_metadata_registration(self._contract_metadata))
+                        passport_viewer = self._passport_viewers.get(conversation_id)
+                        if passport_viewer is None:
+                            passport_viewer = ContractPassportViewer(self._contract_metadata,
+                                max_resident=self._passport_cache_capacity, page_size=self._passport_page_size)
+                            self._passport_viewers[conversation_id] = passport_viewer
+                        tools.append(build_contract_passport_registration(passport_viewer))
                         from app.agent.contract_communication.agent_core.tool.contract_statistics import build_contract_statistics_registration
                         tools.append(build_contract_statistics_registration(self._contract_metadata, self._relation_service))
                         from app.agent.contract_communication.agent_core.tool.contract_notes import ContractNotesViewer, build_contract_notes_registration
@@ -423,6 +440,8 @@ class CommunicationWorkflowService(CommunicationEventService):
                         file_entries, file_resolver = await self._file_tools.prepare(conversation_id, secret_key)
                         tools.extend(file_entries)
                     async def resolve_page(reference):
+                        if reference.resource_id.startswith('contract-passport:') and passport_viewer is not None:
+                            return await passport_viewer.resolve_page(reference)
                         if reference.resource_id.startswith('relation-search:') and relation_search_pool is not None:
                             return await relation_search_pool.resolve_page(reference)
                         if reference.resource_id.startswith('contract-notes:') and notes_viewer is not None:

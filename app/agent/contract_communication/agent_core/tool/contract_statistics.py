@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 class GetContractLibraryStatisticsArguments(BaseModel):
-    """当你需要了解合同库有多少合同、类型与审核人分布，以及注意事项和关联覆盖情况时，使用这个工具一次获取整体统计。可按入库时间限定范围；不传时间则统计全库成功入库合同。时间不是签署日期，也不用于筛选备注或关系的创建时间。返回所选合同当前的统计，不是任意历史时刻的快照。无需先检索合同或逐份读取文件。"""
+    """当你需要了解合同库有多少合同、类型与上传人分布，以及注意事项和关联覆盖情况时，使用这个工具一次获取整体统计。可按入库时间限定范围；不传时间则统计全库成功入库合同。时间不是签署日期，也不用于筛选备注或关系的创建时间。返回所选合同当前的统计，不是任意历史时刻的快照。无需先检索合同或逐份读取文件。"""
     model_config = ConfigDict(extra='forbid', frozen=True)
     start_time: AwareDatetime | None = Field(default=None, description='可选入库时间下界，包含该时刻。使用带时区的ISO 8601日期时间，例如2026-09-01T00:00:00+08:00；省略或null表示不限起始时间。与end_time同时提供时必须早于end_time。')
     end_time: AwareDatetime | None = Field(default=None, description='可选入库时间上界，不包含该时刻。使用带时区的ISO 8601日期时间，例如统计9月时填2026-10-01T00:00:00+08:00；省略或null表示不限结束时间。不是签署日期或备注、关系的创建时间。')
@@ -44,10 +44,10 @@ def render_contract_statistics(data):
     if not data['categories']:
         lines.append('无类别统计记录。')
     lines.extend(['', f"未归类合同：{data['uncategorized_count']} 份", '',
-        '## 审核人分布', '', '| 审核人 | 合同数量 |', '| --- | ---: |'])
-    lines.extend(f"| {cell(r['name'])} | {r['count']} |" for r in data['reviewers'])
-    if not data['reviewers']:
-        lines.append('无审核人统计记录。')
+        '## 上传人分布', '', '| 上传人 | 合同数量 |', '| --- | ---: |'])
+    lines.extend(f"| {cell(r['name'])} | {r['count']} |" for r in data['uploaders'])
+    if not data['uploaders']:
+        lines.append('无上传人统计记录。')
     lines.extend(['', '## 注意事项', f"注意事项总数：{data['notes']['total']} 条",
                   f"有注意事项的合同：{data['notes']['contracts_with_notes']} 份", '', '## 合同关联'])
     relations = data['relations']

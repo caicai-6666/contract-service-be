@@ -8,8 +8,12 @@ import logging
 from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from typing import Any
-from uuid import uuid4
+from typing import Any, TYPE_CHECKING
+from uuid import uuid4, uuid5, NAMESPACE_URL
+from pydantic import ValidationError
+if TYPE_CHECKING:
+    from app.schema.pending_review import PendingReviewRecord
+    from app.service.pending_review import PendingReviewService
 
 from app.agent.contract_extraction.progress import (
     ParallelProgressPhase,
@@ -77,8 +81,9 @@ from app.service.pdf_preparation import (
     PDFPreparationService,
 )
 from app.service.contract_ingestion import (
-    ContractIngestionResult,
     ContractIngestionService,
+    ContractPersistenceError,
+    ContractReviewValidationError,
 )
 
 logger = logging.getLogger(__name__)
@@ -220,6 +225,7 @@ class ContractExtractionService:
         deduplication_executor: PDFDeduplicationExecutor,
         pdf_preparation_service: PDFPreparationService,
         ingestion_service: ContractIngestionService,
+        pending_review_service: PendingReviewService | None = None,
         run_ttl_seconds: int = 3600,
         deduplication_review_ttl_seconds: int = 600,
         cleanup_interval_seconds: int = 30,
@@ -245,6 +251,7 @@ class ContractExtractionService:
         self._deduplication_executor = deduplication_executor
         self._pdf_preparation_service = pdf_preparation_service
         self._ingestion_service = ingestion_service
+        self._pending_review_service = pending_review_service
         self._run_ttl = timedelta(seconds=run_ttl_seconds)
         self._deduplication_review_ttl = timedelta(
             seconds=deduplication_review_ttl_seconds
@@ -366,7 +373,7 @@ class ContractExtractionService:
             reviewer_user_name=reviewer_user_name,
         )
         async with aggregate.lock:
-            if aggregate.cancelled or aggregate.expired or aggregate.ingested:
+            if aggregate.cancelled or aggregate.expired or aggregate.submitted:
                 raise RunNotFoundError(run_id)
             return self._snapshot_locked(aggregate)
 
@@ -380,7 +387,7 @@ class ContractExtractionService:
         )
         async with aggregate.lock:
             # 与取消、过期和入库共用锁，防止初次查找后读取已被释放的任务。
-            if aggregate.cancelled or aggregate.expired or aggregate.ingested:
+            if aggregate.cancelled or aggregate.expired or aggregate.submitted:
                 raise RunNotFoundError(file_id)
             metadata = self._processed_pdf_metadata_locked(aggregate)
             prepared = aggregate.prepared_pdf
@@ -388,7 +395,7 @@ class ContractExtractionService:
         content = await assemble_processed_pdf(prepared)
         await self._get_live_aggregate(file_id, reviewer_user_name=reviewer_user_name)
         async with aggregate.lock:
-            if aggregate.cancelled or aggregate.expired or aggregate.ingested:
+            if aggregate.cancelled or aggregate.expired or aggregate.submitted:
                 raise RunNotFoundError(file_id)
         return metadata, content
 
@@ -407,7 +414,7 @@ class ContractExtractionService:
                 if (
                     aggregate.cancelled
                     or aggregate.expired
-                    or aggregate.ingested
+                    or aggregate.submitted
                     or aggregate.reviewer_user_name != reviewer_user_name
                 ):
                     continue
@@ -454,7 +461,7 @@ class ContractExtractionService:
         async with aggregate.lock:
             # 与继续、重试的状态变更共用聚合锁；标记后即使其请求已经
             # 通过初次查询，也不能在锁释放后重新创建后台任务。
-            if aggregate.cancelled or aggregate.expired or aggregate.ingested:
+            if aggregate.cancelled or aggregate.expired or aggregate.submitted:
                 raise RunNotFoundError(run_id)
             aggregate.cancelled = True
             aggregate.awaiting_deduplication_review = False
@@ -488,16 +495,41 @@ class ContractExtractionService:
         reviewer_user_name: str,
         file_name: str,
         summary: str,
+        note: str,
         core: CoreDraftData,
         clauses: ClauseDraftData,
-    ) -> ContractIngestionResult:
-        """用用户最终审核值覆盖自动草稿，并正式保存合同。"""
-        aggregate = await self._get_live_aggregate(
-            run_id,
-            reviewer_user_name=reviewer_user_name,
-        )
+    ) -> PendingReviewRecord:
+        """保存不可变待审快照；持久化成功才释放运行，不执行正式入库。"""
+        from app.schema.pending_review import PendingReviewSnapshot
+        from app.infrastructure.pending_review_store import PendingReviewConflictError
+
+        submission_id = uuid5(NAMESPACE_URL, f'contract-pending-review:{run_id}')
+
+        async def existing_submission() -> PendingReviewRecord:
+            if self._pending_review_service is None:
+                raise RunNotFoundError(run_id)
+            try:
+                record = await self._pending_review_service.get(submission_id)
+            except LookupError as exc:
+                raise RunNotFoundError(run_id) from exc
+            except Exception as exc:
+                raise ContractPersistenceError('待审申请读取失败，请使用相同内容重试') from exc
+            if record.snapshot.submitted_by != reviewer_user_name:
+                raise RunNotFoundError(run_id)
+            snap = record.snapshot
+            if (snap.file_name != file_name.strip() or snap.summary != summary.strip()
+                    or snap.core != core or snap.clauses != clauses or record.note != note):
+                raise RunConflictError('该任务已提交待审，不允许覆盖既有内容或备注')
+            return record
+        try:
+            aggregate = await self._get_live_aggregate(run_id, reviewer_user_name=reviewer_user_name)
+        except RunNotFoundError:
+            # 回执丢失或进程重启后仍可按原 run_id 找到已落盘申请，严格校验归属和内容。
+            return await existing_submission()
         async with aggregate.lock:
-            if aggregate.cancelled or aggregate.expired or aggregate.ingested:
+            if aggregate.submitted:
+                return await existing_submission()
+            if aggregate.cancelled or aggregate.expired:
                 raise RunNotFoundError(run_id)
             if self._has_duplicate_locked(aggregate):
                 raise RunConflictError("已发现重复合同，流程已结束，禁止入库")
@@ -505,7 +537,7 @@ class ContractExtractionService:
                 aggregate.stages[code].status is not StageStatus.SUCCEEDED
                 for code in _STAGE_ORDER
             ):
-                raise RunConflictError("全部合同处理阶段成功后才能正式入库")
+                raise RunConflictError("全部合同处理阶段成功后才能提交审核")
 
             draft = aggregate.draft
             classification = aggregate.classification_view
@@ -517,7 +549,7 @@ class ContractExtractionService:
                 or not isinstance(context, ExtractionContext)
                 or deduplication is None
             ):
-                raise RunConflictError("合同运行缺少正式入库所需的前置结果")
+                raise RunConflictError("合同运行缺少送审所需的前置结果")
             if any(
                 code not in draft.sections
                 for code in (
@@ -537,41 +569,48 @@ class ContractExtractionService:
             if question_vector is None:
                 raise RunConflictError("合同运行尚未形成问题融合向量")
 
-            result = await self._ingestion_service.ingest(
-                document_id=aggregate.source.document_id,
-                processed_pdf_bytes=await assemble_processed_pdf(aggregate.prepared_pdf),
-                page_count=aggregate.prepared_pdf.page_count,
-                file_name=file_name,
-                summary=summary,
-                reviewer=reviewer_user_name,
-                classification=classification,
-                category_reasoning={
-                    match.decision.category_code: match.reasoning_summary
-                    for match in context.classification.matches
-                },
-                core=core,
-                clauses=clauses,
-                retrieval_questions=tuple(
-                    question.question for question in retrieval_result.questions.questions
-                ),
-                question_fusion_vector=question_vector,
-                page_fusion_vector=deduplication.page_fusion_vector.vector,
-            )
+            if self._pending_review_service is None:
+                raise ContractPersistenceError('待审服务尚未配置')
+            if not isinstance(note, str) or len(note) > 10000:
+                raise ContractReviewValidationError('入库员备注必须是最多 10000 字符的字符串')
+            try:
+                snapshot = PendingReviewSnapshot(
+                    run_id=run_id, document_id=aggregate.source.document_id,
+                    page_count=aggregate.prepared_pdf.page_count, file_name=file_name, summary=summary,
+                    submitted_by=reviewer_user_name, classification=classification,
+                    category_reasoning={match.decision.category_code: match.reasoning_summary
+                        for match in context.classification.matches},
+                    core=core, clauses=clauses,
+                    retrieval_questions=tuple(q.question for q in retrieval_result.questions.questions),
+                    question_fusion_vector=question_vector,
+                    page_fusion_vector=deduplication.page_fusion_vector.vector,
+                    embedding_model=retrieval_result.vector.embedding_model,
+                    vector_dimensions=len(question_vector),
+                )
+                # 复用正式入库业务校验，但不编码、不写正式库，避免审核通过后才发现非法字段。
+                self._ingestion_service.validate_pending_review(snapshot)
+            except (ValidationError, ValueError) as exc:
+                raise ContractReviewValidationError(str(exc)) from exc
+            try:
+                result = await self._pending_review_service.save(submission_id=submission_id,
+                    snapshot=snapshot, processed_pdf_bytes=await assemble_processed_pdf(aggregate.prepared_pdf), note=note)
+            except PendingReviewConflictError as exc:
+                raise RunConflictError(str(exc)) from exc
+            except Exception as exc:
+                raise ContractPersistenceError('待审快照或 PDF 保存失败，请使用相同内容重试') from exc
 
-            # 只有 SQLite 已发布 ready 且 PDF、ES 均成功后才使运行失效。
-            # 终态事件先进入已有订阅队列，随后移除注册表，避免成功响应后
-            # 仍能重复入库。
-            aggregate.ingested = True
+            # 快照和 PDF 均已持久化，随后关闭提取运行；真正入库由审核反馈消费者负责。
+            aggregate.submitted = True
             self._publish_locked(
                 aggregate,
-                EventType.RUN_INGESTED,
-                "合同已完成正式入库。",
+                EventType.RUN_SUBMITTED,
+                "合同已保存至待审核区。",
                 touch=False,
             )
             aggregate.subscribers.clear()
             removed = await self._registry.remove(run_id)
             if removed is not aggregate:
-                raise RuntimeError("正式入库成功后未能释放对应内存运行")
+                raise RuntimeError("待审申请保存成功后未能释放对应内存运行")
 
         run_tasks = tuple(self._run_tasks.pop(run_id, ()))
         expiry_task = self._review_expiry_tasks.pop(run_id, None)
@@ -613,14 +652,14 @@ class ContractExtractionService:
         aggregate = await self._registry.get(run_id)
         cancelled = False
         expired = False
-        ingested = False
+        submitted = False
         async with aggregate.lock:
             if aggregate.reviewer_user_name != reviewer_user_name:
                 raise RunNotFoundError(run_id)
             if aggregate.cancelled:
                 cancelled = True
-            elif aggregate.ingested:
-                ingested = True
+            elif aggregate.submitted:
+                submitted = True
             elif aggregate.expired:
                 expired = True
             elif (
@@ -631,7 +670,7 @@ class ContractExtractionService:
                 expired = True
         # 取消路径自行负责取消并等待后台协程；并发读取不能调用过期清理
         # 抢先弹出任务索引，否则可能令被取消协程失去引用后继续执行。
-        if cancelled or ingested:
+        if cancelled or submitted:
             raise RunNotFoundError(run_id)
         if expired:
             await self._remove_expired_run(aggregate)
@@ -656,7 +695,7 @@ class ContractExtractionService:
             now = _utcnow()
             # 存活检查和暂停点消费必须在同一把锁中完成，避免截止时刻
             # “到期任务”和“继续请求”竞态时错误放行已过期任务。
-            if aggregate.cancelled or aggregate.ingested:
+            if aggregate.cancelled or aggregate.submitted:
                 raise RunNotFoundError(run_id)
             if (
                 aggregate.expired
@@ -715,7 +754,7 @@ class ContractExtractionService:
         )
         understanding: DocumentUnderstandingOutput | None = None
         async with aggregate.lock:
-            if aggregate.cancelled or aggregate.expired or aggregate.ingested:
+            if aggregate.cancelled or aggregate.expired or aggregate.submitted:
                 raise RunNotFoundError(run_id)
             if self._has_duplicate_locked(aggregate):
                 raise StageRetryError("已发现重复合同，流程已结束，禁止重试")
@@ -823,7 +862,7 @@ class ContractExtractionService:
             maxsize=self._event_buffer_size
         )
         async with aggregate.lock:
-            if aggregate.cancelled or aggregate.expired or aggregate.ingested:
+            if aggregate.cancelled or aggregate.expired or aggregate.submitted:
                 raise RunNotFoundError(run_id)
             threshold = after_sequence or 0
             replay = tuple(
@@ -846,7 +885,7 @@ class ContractExtractionService:
         for aggregate in await self._registry.values():
             if (
                 aggregate.cancelled
-                or aggregate.ingested
+                or aggregate.submitted
                 or aggregate.expires_at > current
                 or self._has_active_task(aggregate.run_id)
             ):
@@ -855,7 +894,7 @@ class ContractExtractionService:
                 if (
                     aggregate.cancelled
                     or aggregate.expired
-                    or aggregate.ingested
+                    or aggregate.submitted
                     or aggregate.expires_at > current
                 ):
                     continue
@@ -889,7 +928,7 @@ class ContractExtractionService:
                 if (
                     current.cancelled
                     or current.expired
-                    or current.ingested
+                    or current.submitted
                     or not current.awaiting_deduplication_review
                     or current.expires_at > _utcnow()
                 ):
@@ -1617,7 +1656,7 @@ class ContractExtractionService:
                     document_id=candidate.document_id,
                     file_name=candidate.file_name,
                     file_uri=candidate.file_uri,
-                    reviewer=candidate.reviewer,
+                    uploader=candidate.uploader,
                     page_count=candidate.page_count,
                     reasoning_summary=judgment.reasoning_summary,
                 )
@@ -1768,8 +1807,8 @@ class ContractExtractionService:
         )
 
     def _run_status_locked(self, aggregate: RunAggregate) -> RunStatus:
-        if aggregate.ingested:
-            return RunStatus.INGESTED
+        if aggregate.submitted:
+            return RunStatus.SUBMITTED
         if aggregate.cancelled:
             return RunStatus.CANCELLED
         if aggregate.expired:
@@ -1839,7 +1878,7 @@ class ContractExtractionService:
         aggregate: RunAggregate,
         coroutine: Coroutine[Any, Any, None],
     ) -> None:
-        if aggregate.cancelled or aggregate.expired or aggregate.ingested:
+        if aggregate.cancelled or aggregate.expired or aggregate.submitted:
             # continue/retry 与取消并发时，操作协程可能已经构造但不再
             # 允许调度；显式关闭可避免未等待协程告警。
             coroutine.close()

@@ -18,13 +18,17 @@ vLLM 使用 Jinja chat template 将 OpenAI `messages`、`tools` 和特殊 token 
 
 当前 `.env` 与 `.env.example` 的生成模型为 `qwen38-flash-next`，对应独立提示词模板为 [`data/tool-tag/qwen3.8-flash-next-nvfp4.txt`](../../../data/tool-tag/qwen3.8-flash-next-nvfp4.txt)。当前资产版本为 `qwen3.8-tool-tag-v1`，仅在本文记录版本，不向模板正文增加文字。Embedding 模型不生成工具调用，因此不建立对应模板。
 
-该文件直接复制 [`TOOL_CALL_XML_INSTRUCTION`](../../../app/agent/contract_extraction/tool_protocol.py) 的既有原文，不增加标题、规则或示例；与代码常量相比仅多文本文件的末尾换行。后续以 UTF-8 读取并移除一个末尾换行，即可得到与原常量完全相同的文本。它不是服务端 Jinja 模板，也不是工具 JSON Schema。
+该文件是 Qwen 的工具协议说明；GLM 和 DeepSeek 使用各自的 `data/tool-tag` 文件。它不是服务端 Jinja 模板，也不是工具 JSON Schema。合同提取不再维护硬编码的 Qwen 协议常量。
 
 模板说明 XML 标签结构、必填参数和调用结束后不得追加文本的要求。单轮必须且只能调用一个工具等规则继续由节点任务提示词和程序校验承担；实际工具名称及参数定义通过 OpenAI `tools` 提供。提示词不能保证输出合法，仍需服务端 `qwen3_xml` 解析、客户端协议及业务校验和有限次数纠错。
 
+`VLLM_MLLM_TOOL_TAG_ENABLED` 控制应用是否向消息上下文注入工具格式，默认 `true`。设为 `false` 时，合同提取、Agent Core、工作区压缩、FIFO 主题规划、记忆检索、合同检索的初始规则与纠错反馈都不再附加 tool-tag 正文、格式标题或要求遵循该模板的说明；显式传入子智能体的模板也不能绕过关闭配置。工具业务规则、OpenAI `tools`、服务端 Jinja 和解析器保持原样。
+
+关闭时启动加载器保存空字符串且不读取模板文件，因此不要求该文件存在。`VLLM_MLLM_TOOL_TAG_FILE` 仍保留为模型协议标识，用于推理强度映射；不要因关闭注入而删除该配置。开关属于启动配置，修改后需重启后端。关闭仅影响程序附加的协议说明，不删除用户原文或已有模型历史中的标签文本。离线测试见 `tests/test_tool_tag_disabled.py`，包含关闭时的真实请求构造、协议失败恢复和工具定义保留。
+
 使用 `VLLM_MLLM_TOOL_TAG_FILE=qwen3.8-flash-next-nvfp4.txt` 指定模板文件名，对应 `settings.mllm.tool_tag_file`。只能填写文件名，不接受绝对路径或子目录；路径固定解析到项目根目录的 `data/tool-tag`，不受启动工作目录影响，也不允许符号链接指向目录之外。未设置时使用上述默认值。
 
-`app.bootstrap.lifespan` 在初始化数据库和外部客户端之前调用 `initialize_mllm_tool_tag(settings.mllm)`，以 UTF-8 读取并检查非空，将文本保存到 `app.core.tool_tag` 的进程级全局变量。文件缺失、不可读、编码错误或空白内容均阻止启动，不静默回退。运行期间不再读盘，修改文件或配置需要重启；每个进程独立加载。公共读取方式如下：
+`app.bootstrap.lifespan` 在初始化数据库和外部客户端之前调用 `initialize_mllm_tool_tag(settings.mllm)`，以 UTF-8 读取并检查非空，将文本保存到 `app.core.tool_tag` 的进程级全局变量。启用注入时，文件缺失、不可读、编码错误或空白内容均阻止启动，不静默回退。运行期间不再读盘，修改文件或配置需要重启；每个进程独立加载。公共读取方式如下：
 
 ```python
 from app.core.tool_tag import get_mllm_tool_tag
@@ -35,7 +39,11 @@ instruction = get_mllm_tool_tag()
 
 初始化前调用 getter 会抛出 `RuntimeError`。全局字符串通过 getter 共享，避免 `from ... import 变量` 捕获初始化前的旧值。离线脚本不经过 FastAPI 时，需要自行先调用初始化函数。
 
-**当前接入边界：** 已实现启动加载与全局读取入口；会话记忆的筛选规划提示词已通过 getter 将模板追加到 system 末尾，并已接入节点1模型循环；节点2仍为占位，尚未执行真实 vLLM 测试。其他现有工作流继续使用既有提示词及 `TOOL_CALL_XML_INSTRUCTION`，尚未迁移。后续接入时应替换对应重复格式说明，而不是叠加多份。资产已加入 Git 白名单并随后端镜像复制；若部署以已有卷挂载整个 `data`，镜像内的新文件会被挂载遮蔽，需要将模板同步至实际数据卷。新增其他模板时也需同步 Git 和 Docker 文件白名单。
+**当前接入边界：** 合同提取全部工具型生成入口均已接入，包括合同识别、两种查重模式、文档单元发现与视觉定位、分类判定与未映射类别描述、合同概览、Core、条款发现与正文、问题关注点与问题生成（13 个入口，共用 12 份提示词）。构造消息时读取启动快照；静态提示词使用 `render_mllm_tool_tag` 替换唯一占位符，Core 使用显式格式参数。先渲染静态规则，再拼接合同材料，不替换原文中的相似标记。纠错反馈同步使用同一模板；没有工具调用的 JSON 输出节点不注入。
+
+Agent Core 及其工具型子智能体沿用原有模板注入；显式传入模板的主循环和工作区压缩器，也将该模板传给共享协议恢复器。此次不调整 `tool_placement`、工具 Schema 或服务端解析器。部署时仍须让 `VLLM_MLLM_TOOL_TAG_FILE` 与 vLLM 的模型、Jinja 和 tool-call parser 匹配，修改配置后重启后端。
+
+资产已加入 Git 白名单并随后端镜像复制；若部署以已有卷挂载整个 `data`，须同步模板到实际数据卷。新增模板时也需同步 Git 和 Docker 文件白名单。离线回归 `tests/test_extraction_tool_tag.py` 覆盖三种协议的全部消息构造器、无重复/遗留标签、纠错与失败轨迹清理；不代表真实模型端到端提取验证。
 
 修改时应同步核对聊天模板、共享协议说明和解析器约定，并更新资产版本。离线测试覆盖配置读取、文件名校验、原文一致性、启动前访问、文件异常、内存快照和启动失败边界；不代表已验证真实模型调用成功率。
 

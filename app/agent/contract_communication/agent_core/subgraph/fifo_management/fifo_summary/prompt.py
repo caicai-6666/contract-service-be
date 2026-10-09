@@ -1,5 +1,7 @@
 """业务无关的主题筛选与两区域工作记忆规则；工具协议由可信配置注入。"""
-TOPIC_PLANNING_PROMPT_VERSION = 'fifo-topic-planning-v10'
+
+from app.core.tool_tag import tool_tag_section
+TOPIC_PLANNING_PROMPT_VERSION = 'fifo-topic-planning-v11'
 TOPIC_PLANNING_PROMPT = '''# 工作记忆主题筛选
 
 ## 目标与输入
@@ -26,14 +28,11 @@ finish_topic_planning确认结束，summary简述筛选结果，不替代记忆�
 旧主题old_state记录某项工作未完成，本次task_a给出完成记录，task_b补充适用限制：可选一个当前状态主题，关联旧主题及两次任务，不分别建立“初次检查”“再次检查”主题。实际资料不存在的示例编号不得引用。
 旧要求被新要求明确替代时，把更正记录关联到全局主题；只负责对象身份的主题不从其早期来源恢复旧全局目标。仅有寒暄且旧摘要无有用信息时，可以直接完成空规划。来源不足以确认变化时只定位需保留的冲突，不提前裁定。
 
-## 当前工具调用格式
 '''
 
 
 def build_topic_planning_prompt(template):
-    if not isinstance(template, str) or not template.strip():
-        raise ValueError('工具协议模板不能为空')
-    return TOPIC_PLANNING_PROMPT + template
+    return TOPIC_PLANNING_PROMPT + tool_tag_section(template)
 
 
 TOPIC_GENERATION_PROMPT_VERSION = 'fifo-topic-generation-v17'

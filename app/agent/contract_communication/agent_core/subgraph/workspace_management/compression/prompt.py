@@ -1,11 +1,12 @@
 """压缩子 Agent 的独立提示词；稳定规则与本次任务约束分别构造。"""
 import json
+from app.core.tool_tag import tool_tag_section
 from typing import Final
 
 from ..schema import CompressionRequest
 
 
-WORKSPACE_COMPRESSION_PROMPT_VERSION: Final[str] = 'workspace-compression-v6'
+WORKSPACE_COMPRESSION_PROMPT_VERSION: Final[str] = 'workspace-compression-v7'
 
 WORKSPACE_COMPRESSION_PROMPT_TEMPLATE: Final[str] = """# 工作区压缩任务
 
@@ -48,9 +49,7 @@ WORKSPACE_COMPRESSION_PROMPT_TEMPLATE: Final[str] = """# 工作区压缩任务
 
 每次响应必须且只能调用一个当前提供的工具，等待实际结果后再选择下一步。只使用注入定义中的名称、参数、路径和类型；当前工作区是路径及 ID 的依据。调用之外不输出普通文本，不输出整份工作区作为替代结果。
 
-合法调用格式由系统提供：
 {tool_call_template}
-请替换模板中的工具名称和参数占位内容，按实际定义提供必填参数，不额外包裹代码围栏。
 
 - finish_compression：申请结束，summary 简述实际精简内容及保留情况；只在副本低于70%且核对关键内容后调用，不能用普通文本代替。
 - workspace_replace：精确替换已有字段或完整条目；完整替换时保留必要字段和有效信息。
@@ -80,9 +79,7 @@ WORKSPACE_COMPRESSION_PROMPT_TEMPLATE: Final[str] = """# 工作区压缩任务
 
 def build_workspace_compression_prompt(*, tool_call_template: str) -> str:
     """工具协议来自可信配置，单次替换以保留注入文本中的 JSON 花括号。"""
-    if not isinstance(tool_call_template, str) or not tool_call_template.strip():
-        raise ValueError('tool_call_template 必须为非空字符串')
-    return WORKSPACE_COMPRESSION_PROMPT_TEMPLATE.format(tool_call_template=tool_call_template)
+    return WORKSPACE_COMPRESSION_PROMPT_TEMPLATE.format(tool_call_template=tool_tag_section(tool_call_template))
 
 
 def build_workspace_compression_task_prompt(request: CompressionRequest) -> str:

@@ -12,7 +12,7 @@ from app.agent.contract_extraction.subgraph.document_understanding.prompt import
     build_pdf_content_blocks,
     build_pdf_page_descriptor,
 )
-from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
+from app.core.tool_tag import TOOL_TAG_PLACEHOLDER, render_mllm_tool_tag
 from app.agent.pdf_deduplication.prompt.relation_standard import (
     CANDIDATE_CONTRACT_END_DIVIDER,
     CANDIDATE_CONTRACT_INPUT_HEADER,
@@ -21,12 +21,12 @@ from app.agent.pdf_deduplication.prompt.relation_standard import (
 )
 
 FullDocumentJudgmentPromptVersion = Literal[
-    "full-document-relation-judgment-v5"
+    "full-document-relation-judgment-v6"
 ]
 
 FULL_DOCUMENT_JUDGMENT_PROMPT_VERSION: Final[
     FullDocumentJudgmentPromptVersion
-] = "full-document-relation-judgment-v5"
+] = "full-document-relation-judgment-v6"
 
 # 工具必须紧随最后一条候选页面任务消息，由 vLLM 的聊天模板渲染真实
 # Pydantic function schema；不能把 schema 手工复制进提示词。
@@ -54,7 +54,7 @@ FULL_DOCUMENT_TOOL_INSTRUCTION_PROMPT: Final = f"""工具使用：
 6. 只有页面不可读、关键证据缺失或冲突无法消解，导致三种关系均不能由充分证据支持时，才可调用 report_unable_to_determine_relation。调用前必须至少完成一次 think，核对无法判断的具体原因；不得因为比较复杂、页面较多或尚未认真检查全部页面而放弃。
 7. think、正式提交和无法判断出口都是互斥的单次工具动作；任何一轮调用工具后都不得追加说明文字。
 
-{TOOL_CALL_XML_INSTRUCTION}"""
+{TOOL_TAG_PLACEHOLDER}"""
 
 
 def append_full_document_judgment_strategy(
@@ -109,7 +109,7 @@ def append_full_document_candidate_pdf(
                 f"{CANDIDATE_CONTRACT_END_DIVIDER}\n"
                 "以上全部页面属于“候选合同 B”。\n\n"
                 f"{TOOL_INSTRUCTION_START_DIVIDER}\n"
-                f"{FULL_DOCUMENT_TOOL_INSTRUCTION_PROMPT}"
+                f"{render_mllm_tool_tag(FULL_DOCUMENT_TOOL_INSTRUCTION_PROMPT)}"
             ),
         }
     )

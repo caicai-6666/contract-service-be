@@ -241,7 +241,7 @@ view_memory_query由正式Communication主循环按会话注册，接收query_id
 
 ## 合同元数据工具
 
-`get_contract_metadata` 已接入正式主循环，按完整合同 ID 读取 SQLite 中可用合同的名称、摘要、审核人、签署日期和入库时间。结果为 ordinary，默认 thinking，无分页及驻留缓存。详见[合同元数据查看工具](contract-metadata-tool.md)。
+`get_contract_metadata` 已接入正式主循环，按完整合同 ID 读取 SQLite 中可用合同的名称、摘要、上传人、签署日期和入库时间。结果为 ordinary，默认 thinking，无分页及驻留缓存。详见[合同元数据查看工具](contract-metadata-tool.md)。
 
 ---
 
@@ -273,3 +273,6 @@ view_memory_query由正式Communication主循环按会话注册，接收query_id
 动态状态可在 `RegisteredTool` 中配置 `progress_factory(arguments)`：参数解析通过后生成 `ToolProgress`，未配置则沿用静态 `progress`。返回值仍校验类型及“正在”前缀，通过既有发布回调发送，执行完毕或失败后恢复默认思考状态。当前网页打开工具用它展示关注关键词，不新增 SSE 类型或事件。
 
 合同库概览由已注册的 `get_contract_library_statistics` 提供，参数与统计口径见[合同库统计工具](contract-statistics.md)。
+
+
+`get_contract_by_passport` 已接入正式主循环，按完整通行证精确读取 SQLite 中的多份 ready 合同，使用会话独立 LRU 缓存 ID 快照。同一工具支持 page 翻页，非空结果以 foldable 渲染合同列表，空结果普通返回，默认 thinking 状态。详见[按通行证获取合同](contract-metadata-tool.md#按通行证获取合同)。

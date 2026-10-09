@@ -14,10 +14,10 @@ from app.agent.contract_extraction.subgraph.field_extraction.core.state import (
 from app.agent.contract_extraction.subgraph.field_extraction.definition import (
     FieldDefinition,
 )
-from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
+from app.core.tool_tag import get_mllm_tool_tag, tool_tag_section
 
-CORE_COMMON_PROMPT_VERSION = "core-common-v6"
-CORE_EXTRACTION_PROMPT_VERSION = "core-extraction-v8"
+CORE_COMMON_PROMPT_VERSION = "core-common-v7"
+CORE_EXTRACTION_PROMPT_VERSION = "core-extraction-v9"
 
 FIELD_DEFINITION_GUIDE = """提取对象定义属性说明：
 - name：当前唯一处理的对象类别；不能改名或创造新类别。
@@ -49,8 +49,7 @@ CORE_COMMON_TASK = """你已获得当前合同按原始顺序排列的页面图�
 
 {field_definition_guide}
 
-工具调用格式：
-{tool_call_xml_instruction}
+{tool_call_template}
 """
 
 CORE_FIELD_TASK = """当前唯一提取对象定义如下。定义是对象语义、基数和属性约束的权威来源，不得改名、扩展或创造定义外属性。
@@ -85,7 +84,7 @@ def build_core_common_messages(
         prefill_context.messages,
         task_suffix=CORE_COMMON_TASK.format(
             field_definition_guide=FIELD_DEFINITION_GUIDE,
-            tool_call_xml_instruction=TOOL_CALL_XML_INSTRUCTION,
+            tool_call_template=tool_tag_section(get_mllm_tool_tag()),
         ),
     )
 

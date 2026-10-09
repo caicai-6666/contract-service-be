@@ -1,4 +1,5 @@
 """压缩子 Agent 的有界工具循环；会话轨迹、候选和私有审计相互隔离。"""
+from app.core.tool_tag import resolve_mllm_tool_tag, tool_tag_section
 from app.infrastructure.model_json import load_model_json, validate_model_payload
 from contextlib import AsyncExitStack
 from copy import deepcopy
@@ -42,12 +43,12 @@ async def run_compression_tool_loop(request, *, client=None, settings=None, coun
             raise ValueError('压缩轮数和连续错误上限必须是正整数')
     settings = settings or get_settings().mllm
     audit = audit if audit is not None else []
-    template = tool_call_template if tool_call_template is not None else settings.tool_tag_path.read_text(encoding='utf-8')
+    template = resolve_mllm_tool_tag(settings, tool_call_template)
     tools = build_compression_tools()
     prefix = [{'role': 'system', 'content': build_workspace_compression_prompt(tool_call_template=template)},
               {'role': 'user', 'content': build_workspace_compression_task_prompt(request)}]
     history = []
-    recovery = ToolProtocolRecovery()
+    recovery = ToolProtocolRecovery(tool_call_template=template)
     consecutive_errors = 0
     workspace = request.workspace.model_copy(deep=True)
 
@@ -93,7 +94,7 @@ async def run_compression_tool_loop(request, *, client=None, settings=None, coun
                     tool_call_count=len(response.tool_calls), result_label='工作区压缩操作')
                 history[-1] = build_system_guidence_message(kind='output_error',
                     reason=f'本次响应解析到 {len(response.tool_calls)} 个工具调用，必须恰好一个；本次未执行操作。',
-                    required_action='只调用一个当前工具，按以下配置模板输出，不附加普通文本：\n' + template)
+                    required_action='只调用一个当前工具，不附加普通文本。' + tool_tag_section(template))
                 feedback = history[-1]['content']
             else:
                 call = response.tool_calls[0]

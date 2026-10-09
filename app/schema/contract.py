@@ -1,4 +1,7 @@
-"""合同定义与正式入库 HTTP 契约。"""
+"""合同定义、待审提交与正式合同管理的 HTTP 契约。"""
+
+from uuid import UUID
+from app.schema.pending_review import ReviewStatus, ReviewIngestionStatus
 
 from datetime import date, datetime
 from typing import Annotated, Literal
@@ -30,7 +33,7 @@ class ContractMetadataResponse(ContractSchemaModel):
     category: str = Field(description="类别 code 以 / 分隔的摘要；未映射时保留类型说明。")
     contract_time: date | None = Field(description="签订日期 YYYY-MM-DD，缺失时为 null。")
     file_uri: str = Field(description="处理版 PDF 的稳定根相对读取地址。")
-    reviewer: str = Field(description="确认最终结果并执行入库的审核人名称。")
+    uploader: str = Field(description="在本平台提交待审核申请的上传人名称，来自 submitted_by，不是外部审核员。")
     ingested_at: datetime = Field(description="带时区的 ISO 8601 入库时间。")
 
 
@@ -93,20 +96,25 @@ class CoreDefinitionCatalogResponse(
 
 
 class ContractIngestionRequest(ContractSchemaModel):
-    """用户提交的完整最终文件名、Core 和 Clause 审核值。"""
+    """用户提交的完整最终文件名、摘要、备注、Core 和 Clause 确认值。"""
 
     file_name: str = Field(
         min_length=1,
-        max_length=255,
+        max_length=200,
         description=(
-            "写入 Elasticsearch 的最终展示文件名；不是服务器路径，"
+            "送审的最终合同展示文件名；不是服务器路径，"
             "不得包含文件系统路径分隔符或控制字符。"
         ),
     )
     summary: str = Field(
         min_length=1,
         max_length=3000,
-        description="用户最终确认的合同内容摘要，去除首尾空白后不能为空，最多 3000 个字符；仅写入 SQLite。",
+        description="用户最终确认的合同内容摘要，去除首尾空白后不能为空，最多 3000 个字符；先保存至待审快照，批准后写入正式 SQLite。",
+    )
+
+    note: str = Field(
+        max_length=10000, strict=True,
+        description="必填的入库员审核沟通备注，允许空字符串；最多 10000 字符，仅保存至待审记录并发送中间件。",
     )
 
     @field_validator("file_name", "summary", mode="before")
@@ -129,27 +137,18 @@ class ContractIngestionRequest(ContractSchemaModel):
     )
 
 
-class ContractIngestionAuditResponse(ContractSchemaModel):
-    """服务端根据当前登录用户形成的最终责任信息。"""
-
-    reviewer: str = Field(description="确认最终结果并执行入库的审核人名称。")
-    ingested_at: datetime = Field(description="Elasticsearch 入库请求的带时区时间。")
-
-
 class ContractIngestionResponse(ContractSchemaModel):
-    """合同正式写入并释放内存运行后的稳定响应。"""
+    """持久化待审申请的回执，不代表已发送或已正式入库。"""
 
-    status: Literal["ingested"] = Field(description="固定的正式入库成功状态。")
-    document_id: str = Field(
-        pattern=r"^[0-9a-f]{64}$",
-        description="处理版 PDF 的 SHA-256，同时也是 Elasticsearch 文档 _id。",
-    )
-    file_name: str = Field(description="实际写入 Elasticsearch 的最终展示文件名。")
-    file_uri: str = Field(description="处理版 PDF 的稳定根相对读取地址。")
+    status: Literal["submitted"] = Field(description="申请已保存；不表示审核通过或正式入库。")
+    submission_id: UUID = Field(description="本地待审申请唯一标识，重复提交相同内容时保持不变。")
+    document_id: str = Field(pattern=r"^[0-9a-f]{64}$", description="处理版 PDF 的 SHA-256。")
+    file_name: str = Field(description="用户确认的送审合同名称。")
     page_count: int = Field(gt=0, description="处理版 PDF 的物理页数。")
-    ingestion: ContractIngestionAuditResponse = Field(
-        description="由服务端补充的审核人与入库时间。"
-    )
+    submitted_by: str = Field(description="由当前认证身份确定的入库员名称。")
+    submitted_at: datetime = Field(description="首次保存待审申请的带时区时间。")
+    review_status: ReviewStatus = Field(description="当前审核状态；首次通常为 pending_send，后台任务可能已经推进。")
+    ingestion_status: ReviewIngestionStatus = Field(description="当前正式入库状态；首次为 pending。")
 
 
 def project_core_definition_catalog(
@@ -180,7 +179,6 @@ def project_core_definition_catalog(
 
 
 __all__ = [
-    "ContractIngestionAuditResponse",
     "ContractIngestionRequest",
     "ContractIngestionResponse",
     "CoreDefinitionCatalogResponse",

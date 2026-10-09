@@ -41,7 +41,6 @@ from app.infrastructure.contract_graph_store import ContractRelationExistsError,
 from app.schema.contract import (
     ContractRelationRequest, ContractRelationResponse, ContractNeighborResponse,
     ContractCategoryResponse,
-    ContractIngestionAuditResponse,
     ContractIngestionRequest,
     ContractIngestionResponse,
     ContractMetadataResponse,
@@ -206,7 +205,7 @@ async def delete_contract_document(
     service: Annotated[ContractIngestionService, Depends(get_contract_ingestion_service)],
     reviewer_user_name: ReviewerUserDependency,
 ) -> Response:
-    """已登录用户可删除共享目录中任意正式合同，不以原入库审核人过滤。"""
+    """已登录用户可删除共享目录中任意正式合同，不以原上传人过滤。"""
     try:
         await service.delete_document(document_id, reviewer=reviewer_user_name)
     except ContractDocumentNotFoundError as exc:
@@ -315,7 +314,7 @@ def get_contract_documents(
             category=metadata.category,
             contract_time=metadata.contract_time,
             file_uri=metadata.file_uri,
-            reviewer=metadata.reviewer,
+            uploader=metadata.uploader,
             ingested_at=metadata.ingested_at,
         )
         for metadata in store.list_ready()
@@ -526,7 +525,7 @@ async def stream_contract_extraction_events(
                     EventType.RUN_DUPLICATE_REJECTED,
                     EventType.RUN_CANCELLED,
                     EventType.RUN_EXPIRED,
-                    EventType.RUN_INGESTED,
+                    EventType.RUN_SUBMITTED,
                 }:
                     return
             while not await request.is_disconnected():
@@ -545,7 +544,7 @@ async def stream_contract_extraction_events(
                     EventType.RUN_DUPLICATE_REJECTED,
                     EventType.RUN_CANCELLED,
                     EventType.RUN_EXPIRED,
-                    EventType.RUN_INGESTED,
+                    EventType.RUN_SUBMITTED,
                 }:
                     return
         finally:
@@ -597,12 +596,12 @@ async def retry_contract_extraction_stage(
     "/extraction-runs/{run_id}/ingestion",
     response_model=ContractIngestionResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="提交最终审核值并正式入库合同",
+    summary="提交最终确认值并保存待审合同",
     responses={
-        404: {"description": "任务不存在、已经过期、已经入库或不属于当前用户。"},
-        409: {"description": "运行阶段或内部结果尚未满足正式入库条件。"},
-        422: {"description": "最终文件名、Core 或 Clause 不符合入库契约。"},
-        502: {"description": "合同概览向量化或 SQLite、处理版 PDF、Elasticsearch、Neo4j 持久化失败。"},
+        404: {"description": "任务不存在、已经过期或不属于当前用户。"},
+        409: {"description": "运行阶段未满足送审条件，或同一任务已提交不同内容。"},
+        422: {"description": "最终文件名、摘要、备注、Core 或 Clause 不符合送审契约。"},
+        502: {"description": "待审 SQLite 或 PDF 保存失败，可使用相同内容重试。"},
     },
 )
 async def ingest_contract_extraction_run(
@@ -611,20 +610,21 @@ async def ingest_contract_extraction_run(
     service: ContractExtractionServiceDependency,
     reviewer_user_name: ReviewerUserDependency,
 ) -> ContractIngestionResponse:
-    """按运行身份补齐分类、向量、PDF 和最终入库责任信息。"""
+    """按运行身份补齐快照，保存待审申请；不在请求内调用中间件或正式入库。"""
     try:
         result = await service.ingest_run(
             run_id,
             reviewer_user_name=reviewer_user_name,
             file_name=payload.file_name,
             summary=payload.summary,
+            note=payload.note,
             core=payload.core,
             clauses=payload.clauses,
         )
     except RunNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="任务不存在、已经过期或已经入库",
+            detail="任务不存在、已经过期或不属于当前用户",
         ) from exc
     except RunConflictError as exc:
         raise HTTPException(
@@ -642,16 +642,17 @@ async def ingest_contract_extraction_run(
             detail=str(exc),
         ) from exc
     return ContractIngestionResponse(
-        status="ingested",
-        document_id=result.document_id,
-        file_name=result.file_name,
-        file_uri=result.file_uri,
-        page_count=result.page_count,
-        ingestion=ContractIngestionAuditResponse(
-            reviewer=result.reviewer,
-            ingested_at=result.ingested_at,
-        ),
+        status="submitted",
+        submission_id=result.submission_id,
+        document_id=result.snapshot.document_id,
+        file_name=result.snapshot.file_name,
+        page_count=result.snapshot.page_count,
+        submitted_by=result.snapshot.submitted_by,
+        submitted_at=result.created_at,
+        review_status=result.review_status,
+        ingestion_status=result.ingestion_status,
     )
+
 
 
 def _parse_last_event_id(value: str | None) -> int | None:

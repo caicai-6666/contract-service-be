@@ -8,9 +8,9 @@ from app.agent.contract_extraction.context import append_contract_task
 from app.agent.contract_extraction.subgraph.retrieval_view_generation.question_generation.state import (
     QuestionGenerationContext,
 )
-from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
+from app.core.tool_tag import TOOL_TAG_PLACEHOLDER, render_mllm_tool_tag
 
-QUESTION_FOCUS_DISCOVERY_PROMPT_VERSION: Final = "retrieval-question-focus-v2"
+QUESTION_FOCUS_DISCOVERY_PROMPT_VERSION: Final = "retrieval-question-focus-v3"
 QUESTION_FOCUS_DISCOVERY_TOOL_PLACEMENT: Final = "before_task"
 
 _QUESTION_FOCUS_DISCOVERY_TASK_BASE = """你已获得当前合同按原始顺序排列的完整页面图像、权威文档导航结构、已确认分类结果和完整提问指南。当前任务是按真实用户检索价值从高到低，逐个发现值得用于生成正式问题的关注点要求；现在不生成正式问题或答案。
@@ -32,8 +32,8 @@ _QUESTION_FOCUS_DISCOVERY_TASK_BASE = """你已获得当前合同按原始顺序
 5. 只有确认不存在尚未记录且值得真实用户独立检索的关注点时，才调用 finish_question_focus_discovery。工具参数、页码、指南标识或业务规则不合法时，根据短反馈修正；普通文本和伪造工具格式不能作为结果。"""
 
 QUESTION_FOCUS_DISCOVERY_TASK: Final = (
-    f"{_QUESTION_FOCUS_DISCOVERY_TASK_BASE}\n\n工具调用格式：\n"
-    f"{TOOL_CALL_XML_INSTRUCTION}"
+    f"{_QUESTION_FOCUS_DISCOVERY_TASK_BASE}\n\n"
+    f"{TOOL_TAG_PLACEHOLDER}"
 )
 
 
@@ -43,7 +43,7 @@ def build_question_focus_discovery_messages(
     """在无数量提示的提问指南上下文尾部追加稳定发现任务。"""
     return append_contract_task(
         context.messages,
-        task_suffix=QUESTION_FOCUS_DISCOVERY_TASK,
+        task_suffix=render_mllm_tool_tag(QUESTION_FOCUS_DISCOVERY_TASK),
     )
 
 

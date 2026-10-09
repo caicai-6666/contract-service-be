@@ -7,7 +7,7 @@ from functools import partial
 from time import monotonic
 
 from app.core.config import get_settings
-from app.core.tool_tag import get_mllm_tool_tag
+from app.core.tool_tag import resolve_mllm_tool_tag, tool_tag_section
 from app.infrastructure.mllm import MLLMClient
 from app.infrastructure.vllm_tokenizer import count_chat_tokens, count_text_tokens
 from app.schema.communication import TurnStatusData
@@ -56,7 +56,7 @@ async def run_agent_core(service, conversation_id, turn_id, owner, *, context=No
         raise ValueError('生成和连续纠错上限必须为正整数')
     settings = settings or get_settings().mllm
     generation = settings.generation
-    template = tool_call_template if tool_call_template is not None else get_mllm_tool_tag()
+    template = resolve_mllm_tool_tag(settings, tool_call_template)
     system = '\n\n'.join((AGENT_CORE_ROLE_PROMPT,
         build_agent_core_interaction_prompt(tool_call_template=template),
         AGENT_CORE_WORKSPACE_PROMPT, AGENT_CORE_FIFO_PROMPT))
@@ -142,7 +142,7 @@ async def run_agent_core(service, conversation_id, turn_id, owner, *, context=No
         await service.publish_tool_progress(conversation_id, turn_id, owner=owner, progress=progress)
 
     executor = ToolExecutor(registry.handlers(publish_progress=publish_progress))
-    recovery = ToolProtocolRecovery()
+    recovery = ToolProtocolRecovery(tool_call_template=template)
     temporary = []
     failures = 0
     seen_calls = set()
@@ -215,7 +215,7 @@ async def run_agent_core(service, conversation_id, turn_id, owner, *, context=No
                 del temporary[-2:]
                 temporary.append(build_system_guidence_message(kind='output_error',
                     reason='响应必须是完整的单个函数调用，参数为合法 JSON，调用标识不可重复。',
-                    required_action='请提交一个当前工具调用；调用格式如下：\n' + template))
+                    required_action='请提交一个当前工具调用。' + tool_tag_section(template)))
                 event['accepted'] = False
                 if failures >= max_consecutive_errors:
                     raise AgentCoreLoopError('连续输出校验失败达到上限')

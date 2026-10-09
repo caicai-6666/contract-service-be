@@ -14,9 +14,9 @@ from app.agent.contract_extraction.subgraph.clause_extraction.tool import (
     AnalyzeClauseHierarchyArguments,
     ClauseCandidateWorkspaceItem,
 )
-from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
+from app.core.tool_tag import TOOL_TAG_PLACEHOLDER, render_mllm_tool_tag
 
-CLAUSE_DISCOVERY_PROMPT_VERSION: Final = "clause-discovery-v15"
+CLAUSE_DISCOVERY_PROMPT_VERSION: Final = "clause-discovery-v16"
 CLAUSE_DISCOVERY_TOOL_PLACEMENT: Final = "before_task"
 
 _CLAUSE_DISCOVERY_TASK_BASE = """你已获得当前合同按原始顺序排列的页面图像、文档导航结构和分类结果。当前任务是按合同原始阅读顺序发现全部待提取条款候选，只记录具有自身直接正文的主条款和各级子条款。你只需确定条款身份、层级和精简起止锚点，不提取完整正文；已确认锚点将用于逐条提取详细原文。
@@ -106,8 +106,8 @@ _CLAUSE_DISCOVERY_TASK_BASE = """你已获得当前合同按原始顺序排列�
 示例六——附件边界：页面先出现“本合同的附件是本合同不可分割的部分，与本合同具有同等法律效力”，随后出现“8.附件：设备技术图纸”和具体图纸页面。前一句独立规定附件法律效力，应记录为无编号效力条款；“8.附件”只是附件索引，后续图纸是附件实体，二者均不记录。排除附件实体后仍须继续检查后续页面，确认不存在其他正文条款。
 """
 CLAUSE_DISCOVERY_TASK: Final = (
-    f"{_CLAUSE_DISCOVERY_TASK_BASE}\n工具调用格式：\n"
-    f"{TOOL_CALL_XML_INSTRUCTION}"
+    f"{_CLAUSE_DISCOVERY_TASK_BASE}\n"
+    f"{TOOL_TAG_PLACEHOLDER}"
 )
 
 WORKSPACE_BEGIN = "===== 条款发现工作区：开始 ====="
@@ -258,7 +258,7 @@ def build_clause_discovery_task_messages(
     """在最终合同公共前缀尾部追加字节稳定的节点任务描述。"""
     return append_contract_task(
         prefill_context.messages,
-        task_suffix=CLAUSE_DISCOVERY_TASK,
+        task_suffix=render_mllm_tool_tag(CLAUSE_DISCOVERY_TASK),
     )
 
 

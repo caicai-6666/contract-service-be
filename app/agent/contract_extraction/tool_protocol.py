@@ -5,43 +5,29 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Final
 
+from app.core.tool_tag import get_mllm_tool_tag, tool_tag_section
+
 TOOL_CHOICE_AUTO: Final = "auto"
 MAXIMUM_PROTOCOL_RECOVERIES: Final = 2
 MAXIMUM_AUDITED_ASSISTANT_CONTENT: Final = 1_000
-
-TOOL_CALL_XML_INSTRUCTION: Final = """合法工具调用必须使用以下 XML 结构，不得使用“工具名: JSON”、代码块或普通文本模拟调用：
-<tool_call>
-<function=工具名称>
-<parameter=参数名称>
-参数值
-</parameter>
-</function>
-</tool_call>
-请替换为实际工具名称和全部必填参数；调用结束后不得追加任何文本。"""
 
 
 def build_protocol_recovery_message(
     *,
     tool_call_count: int,
     result_label: str,
+    tool_call_template: str | None = None,
 ) -> dict[str, str]:
-    """构造不回显错误输出、明确真实 XML 协议的统一恢复反馈。"""
+    """使用与任务一致的工具格式纠错，不回显错误输出。"""
+    template = tool_call_template if tool_call_template is not None else get_mllm_tool_tag()
     return {
         "role": "user",
         "content": (
             f"上一轮未生成合法工具调用：服务端只解析到 {tool_call_count} 个工具调用，"
             f"该响应不能作为{result_label}。"
             "不要输出“工具名: JSON”、参数说明或普通文本来模拟调用。"
-            "本轮必须且只能调用一个当前提供的工具，并且必须按以下 XML 模板输出：\n"
-            "<tool_call>\n"
-            "<function=工具名称>\n"
-            "<parameter=参数名称>\n"
-            "参数值\n"
-            "</parameter>\n"
-            "</function>\n"
-            "</tool_call>\n"
-            "请使用实际工具名称和全部必填参数替换模板占位内容；"
-            "函数调用之后不要追加任何文本。"
+            "本轮必须且只能调用一个当前提供的工具。"
+            f"{tool_tag_section(template)}"
         ),
     }
 
@@ -66,6 +52,7 @@ class ToolProtocolRecovery:
     maximum_attempts: int = MAXIMUM_PROTOCOL_RECOVERIES
     attempts: int = 0
     memory_start: int | None = None
+    tool_call_template: str | None = None
 
     def _start_memory(self, messages: list[dict[str, Any]]) -> None:
         """只在连续失败链的第一轮记录清理边界。"""
@@ -92,6 +79,7 @@ class ToolProtocolRecovery:
             build_protocol_recovery_message(
                 tool_call_count=tool_call_count,
                 result_label=result_label,
+                tool_call_template=self.tool_call_template,
             )
         )
         self.attempts += 1
@@ -141,7 +129,6 @@ class ToolProtocolRecovery:
 __all__ = [
     "MAXIMUM_AUDITED_ASSISTANT_CONTENT",
     "MAXIMUM_PROTOCOL_RECOVERIES",
-    "TOOL_CALL_XML_INSTRUCTION",
     "TOOL_CHOICE_AUTO",
     "ToolProtocolRecovery",
     "audited_assistant_content",

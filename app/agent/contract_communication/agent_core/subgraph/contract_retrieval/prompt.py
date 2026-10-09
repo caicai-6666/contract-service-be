@@ -1,5 +1,7 @@
 """合同查找对齐与候选查询提示词；工具模板由宿主注入。"""
-CONTRACT_RETRIEVAL_PROMPT_VERSION = 'contract-retrieval-v12'
+
+from app.core.tool_tag import tool_tag_section
+CONTRACT_RETRIEVAL_PROMPT_VERSION = 'contract-retrieval-v13'
 
 
 def build_prompt(tool_template: str) -> str:
@@ -86,9 +88,7 @@ Core 工具不查询合同类型，类型条件交给 search_contracts_by_catego
 
 每轮恰好调用一个当前提供的工具，不附带普通正文，不用文本模拟工具调用。只有成功回执才表示操作已生效；收到 system-guidence 时按提示修正操作，但不改变原查找目标。最终通过结束工具提交，不自行输出合同列表。
 
-### 工具调用格式
-
-""" + tool_template
+""" + tool_tag_section(tool_template)
 
 
 ALIGNMENT_PROMPT_VERSION = 'contract-query-alignment-v2'

@@ -3,7 +3,7 @@ from contextlib import AsyncExitStack
 from copy import deepcopy
 from dataclasses import asdict
 import json
-from app.core.tool_tag import get_mllm_tool_tag
+from app.core.tool_tag import resolve_mllm_tool_tag, tool_tag_section
 from app.infrastructure.mllm import MLLMClient
 from app.infrastructure.model_json import load_model_json, validate_model_payload
 from app.agent.contract_extraction.subgraph.field_extraction.tool import _validate_property_value
@@ -138,7 +138,7 @@ async def run_contract_retrieval(request,*,metadata_store,settings,authorize,es_
     tools=build_query_tools(pool=pool,metadata_store=metadata_store,settings=settings,authorize=authorize,es_client=es_client,field_catalog=field_catalog,category_catalog=category_catalog)
     tools.append(build_finish_contract_retrieval_registration(pool=pool,authorize=authorize,on_complete=accept_final))
     registry=ToolRegistry(tools);handlers=registry.handlers()
-    template=tool_template if tool_template is not None else get_mllm_tool_tag()
+    template = resolve_mllm_tool_tag(settings.mllm, tool_template)
     prefix=[{'role':'system','content':build_prompt(template)},
         {'role':'user','content':'# 查找需求\n'+json.dumps(request.query,ensure_ascii=False)+'\n初始范围：'+('全部ready合同' if request.initial_document_ids is None else f'宿主限定的{len(request.initial_document_ids)}份合同，禁止扩大')}]
     history=[];errors=0;recovery=ToolProtocolRecovery()
@@ -173,7 +173,7 @@ async def run_contract_retrieval(request,*,metadata_store,settings,authorize,es_
                 if not success:
                     errors+=1
                     recovery.record_tool_failure(history,assistant_message={'role':'assistant','content':''},
-                        tool_message=build_system_guidence_message(kind='invalid_action',reason=json.dumps(feedback,ensure_ascii=False),required_action='修正后只调用一个合法工具。\n'+template))
+                        tool_message=build_system_guidence_message(kind='invalid_action',reason=json.dumps(feedback,ensure_ascii=False),required_action='修正后只调用一个合法工具。'+tool_tag_section(template)))
                     if errors>=3:return ContractRetrievalResult(status='error',error='连续调用错误达到上限，本次查询未完成。')
                     continue
                 recovery.accept_correction(history);errors=0;event['accepted']=True

@@ -50,3 +50,11 @@ __pycache__/
 
 # 本地辅助脚本不纳入 Git。
 /scripts/
+
+# 待审区仅跟踪目录占位；数据库、PDF、临时文件均为运行数据。
+!/data/pending-review/
+/data/pending-review/*
+!/data/pending-review/.gitkeep
+!/data/pending-review/files/
+/data/pending-review/files/*
+!/data/pending-review/files/.gitkeep

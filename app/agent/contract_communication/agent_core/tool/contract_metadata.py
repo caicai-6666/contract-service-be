@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class GetContractMetadataArguments(BaseModel):
-    """当你需要快速了解一份合同的基本信息、查看合同摘要，或确认审核人及相关日期时，使用这个工具。根据完整合同ID获取已存储的名称、摘要、审核人、签署日期和入库时间，帮助判断是否需要进一步阅读原文。摘要仅用于概览，核实具体条款时应继续查看合同文件。未记录的信息不会自动补写，不返回注意事项或关联列表。"""
+    """当你需要快速了解一份合同的基本信息、查看合同摘要，或确认上传人及相关日期时，使用这个工具。根据完整合同ID获取已存储的名称、摘要、上传人、签署日期和入库时间，帮助判断是否需要进一步阅读原文。摘要仅用于概览，核实具体条款时应继续查看合同文件。未记录的信息不会自动补写，不返回注意事项或关联列表。"""
     model_config = ConfigDict(extra='forbid', frozen=True)
     document_id: str = Field(pattern=r'^[0-9a-f]{64}$', description='目标合同的完整64位小写十六进制ID，必须从用户引用或工具结果中原样复制。禁止缩写、截断、使用省略号或首尾片段；不得用合同名称、文件名或关系ID替代。只有缩写时须先取得完整ID，不得猜测补全。')
 
@@ -25,7 +25,7 @@ def render_contract_metadata(metadata: ContractMetadata) -> str:
     time = metadata.ingested_at.astimezone(timezone(timedelta(hours=8))).isoformat(sep=' ', timespec='seconds')
     return '\n'.join([
         '# 合同基本信息', '', f'合同名称：{recorded(metadata.file_name)}',
-        f'合同 ID：{metadata.document_id}', f'审核人：{recorded(metadata.reviewer)}',
+        f'合同 ID：{metadata.document_id}', f'上传人：{recorded(metadata.uploader)}',
         f'签署日期：{recorded(metadata.contract_time)}', f'入库时间：{time}',
         '', '## 合同摘要', '', recorded(metadata.summary), '',
         '摘要仅供概览；核实具体条款请查看合同原文。',

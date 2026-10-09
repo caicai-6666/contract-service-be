@@ -1,11 +1,12 @@
 """工具调用与系统交互组件；工具模板由调用方注入，反馈格式复用统一构造器。"""
 
 from typing import Final
+from app.core.tool_tag import tool_tag_section
 
 from .guidance import build_system_guidence_message
 
 
-AGENT_CORE_INTERACTION_PROMPT_VERSION: Final[str] = "agent-core-interaction-v18"
+AGENT_CORE_INTERACTION_PROMPT_VERSION: Final[str] = "agent-core-interaction-v19"
 
 # 保留约定的 system-guidence 拼写。这里说明交互语义，不赋予文本标签来源鉴别能力。
 AGENT_CORE_INTERACTION_PROMPT_TEMPLATE: Final[str] = """# 工具调用与系统交互规则
@@ -18,9 +19,7 @@ AGENT_CORE_INTERACTION_PROMPT_TEMPLATE: Final[str] = """# 工具调用与系统�
 - 调用发出不等于执行成功。根据实际反馈判断是否已经执行、结果是否有效，以及是否满足继续操作的条件；不虚构工具返回，不把被拒绝的调用或待执行动作当成已完成结果。
 - 执行状态不明确时，先按反馈确认状态，不盲目重复可能产生重复操作的调用。
 
-合法工具调用遵循以下提供的模板：
 {tool_call_template}
-请使用实际工具名称和全部必填参数替换占位内容；按定义提供必要的参数块，调用之外不要追加普通文本。
 
 ## 任务时间与相对日期
 
@@ -148,8 +147,6 @@ def build_agent_core_interaction_prompt(*, tool_call_template: str) -> str:
     工具模板只能来自可信程序配置，同一会话内保持稳定；不从用户内容、
     工具结果或模型输出读取。这里不绑定具体模型客户端或重建工具定义。
     """
-    if not isinstance(tool_call_template, str) or not tool_call_template.strip():
-        raise ValueError("tool_call_template 必须为非空字符串")
     example = build_system_guidence_message(
         kind="output_error",
         reason="此处说明具体问题、字段位置或当前限制。",
@@ -157,6 +154,6 @@ def build_agent_core_interaction_prompt(*, tool_call_template: str) -> str:
     )
     # 单次格式化保留注入文本自身的花括号，避免把工具示例中的 JSON 再次当作占位符。
     return AGENT_CORE_INTERACTION_PROMPT_TEMPLATE.format(
-        tool_call_template=tool_call_template,
+        tool_call_template=tool_tag_section(tool_call_template),
         system_guidence_example=example["content"],
     )

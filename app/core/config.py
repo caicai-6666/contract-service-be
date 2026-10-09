@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal, Self
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, field_validator, model_validator
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -65,6 +65,7 @@ class MLLMSettings(BaseModel):
     base_url: str = "http://127.0.0.1:8000/v1"
     api_key: str | None = None
     model: str = "qwen38-flash-next"
+    tool_tag_enabled: bool = Field(default=True, description="是否向模型消息注入工具调用格式说明；关闭不影响 tools、部署端模板及推理档位映射。")
     tool_tag_file: str = Field(
         default="qwen3.8-flash-next-nvfp4.txt",
         description="data/tool-tag 下的工具调用模板文件名；启动时读取，不允许目录路径。",
@@ -262,6 +263,17 @@ class Settings(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    middleware_base_url: HttpUrl | None = Field(
+        default=None, description="中间件服务地址，包含 HTTP/HTTPS 协议、IP 和端口；未配置时为空。",
+    )
+    middleware_retry_interval_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
+    middleware_request_timeout_seconds: float = Field(default=10, gt=0, allow_inf_nan=False)
+    middleware_platform_code: str = Field(
+        default="", description="本平台在中间件服务中登记的 platform_code；未配置时为空。",
+    )
+    middleware_secret: SecretStr = Field(
+        default=SecretStr(""), description="本平台对接中间件的登录 secret；作为敏感配置保存，未配置时为空。",
+    )
     app_env: str = "development"
     communication_trace_enabled: bool = False
     communication_database_file: Path = Path("data/communication/communication.db")
@@ -279,6 +291,8 @@ class Settings(BaseModel):
     communication_contract_relations_cache_max_contracts: int = Field(default=10, gt=0, description='每个会话合同关联快照池容量，必须为正整数。')
     communication_contract_relations_page_size: int = Field(default=5, gt=0, description='合同关联每页关系数，必须为正整数。')
     communication_contract_notes_cache_max_contracts: int = Field(default=10, gt=0, description='每个会话注意事项快照池容量，正整数。')
+    communication_contract_passport_cache_max_queries: int = Field(default=10, gt=0, description='每个会话通行证合同列表LRU容量。')
+    communication_contract_passport_page_size: int = Field(default=5, gt=0, description='通行证合同列表每页合同数。')
     communication_contract_notes_page_size: int = Field(default=5, gt=0, description='注意事项每页记录数，正整数。')
     communication_contract_search_cache_max_queries: int = Field(default=10, gt=0, description='每个会话合同检索结果集LRU容量。')
     communication_web_page_cache_max_entries: int = Field(default=10, gt=0, description='每个会话最多驻留的网页与关注重点精炼结果数。')
@@ -307,6 +321,16 @@ class Settings(BaseModel):
     field_definition_dir: Path = Path("data/definition/field")
     retrieval_view_guide_dir: Path = Path("data/definition/retrieval-view")
     reviewer_user_file: Path = Path("data/user/users.yaml")
+    pending_review_retention_seconds: float = Field(default=604800, gt=0, allow_inf_nan=False)
+    pending_review_cleanup_interval_seconds: float = Field(default=3600, gt=0, allow_inf_nan=False)
+    pending_review_cleanup_batch_size: int = Field(default=100, gt=0)
+    pending_review_result_poll_interval_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
+    pending_review_result_batch_size: int = Field(default=10, gt=0)
+    pending_review_scan_interval_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
+    pending_review_publish_retry_seconds: float = Field(default=60, gt=0, allow_inf_nan=False)
+    pending_review_publish_timeout_seconds: float = Field(default=120, gt=0, allow_inf_nan=False)
+    pending_review_publish_batch_size: int = Field(default=10, gt=0)
+    pending_review_directory: Path = Path("data/pending-review")
     contract_metadata_database_file: Path = Path(
         "data/abstract/contracts.db"
     )
@@ -381,6 +405,13 @@ class Settings(BaseModel):
         return _PROJECT_ROOT / self.reviewer_user_file
 
     @property
+    def pending_review_path(self) -> Path:
+        """待审区与正式合同目录分离，相对路径按项目根目录解析。"""
+        if self.pending_review_directory.is_absolute():
+            return self.pending_review_directory
+        return _PROJECT_ROOT / self.pending_review_directory
+
+    @property
     def contract_metadata_database_path(self) -> Path:
         """将 SQLite 合同元数据文件固定解析到项目根目录。"""
         if self.contract_metadata_database_file.is_absolute():
@@ -426,6 +457,11 @@ def get_settings() -> Settings:
     """加载一次 `.env`，并缓存解析后的配置。"""
     load_dotenv(_PROJECT_ROOT / ".env")
     return Settings(
+        middleware_base_url=_env("MIDDLEWARE_BASE_URL", "").strip() or None,
+        middleware_retry_interval_seconds=_env("MIDDLEWARE_RETRY_INTERVAL_SECONDS", "30"),
+        middleware_request_timeout_seconds=_env("MIDDLEWARE_REQUEST_TIMEOUT_SECONDS", "10"),
+        middleware_platform_code=_env("MIDDLEWARE_PLATFORM_CODE", "").strip(),
+        middleware_secret=SecretStr(_env("MIDDLEWARE_SECRET", "")),
         app_env=_env("APP_ENV", "development"),
         communication_trace_enabled=_env("COMMUNICATION_TRACE_ENABLED", "false"),
         communication_database_file=_env("COMMUNICATION_DATABASE_FILE", "data/communication/communication.db"),
@@ -439,6 +475,8 @@ def get_settings() -> Settings:
         communication_contract_relations_cache_max_contracts=_env("COMMUNICATION_CONTRACT_RELATIONS_CACHE_MAX_CONTRACTS", "10"),
         communication_contract_relations_page_size=_env("COMMUNICATION_CONTRACT_RELATIONS_PAGE_SIZE", "5"),
         communication_contract_notes_cache_max_contracts=_env("COMMUNICATION_CONTRACT_NOTES_CACHE_MAX_CONTRACTS", "10"),
+        communication_contract_passport_cache_max_queries=_env("COMMUNICATION_CONTRACT_PASSPORT_CACHE_MAX_QUERIES", "10"),
+        communication_contract_passport_page_size=_env("COMMUNICATION_CONTRACT_PASSPORT_PAGE_SIZE", "5"),
         communication_contract_notes_page_size=_env("COMMUNICATION_CONTRACT_NOTES_PAGE_SIZE", "5"),
         communication_contract_search_cache_max_queries=_env("COMMUNICATION_CONTRACT_SEARCH_CACHE_MAX_QUERIES", "10"),
         communication_web_page_cache_max_entries=_env("COMMUNICATION_WEB_PAGE_CACHE_MAX_ENTRIES", "10"),
@@ -477,6 +515,16 @@ def get_settings() -> Settings:
             "REVIEWER_USER_FILE",
             "data/user/users.yaml",
         ),
+        pending_review_retention_seconds=_env("PENDING_REVIEW_RETENTION_SECONDS", "604800"),
+        pending_review_cleanup_interval_seconds=_env("PENDING_REVIEW_CLEANUP_INTERVAL_SECONDS", "3600"),
+        pending_review_cleanup_batch_size=_env("PENDING_REVIEW_CLEANUP_BATCH_SIZE", "100"),
+        pending_review_result_poll_interval_seconds=_env("PENDING_REVIEW_RESULT_POLL_INTERVAL_SECONDS", "30"),
+        pending_review_result_batch_size=_env("PENDING_REVIEW_RESULT_BATCH_SIZE", "10"),
+        pending_review_scan_interval_seconds=_env("PENDING_REVIEW_SCAN_INTERVAL_SECONDS", "30"),
+        pending_review_publish_retry_seconds=_env("PENDING_REVIEW_PUBLISH_RETRY_SECONDS", "60"),
+        pending_review_publish_timeout_seconds=_env("PENDING_REVIEW_PUBLISH_TIMEOUT_SECONDS", "120"),
+        pending_review_publish_batch_size=_env("PENDING_REVIEW_PUBLISH_BATCH_SIZE", "10"),
+        pending_review_directory=_env("PENDING_REVIEW_DIRECTORY", "data/pending-review"),
         contract_metadata_database_file=_env(
             "CONTRACT_METADATA_DATABASE_FILE",
             "data/abstract/contracts.db",
@@ -553,6 +601,7 @@ def get_settings() -> Settings:
             base_url=_env("VLLM_MLLM_BASE_URL", "http://127.0.0.1:8000/v1"),
             api_key=_optional_env("VLLM_MLLM_API_KEY"),
             model=_env("VLLM_MLLM_MODEL", "qwen38-flash-next"),
+            tool_tag_enabled=_env("VLLM_MLLM_TOOL_TAG_ENABLED", "true"),
             tool_tag_file=_env(
                 "VLLM_MLLM_TOOL_TAG_FILE", "qwen3.8-flash-next-nvfp4.txt"
             ),

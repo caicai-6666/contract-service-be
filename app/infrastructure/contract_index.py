@@ -123,7 +123,7 @@ def build_contract_index_mapping(
                 "type": "object",
                 "dynamic": "strict",
                 "properties": {
-                    "reviewer": {"type": "keyword"},
+                    "uploader": {"type": "keyword"},
                     "ingested_at": {"type": "date"},
                 },
             },
@@ -363,6 +363,16 @@ async def synchronize_contract_index(
     additions: ElasticsearchMapping = {}
     if core_patch is not None:
         additions["core"] = core_patch
+    # 旧索引保留 reviewer 兼容读取，新写入只使用 uploader；ES 字段不可原地改名。
+    current_ingestion = current_properties.get("ingestion", expected_properties["ingestion"])
+    if not isinstance(current_ingestion, Mapping):
+        raise ContractIndexSchemaError("Elasticsearch ingestion mapping 不是对象")
+    ingestion_patch, _ = _build_mapping_addition(
+        expected_properties["ingestion"], current_ingestion, path="ingestion")
+    if "ingestion" not in current_properties:
+        additions["ingestion"] = expected_properties["ingestion"]
+    elif ingestion_patch is not None:
+        additions["ingestion"] = ingestion_patch
     current_questions = current_properties.get("retrieval_questions")
     added_questions = current_questions is None
     if added_questions:

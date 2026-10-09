@@ -127,7 +127,7 @@ class RunAggregate:
     continued_at: datetime | None = None
     cancelled: bool = False
     expired: bool = False
-    ingested: bool = False
+    submitted: bool = False
     next_sequence: int = 1
     events: deque[ContractExtractionEvent] = field(init=False)
     subscribers: set[asyncio.Queue[ContractExtractionEvent | None]] = field(

@@ -110,3 +110,6 @@ GET /contract/api/health
 - [合同 API](contract.md)：获取 Core 表单定义、列出并恢复未入库运行、上传 PDF、获取建议文件名与 Core/Clause 结果、订阅 SSE、重试失败阶段并提交正式入库。
 
 新增业务接口时，应按资源或完整用例在本目录新增 kebab-case 文档，并同步更新[项目文档导航](../readme.md)。
+
+
+待审数据、审核结果、清理计时与临时 PDF 查询见[待入库申请 API](pending-review.md)。

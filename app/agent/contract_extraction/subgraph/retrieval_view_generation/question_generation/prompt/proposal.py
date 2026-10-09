@@ -19,9 +19,9 @@ from app.agent.contract_extraction.subgraph.retrieval_view_generation.prompt imp
 from app.agent.contract_extraction.subgraph.retrieval_view_generation.question_generation.focus_discovery.tool import (
     GeneratedQuestionFocus,
 )
-from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
+from app.core.tool_tag import TOOL_TAG_PLACEHOLDER, render_mllm_tool_tag
 
-QUESTION_PROPOSAL_COMMON_PROMPT_VERSION: Final = "retrieval-question-proposal-common-v2"
+QUESTION_PROPOSAL_COMMON_PROMPT_VERSION: Final = "retrieval-question-proposal-common-v3"
 QUESTION_PROPOSAL_TARGET_PROMPT_VERSION: Final = "retrieval-question-proposal-target-v2"
 QUESTION_PROPOSAL_TOOL_PLACEMENT: Final = "before_task"
 
@@ -56,8 +56,8 @@ _QUESTION_PROPOSAL_COMMON_TASK_BASE: Final = """你已获得当前合同按原�
 3. 工具参数、页码、证据顺序或业务规则不合法时，只根据短反馈修正当前结果。普通文本和伪造工具格式不能作为结果；错误轨迹在下一次结果通过全部校验后清除。"""
 
 QUESTION_PROPOSAL_COMMON_TASK: Final = (
-    f"{_QUESTION_PROPOSAL_COMMON_TASK_BASE}\n\n工具调用格式：\n"
-    f"{TOOL_CALL_XML_INSTRUCTION}\n\n当前问题规划 YAML 结构说明：\n"
+    f"{_QUESTION_PROPOSAL_COMMON_TASK_BASE}\n\n"
+    f"{TOOL_TAG_PLACEHOLDER}\n\n当前问题规划 YAML 结构说明：\n"
     f"{QUESTION_PLAN_COMMENTS}"
 )
 
@@ -98,7 +98,7 @@ def build_question_proposal_common_messages(
     """在合同前缀尾部追加所有并发问题请求共享的表达任务。"""
     return append_contract_task(
         prefill_context.messages,
-        task_suffix=QUESTION_PROPOSAL_COMMON_TASK,
+        task_suffix=render_mllm_tool_tag(QUESTION_PROPOSAL_COMMON_TASK),
     )
 
 

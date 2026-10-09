@@ -77,7 +77,7 @@ class _ContractIndexModel(BaseModel):
 
 
 class _ContractIndexIngestion(_ContractIndexModel):
-    reviewer: str = Field(min_length=1)
+    uploader: str = Field(min_length=1)
     ingested_at: datetime
 
 
@@ -133,7 +133,7 @@ class ContractIngestionResult:
     file_name: str
     file_uri: str
     page_count: int
-    reviewer: str
+    uploader: str
     ingested_at: datetime
 
 
@@ -217,6 +217,21 @@ class ContractIngestionService:
         except Exception as exc:
             raise ContractPersistenceError("Neo4j 合同节点同步失败，保留入库状态供重试") from exc
 
+    def validate_pending_review(self, snapshot) -> None:
+        """送审前复用正式入库约束，纯校验，不调用模型或外部存储。"""
+        self._validate_file_name(snapshot.file_name)
+        if len(snapshot.file_name) > 200:
+            raise ContractReviewValidationError('送审合同名称不能超过 200 个字符')
+        assignments = self._category_assignments(snapshot.classification,
+            category_reasoning=snapshot.category_reasoning)
+        known = {category.code for category in self._category_metadata}
+        if any(assignment.category_code not in known for assignment in assignments):
+            raise ContractReviewValidationError('合同分类不在当前权威目录中')
+        self._contract_time(self._project_core(snapshot.core))
+        self._project_clauses(snapshot.clauses, page_count=snapshot.page_count)
+        self._validate_vector(snapshot.question_fusion_vector, field_name='question_fusion')
+        self._validate_vector(snapshot.page_fusion_vector, field_name='page_fusion')
+
     async def ingest(
         self,
         *,
@@ -225,7 +240,7 @@ class ContractIngestionService:
         page_count: int,
         file_name: str,
         summary: str,
-        reviewer: str,
+        uploader: str,
         classification: ContractClassificationView,
         category_reasoning: Mapping[str, str],
         core: CoreDraftData,
@@ -233,6 +248,7 @@ class ContractIngestionService:
         retrieval_questions: tuple[str, ...],
         question_fusion_vector: tuple[float, ...],
         page_fusion_vector: tuple[float, ...],
+        passport: str | None = None,
     ) -> ContractIngestionResult:
         """形成最终文档；任一持久化步骤失败时不伪造成功结果。"""
         normalized_file_name = self._validate_file_name(file_name)
@@ -242,9 +258,9 @@ class ContractIngestionService:
         normalized_summary = summary.strip()
         if len(normalized_summary) > 3000:
             raise ContractReviewValidationError("合同摘要不能超过 3000 个字符")
-        normalized_reviewer = reviewer.strip()
-        if not normalized_reviewer:
-            raise ContractReviewValidationError("入库审核人不能为空")
+        normalized_uploader = uploader.strip()
+        if not normalized_uploader:
+            raise ContractReviewValidationError("上传人不能为空")
         if page_count <= 0:
             raise ContractReviewValidationError("处理版 PDF 页数必须大于 0")
 
@@ -299,7 +315,7 @@ class ContractIngestionService:
             file_uri=file_uri,
             page_count=page_count,
             ingestion=_ContractIndexIngestion(
-                reviewer=normalized_reviewer,
+                uploader=normalized_uploader,
                 ingested_at=ingested_at,
             ),
             classification=_ContractIndexClassification.model_validate(
@@ -318,13 +334,14 @@ class ContractIngestionService:
         )
         ingestion_id = str(uuid4())
         metadata = ContractMetadata(
+            passport=passport,
             summary=normalized_summary,
             document_id=document_id,
             file_name=normalized_file_name,
             category=self._category_summary(classification),
             contract_time=contract_time,
             file_uri=file_uri,
-            reviewer=normalized_reviewer,
+            uploader=normalized_uploader,
             ingested_at=ingested_at,
             status=ContractMetadataStatus.INGESTING,
             ingestion_id=ingestion_id,
@@ -336,6 +353,18 @@ class ContractIngestionService:
             asyncio.Lock(),
         )
         async with document_lock:
+            if passport is not None:
+                if not passport or passport != passport.strip():
+                    raise ContractReviewValidationError('批准入库需要有效 passport')
+                existing = await asyncio.to_thread(self._metadata_store.get, document_id)
+                if existing is not None:
+                    if existing.passport != passport or existing.status == ContractMetadataStatus.DELETING:
+                        raise ContractDocumentConflictError('合同已存在且跨平台身份不同，或正在删除')
+                    if existing.status == ContractMetadataStatus.READY:
+                        # 正式库已完成、本地待审回执尚未写入的重投窗口：不再生成向量或覆盖审计时间。
+                        return ContractIngestionResult(document_id=existing.document_id,
+                            file_name=existing.file_name, file_uri=existing.file_uri,
+                            page_count=page_count, uploader=existing.uploader, ingested_at=existing.ingested_at)
             # 仅编码用户最终确认的摘要；失败时尚未触碰任何持久化存储。
             try:
                 summary_embedding = await embed_contract_summary(
@@ -475,7 +504,7 @@ class ContractIngestionService:
             file_name=metadata.file_name,
             file_uri=metadata.file_uri,
             page_count=document.page_count,
-            reviewer=metadata.reviewer,
+            uploader=metadata.uploader,
             ingested_at=metadata.ingested_at,
         )
 
@@ -581,7 +610,7 @@ class ContractIngestionService:
             source.get("document_id") == metadata.document_id
             and source.get("file_name") == metadata.file_name
             and source.get("file_uri") == metadata.file_uri
-            and ingestion.get("reviewer") == metadata.reviewer
+            and ingestion.get("uploader", ingestion.get("reviewer")) == metadata.uploader
             and cls._same_datetime(
                 ingestion.get("ingested_at"),
                 metadata.ingested_at,

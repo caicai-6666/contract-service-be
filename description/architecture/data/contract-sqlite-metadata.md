@@ -14,12 +14,12 @@ SQLite 是文件选择和文件管理的权威目录。普通业务只读取 `re
 
 | 存储 | 职责 |
 | --- | --- |
-| SQLite | 合同名称、类别摘要、签订日期、文件地址、审核人、落库时间、入库状态，以及合同内容摘要和用户注意事项（摘要目前仅初始化字段；注意事项已提供独立读写接口）。 |
+| SQLite | 合同名称、类别摘要、签订日期、文件地址、上传人、落库时间、入库状态，以及合同内容摘要和用户注意事项（摘要目前仅初始化字段；注意事项已提供独立读写接口）。 |
 | `data/contract` | 处理版 PDF 字节。 |
 | Elasticsearch | 完整分类、Core、Clause、向量和入库审计。 |
 | Neo4j | 合同 ID 节点及后续人工维护的关联边，见[合同关联图存储契约](contract-graph.md)。 |
 
-[已入库合同元数据接口](../../api/contract.md#获取所有已入库合同元数据)复用 `list_ready()`，向所有已登录审核人提供共享正式目录，只投影七个公开字段，不暴露内部入库状态与尝试标识。
+[已入库合同元数据接口](../../api/contract.md#获取所有已入库合同元数据)复用 `list_ready()`，向所有已登录上传人提供共享正式目录，只投影七个公开字段，不暴露内部入库状态与尝试标识。
 
 `document_id` 是处理版 PDF 字节的 64 位小写 SHA-256，同时作为 SQLite 主键、`data/contract/<document_id>.pdf` 文件名和 Elasticsearch `_id`。
 
@@ -41,9 +41,10 @@ SQLite 使用 `contracts`、`contract_category_metadata`、`contract_category_as
 | `category` | `TEXT` | 模型命中类别 code 摘要；多类别以 ` / ` 连接，未映射时保存类型说明。 |
 | `contract_time` | `TEXT NULL` | 最终 Core `signing_date` 规范化后的 `YYYY-MM-DD`；缺失时为 `NULL`。 |
 | `file_uri` | `TEXT` | 唯一的根相对地址 `/<document_id>.pdf`。 |
-| `reviewer` | `TEXT` | 当前登录审核人的名称。 |
+| `uploader` | `TEXT` | 本平台提交待审申请的上传人，取自快照 submitted_by；不写外部审核员。 |
 | `ingested_at` | `TEXT` | 带时区的 ISO 8601 入库时间。 |
 | `status` | `TEXT` | `ingesting`、`ready` 或 `deleting`。 |
+| `passport` | `TEXT` | 外部审核通过后的跨平台关联标识；同一通行证可对应多份合同，不唯一。历史合同不自动填充。拒绝不创建正式合同。 |
 | `ingestion_id` | `TEXT` | 单次入库尝试标识，防止旧尝试覆盖新状态。 |
 
 `category` 使用“多类别 code 以 ` / ` 连接，未映射时保存类型描述”的投影规则，前端可通过类别列表接口将 code 映射为中文名称。类别筛选必须使用关联表，不对该文本做模糊匹配。完整分类场景仍只保存在 Elasticsearch。`contract_time` 不从文件名推断；入库边界仅接受完整且合法的年月日，并将 `YYYY-M-D`、`YYYY/M/D`、`YYYY.M.D` 或中文年月日统一为 `YYYY-MM-DD`。SQLite 与 Elasticsearch 写入同一标准值。
@@ -116,7 +117,7 @@ SQLite 事务不会跨越文件 I/O 或 ES 网络请求。它只原子登记一�
 应用开始接收请求前先建立 Neo4j `Contract.document_id` 唯一约束，再扫描所有非 `ready` 记录：
 
 1. `deleting` 继续按图节点及边 → ES → PDF → SQLite 清理，不能转回 `ready`。
-2. `ingesting` 核验 PDF 哈希与 ES 中的名称、地址、审核人、时间、类别及签订日期；匹配后补建图节点并发布 `ready`，缺失或不匹配时转入 `deleting` 清理。
+2. `ingesting` 核验 PDF 哈希与 ES 中的名称、地址、上传人、时间、类别及签订日期；匹配后补建图节点并发布 `ready`，缺失或不匹配时转入 `deleting` 清理。
 3. 为所有已存在的 `ready` 合同幂等补建节点，不改动既有关联。
 4. 外部服务不可达或恢复失败中止启动，保留恢复入口。
 
@@ -133,3 +134,30 @@ SQLite 事务不会跨越文件 I/O 或 ES 网络请求。它只原子登记一�
 ## 名称全文索引
 
 `contract_names_fts` 仅索引合同名称，使用 Lindera（Jieba），初始化回填历史名称，触发器同步增删改。名称不向量化；查询契约见[合同名称检索](../workflow/contract-communication/contract-name-search.md)。
+
+
+---
+
+## 独立待审区
+
+`data/pending-review/reviews.db` 和 `files/` 用于持久化独立待审快照，不进入正式合同目录。已实现初始化、快照存入/读取、消息 ID 绑定及查询；前端确认接口已改为提交待审申请，正式元数据只在外部批准后由消费者写入。字段和一致性边界见[合同待审快照存储](pending-review.md)。
+
+---
+
+## 外部审核身份
+
+正式入库可接收 passport，由审核反馈消费者传入并与元数据同事务保存。已绑定身份不能清空或更换；同一 passport 不能绑定两份合同。相同 document_id 与 passport 的 ready 记录在反馈重试时直接复用，不覆盖正式入库时间。既有直接入库调用兼容 passport=None；已有非空身份不允许被直接入库覆盖清空。passport 不加入 ES 文档，本次也不修改对外元数据接口投影。流程见[审核反馈拉取与批准入库](../../capability/application/pending-review-consumer.md)。
+
+
+## 通行证精确读取
+
+`SQLiteContractMetadataStore.list_ids_by_passport(passport)` 利用 `contracts_passport` 普通索引，参数化精确匹配全部 ready 合同 ID，区分大小写，按入库时间倒序、ID 升序返回元组；无匹配返回空元组。空值及首尾空白拒绝查询。通行证不是合同唯一键；初始化会自动将旧同名唯一索引替换为普通索引，保留历史数据与单合同 passport 不可覆盖约束。Agent Core 已接入[按通行证获取合同](../workflow/contract-communication/contract-metadata-tool.md#按通行证获取合同)，不读取待审快照或外部平台。
+
+
+---
+
+## 上传人字段与旧数据兼容
+
+新正式入库只保存 `uploader`（待审快照的 `submitted_by`），不保存外部审核员或审核备注。外部审核身份仍留在待审记录的 `reviewed_by`，由待审详情 `review.reviewer` 展示。SQLite 启动时将旧 `reviewer` 列重命名为 `uploader`，不额外保留人员列；新 ES 文档只写 `ingestion.uploader`，启动同步补齐该 keyword mapping。旧 ES 字段无法原地删除，历史文档读取与恢复核验暂兼容 ingestion.reviewer，不向新文档回写它。
+
+旧列值迁移时原样保留。历史若曾保存外部审核员，仅字段重命名无法恢复真实上传人，不能将兼容值视为已核实上传身份；本次不猜测或批量改写历史人员数据。前端正式合同元数据和查重候选应改读 `uploader`。

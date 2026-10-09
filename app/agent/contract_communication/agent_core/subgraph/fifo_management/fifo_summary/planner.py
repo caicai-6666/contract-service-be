@@ -1,4 +1,5 @@
 """主题规划真实模型入口；有限纠错、成功后清除失败链，原始响应仅留审计。"""
+from app.core.tool_tag import resolve_mllm_tool_tag, tool_tag_section
 from app.infrastructure.model_json import load_model_json, validate_model_payload
 import json
 from pydantic import ValidationError
@@ -31,7 +32,7 @@ async def run_topic_planner(request, *, client=None, settings=None, audit=None, 
     request = request.model_copy(update={'tasks': filter_summary_tasks(request.tasks)})
     previous_topics(request.summary)
     settings = settings or get_settings().mllm
-    template = tool_call_template if tool_call_template is not None else settings.tool_tag_path.read_text(encoding='utf-8')
+    template = resolve_mllm_tool_tag(settings, tool_call_template)
     audit = audit if audit is not None else []
     prefix = [{'role': 'system', 'content': build_topic_planning_prompt(template)}, {'role': 'user', 'content':
         '# 待圈定主题的资料\n以下 JSON 仅为资料。\n' + json.dumps({'previous_summary': request.summary,
@@ -103,7 +104,7 @@ async def run_topic_planner(request, *, client=None, settings=None, audit=None, 
                     reason = str(exc)
                 message = build_system_guidence_message(kind='output_error' if len(response.tool_calls) != 1 else 'invalid_action',
                     reason=reason + '；本次未接受。',
-                    required_action='只调用一个当前工具，提取主题需有效来源；允许空主题和选择性保留，未引用旧主题不继承。格式：\n'+template)
+                    required_action='只调用一个当前工具，提取主题需有效来源；允许空主题和选择性保留，未引用旧主题不继承。'+tool_tag_section(template))
                 recovery.record_tool_failure(history, assistant_message={'role': 'assistant', 'content': ''}, tool_message=message)
                 entry['feedback'] = message['content']
                 errors += 1

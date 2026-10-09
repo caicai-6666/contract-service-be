@@ -57,6 +57,21 @@ SQLite 是正式合同文件管理的权威目录，Elasticsearch 是完整合�
 
 `AUTH_LOGIN_CODE_TTL_SECONDS` 控制免登码在当前 API 进程内存中的空闲存活时间，默认 `3600` 秒且必须大于零。缓存使用单调时钟判断过期，不受系统墙上时间调整影响；每次成功校验都会刷新对应免登码的过期点，普通缓存快照不会续期。缓存不持久化，应用关闭或热重载后全部免登码失效。
 
+### 中间件服务配置
+
+通过 `MIDDLEWARE_BASE_URL` 配置中间件服务地址，格式为 `http://<IP>:<端口>` 或 `https://<IP>:<端口>`，例如 `http://127.0.0.1:8000`（示例端口，请替换为实际部署值）。`.env` 和 `.env.example` 默认留空，解析为 `None`；非空值必须为合法 HTTP/HTTPS URL。
+
+本平台身份通过以下配置提供，默认均留空，等待填写中间件分配的信息：
+
+| 环境变量 | 配置属性 | 用途 |
+| --- | --- | --- |
+| `MIDDLEWARE_PLATFORM_CODE` | `middleware_platform_code` | 本平台登记的 `platform_code`，加载时去除首尾空白。 |
+| `MIDDLEWARE_SECRET` | `middleware_secret` | 本平台的登录 `secret`，使用 `SecretStr` 避免配置对象常规输出泄露明文；保留原值，不裁剪凭证。 |
+
+真实 secret 只填写本地环境或部署密钥配置，`.env.example` 保持空值；不得记录到日志。仅在登录请求发送时通过 `get_secret_value()` 读取凭证明文。
+
+应用通过 `get_settings().middleware_base_url` 读取地址。配置随启动加载并缓存，修改后需重启后端。应用生命周期已接入后台平台登录与心跳，详见[中间件平台会话](../infrastructure/middleware-session.md)。中间件不可用不阻止后端启动。
+
 ### 合同处理内存配置
 
 合同处理期间的 PDF、阶段结果和事件只驻留当前 API 进程。以下配置决定内存任务的保留、订阅和重试边界；状态转换语义见[合同提取应用运行时](../../architecture/system/contract-extraction-runtime.md)。
@@ -117,3 +132,15 @@ MLLM 默认使用 `262144` token 上下文。视觉预算从上下文中扣除 `
 ## Neo4j 生命周期
 
 `app.bootstrap` 创建共享 `Neo4jClient` 和 `ContractGraphStore`，分别注入 `app.state.neo4j`、`app.state.contract_graph_store`。入库服务初始化时检查连接、创建合同 ID 唯一约束、恢复未完成入库/删除并补建历史节点；失败阻止 API 就绪。正常关闭及启动失败时均释放驱动连接池。具体配置见 [Neo4j 部署与开发连接](../infrastructure/neo4j-development.md)。
+
+---
+
+## 审核反馈后台任务
+
+正式入库服务就绪后，lifespan 装配并启动 `PendingReviewConsumer`，通过已登录的中间件会话周期性拉取审核结果。成功处理后再 ack；网络异常不阻塞启动。关闭时先停止消费者，再释放正式入库使用的 ES、Neo4j 和平台会话。配置及恢复规则见[审核反馈拉取与批准入库](pending-review-consumer.md)。
+
+---
+
+## 待审申请清理后台任务
+
+`pending_review_cleanup_service` 在审核消费者启动后开始运行，默认按处理完成时间保留 7 天、每小时清理一轮。应用退出时先停止清理并等待当前删除事务，再关闭消费者及存储依赖。配置与重投恢复见[已完成待审申请定时清理](pending-review-cleanup.md)。

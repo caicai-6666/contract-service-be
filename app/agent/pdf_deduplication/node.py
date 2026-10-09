@@ -193,7 +193,8 @@ async def retrieve_duplicate_candidates(
             "file_name",
             "file_uri",
             "page_count",
-            "ingestion.reviewer",
+            "ingestion.uploader",
+            "ingestion.reviewer",  # 兼容尚未重建的旧 ES 文档。
         ],
     )
     candidates = []
@@ -207,7 +208,7 @@ async def retrieve_duplicate_candidates(
             document_id=source["document_id"],
             file_name=source["file_name"],
             file_uri=source["file_uri"],
-            reviewer=ingestion["reviewer"],
+            uploader=ingestion.get("uploader", ingestion.get("reviewer")),
             page_count=source["page_count"],
             score=float(hit["_score"]),
         ))

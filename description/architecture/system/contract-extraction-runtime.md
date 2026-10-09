@@ -149,7 +149,7 @@ flowchart TD
 | `failed` | 文档判断、查重、结构、分类或建议名称等串行阶段失败，或三个业务分支均未形成结果。 |
 | `cancelled` | 用户主动终止任务，仅在删除前发布的 SSE 事件中可见。 |
 | `expired` | 聚合已到期并从内存注册表移除。 |
-| `ingested` | 合同已经正式入库，仅在删除前发布的 SSE 事件中可见。 |
+| `submitted` | 待审申请已保存，仅在释放运行前发布的 SSE 事件中可见；不代表正式入库。 |
 
 分支内部的 `partial` 是可提交结果：例如部分字段或条款失败时，成功项仍可进入草稿，并在分区上保留 `result_status: partial`。
 
@@ -170,7 +170,7 @@ clauses: null
 
 Core 使用 Elasticsearch mapping 的稳定 code 和值形状，但为了允许用户补充，未提取字段暂时保留为 `null`；Clause 直接使用 Elasticsearch `clauses` 元素结构并排除失败候选。Core 和 Clause 独立就绪，其中任一成功才发布 `run.review_ready` 与 `draft.updated`。Retrieval 仍更新自身阶段状态，但不发布没有用户可见变化的草稿事件。
 
-入库请求只接收当前 `run_id`、用户自定义文件名以及修改后的完整 Core、Clause。服务端从内存聚合补齐文档身份、页数、分类、问题融合向量、页面融合向量、审核人与入库时间，并在正式投影时过滤 Core 的 `null`、空多值数组和条款可选空值。八个阶段必须全部成功，分类与两个合同级向量也必须存在；用户提交的最终文件名无需等于自动建议。持久化成功后发布 `run.ingested` 并释放运行。
+入库请求接收当前 run_id、最终 file_name、summary、必填 note 及完整 Core、Clause。服务端校验身份、阶段与动态字段，补齐分类、问题及页面融合向量、PDF、提交人等，保存独立待审 SQLite 和文件。持久化成功后发布 `run.submitted` 并释放运行；同内容重试可从待审库恢复回执。正式入库由外部审核反馈消费者执行，不依赖提取运行。详见[待审提交与正式入库](../../capability/application/contract-ingestion.md)。
 
 Core 与 Clause 的精确前端对象、字段含义和状态负载见[合同 API 的快照响应](../../api/contract.md#获取当前状态与提取结果)。
 
@@ -211,7 +211,7 @@ Core 与 Clause 的精确前端对象、字段含义和状态负载见[合同 AP
 
 用户取消是独立于 TTL 的即时终止路径。服务在聚合锁内标记取消并从注册表移除任务，使并发的继续或重试操作不能在取消后重新调度节点；随后取消该运行的后台协程和查重到期任务。已经连接的订阅者先收到 `run.cancelled`，其 `overall_status` 为 `cancelled`，然后连接结束。取消不保留可恢复墓碑，之后所有按 `run_id` 的操作均返回不存在。
 
-正式入库采用类似的终态释放协议。服务先用 SQLite 短事务登记 `ingesting`，再保存处理版 PDF、写入 Elasticsearch，最后用第二个短事务发布 `ready`；只有三处均完成后才在聚合锁内标记 `ingested`。服务先向既有订阅者发布 `run.ingested`，再移除注册表引用并关闭 SSE；任一持久化步骤失败都不会改变运行终态，允许用户使用同一 `run_id` 重试。普通文件管理只读取 SQLite `ready`，启动时会对非就绪记录核验 PDF 和 ES，详细边界见[合同 SQLite 元数据结构](../data/contract-sqlite-metadata.md)。
+待审提交采用类似的终态释放协议：先保存独立待审 SQLite 与 PDF，再在聚合锁内标记 `submitted`，向现有订阅者发布 `run.submitted`，随后移除注册表并关闭 SSE。保存失败不改变终态，允许同内容重试；申请成功后即使运行已经释放，仍可通过原提交接口恢复同一回执。后续正式入库由审核反馈消费者推进，不依赖内存运行。普通合同目录仍只读取正式 SQLite 的 ready 记录。详见[待审快照](../data/pending-review.md)与[正式合同元数据](../data/contract-sqlite-metadata.md)。
 
 TTL、清理周期、事件缓冲、SSE 心跳和分支尝试次数均由环境变量控制，具体配置项及默认值见[后端应用的合同处理内存配置](../../capability/application/backend-application.md#合同处理内存配置)。
 

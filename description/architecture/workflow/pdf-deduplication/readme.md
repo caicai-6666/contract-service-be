@@ -141,7 +141,7 @@ flowchart TD
 
 `judge_full_documents` 使用版本为 `full-document-relation-judgment-v5` 的专属策略提示词。它追加在“上传页面阅读前缀 + 共同关系标准”之后，再次确认 A 是前面已经提供的上传合同、B 是随后提供的候选合同，只规定两份文档当前包含的全部页面图像一次性提供时如何核对，不重复三分类定义。完整文本和确定性追加函数位于 `app.agent.pdf_deduplication.prompt.full_document`。
 
-该策略要求按两份文档各自物理页码核对全部可用页面图像，不把“全部可用”误解为原始合同必然无缺页，并禁止请求未提供的额外页面。每轮只允许一个工具动作：`think` 提供真实分析与推理空间，reasoning 最多2000字符，并且最多连续调用两次；证据充分时使用 `submit_contract_relation`；只有材料本身无法支持任何关系且至少完成一次 `think` 核对后，才能使用 `report_unable_to_determine_relation`。工具调用必须遵循项目统一 XML 协议。
+该策略要求按两份文档各自物理页码核对全部可用页面图像，不把“全部可用”误解为原始合同必然无缺页，并禁止请求未提供的额外页面。每轮只允许一个工具动作：`think` 提供真实分析与推理空间，reasoning 最多2000字符，并且最多连续调用两次；证据充分时使用 `submit_contract_relation`；只有材料本身无法支持任何关系且至少完成一次 `think` 核对后，才能使用 `report_unable_to_determine_relation`。工具调用及纠错提示统一使用启动时加载的 tool-tag 协议。
 
 模型可见内容严格按以下顺序排列：
 

@@ -52,7 +52,7 @@ with closing(connect_memory_database(':memory:')) as connection:
 PY_CHECK
 COPY data/definition ./data/definition
 COPY data/tool-tag ./data/tool-tag
-RUN mkdir -p data/contract data/abstract data/user
+RUN mkdir -p data/contract data/abstract data/user data/pending-review/files
 EXPOSE 20000
 # 登录会话和提取任务驻留内存，必须单 worker，部署环境不启用 reload。
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "20000", "--workers", "1"]

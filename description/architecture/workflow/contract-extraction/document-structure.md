@@ -194,7 +194,7 @@ span:
 | `draw_bbox` | `anchor_ids`、`page_number`、`bbox_2d` | 一次绘制一个单页框，并消费同页一个或多个连续锚点。 |
 | `finish` | `reason` | 请求结束当前单元定位；程序仅在全部锚点已覆盖时接受。 |
 
-定位准备逻辑按 `start → navigation_anchors → end` 生成稳定的 `anchor_id` 和连续 `order`；跨度内没有显式锚点的中间页面自动补充一个 `page_body` 锚点。所有视觉定位工具使用 `strict:false + tool_choice:auto`，绕过 vLLM XGrammar；工具参数仍由本地 Pydantic 与状态校验严格检查。合法 XML 工具调用格式同时写入任务说明。若一轮没有恰好一个工具调用，程序记录普通文本用于审计，但不把它回显给模型；恢复反馈遵循[Non-strict auto 工具恢复](../../../standard/prompt-engineering.md#26-non-strict-auto-工具恢复)，明确说明“未生成合法工具调用”，给出 `<tool_call> → <function=...> → <parameter=...>` XML 模板并禁止 `工具名: JSON` 伪调用，最多恢复两次后将该单元标记为失败。协议错误、非法坐标、锚点顺序、重复覆盖和提前结束反馈只在纠错期间留给模型；下一次动作通过全部校验后统一删除，故障轨迹仅保留在私有审计。`draw_bbox` 使用 `[x_min, y_min, x_max, y_max]` 的 `0～1000` 单页归一化坐标。本地状态校验继续执行以下规则：
+定位准备逻辑按 `start → navigation_anchors → end` 生成稳定的 `anchor_id` 和连续 `order`；跨度内没有显式锚点的中间页面自动补充一个 `page_body` 锚点。所有视觉定位工具使用 `strict:false + tool_choice:auto`，绕过 vLLM XGrammar；工具参数仍由本地 Pydantic 与状态校验严格检查。当前配置的 tool-tag 工具调用格式同时注入任务说明。若一轮没有恰好一个工具调用，程序记录普通文本用于审计，但不把它回显给模型；恢复反馈遵循[Non-strict auto 工具恢复](../../../standard/prompt-engineering.md#26-non-strict-auto-工具恢复)，明确说明“未生成合法工具调用”，给出与任务提示一致的 tool-tag 模板并禁止 `工具名: JSON` 伪调用，最多恢复两次后将该单元标记为失败。协议错误、非法坐标、锚点顺序、重复覆盖和提前结束反馈只在纠错期间留给模型；下一次动作通过全部校验后统一删除，故障轨迹仅保留在私有审计。`draw_bbox` 使用 `[x_min, y_min, x_max, y_max]` 的 `0～1000` 单页归一化坐标。本地状态校验继续执行以下规则：
 
 - 每次必须从最早未覆盖锚点开始，只能消费同页连续锚点。
 - 一个框可以覆盖多个连续锚点，一个锚点不能被重复消费。

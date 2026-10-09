@@ -9,15 +9,15 @@ from app.agent.contract_extraction.subgraph.document_understanding.prompt import
     build_pdf_messages,
     build_pdf_page_descriptor,
 )
-from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
+from app.core.tool_tag import TOOL_TAG_PLACEHOLDER, render_mllm_tool_tag
 
 ContractDocumentDetectionPromptVersion = Literal[
-    "contract-document-detection-v4"
+    "contract-document-detection-v5"
 ]
 
 CONTRACT_DOCUMENT_DETECTION_PROMPT_VERSION: Final[
     ContractDocumentDetectionPromptVersion
-] = "contract-document-detection-v4"
+] = "contract-document-detection-v5"
 
 # 工具将在任务描述之后由统一聊天模板渲染，后续增加 think 历史时不得
 # 把动态内容插回页面图像与本任务之间，以免破坏稳定视觉前缀。
@@ -63,7 +63,7 @@ CONTRACT_DOCUMENT_DETECTION_TOOL_INSTRUCTION_PROMPT: Final = f"""工具使用：
 6. 页面不可读或关键证据无法消解时，不得调用终止工具猜测结果；可以使用 think 复核现有材料，有限执行结束后由程序形成技术失败。
 7. think 与正式提交是互斥的单次工具动作；任何一轮调用工具后都不得追加说明文字。
 
-{TOOL_CALL_XML_INSTRUCTION}"""
+{TOOL_TAG_PLACEHOLDER}"""
 
 
 def build_contract_document_detection_messages(
@@ -84,7 +84,7 @@ def build_contract_document_detection_messages(
         prompt_pages,
         task_suffix=(
             f"{CONTRACT_DOCUMENT_DETECTION_TASK_PROMPT}\n\n"
-            f"{CONTRACT_DOCUMENT_DETECTION_TOOL_INSTRUCTION_PROMPT}"
+            f"{render_mllm_tool_tag(CONTRACT_DOCUMENT_DETECTION_TOOL_INSTRUCTION_PROMPT)}"
         ),
     )
 

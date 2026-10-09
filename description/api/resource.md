@@ -1,11 +1,12 @@
 # 资源文件 API
 
-> **用途：** 本文定义正式合同 PDF、提取任务处理版 PDF，以及已驻留会话任务附件的读取接口。三者的标识与授权边界不同。全局鉴权和错误约定见 [API 参考](readme.md)。
+> **用途：** 本文定义正式合同 PDF、提取任务处理版 PDF，待审区临时 PDF，以及已驻留会话任务附件的读取接口。各类资源的标识与授权边界不同。全局鉴权和错误约定见 [API 参考](readme.md)。
 
 ## 接口目录
 
 | 接口 | 方法 | 完整路径 |
 | --- | --- | --- |
+| [读取待审 PDF](#读取待审-pdf) | `GET` | `/contract/api/resource/pending-review-pdf/{submission_id}` |
 | [读取合同 PDF](#读取合同-pdf) | `GET` | `/contract/api/resource/contract` |
 | [读取提取任务的内存处理版 PDF](#读取提取任务的内存处理版-pdf) | `GET` | `/contract/api/resource/extraction-pdf/{file_id}` |
 | [读取已驻留会话任务的 PDF 附件](#读取已驻留会话任务的-pdf-附件) | `GET` | `/contract/api/resource/conversations/{conversation_id}/files/{file_id}` |
@@ -170,3 +171,26 @@ curl --header 'Authorization: Bearer <login_code>' \
 - 磁盘读取在线程中执行，不持有会话锁；只读取 UUID 对应的普通非空文件，拒绝符号链接、目录及特殊文件。读取结束后再次检查任务授权与同一次会话驻留身份。
 - 会话删除或驱逐后，新请求立即失去访问权，磁盘残留文件也不可访问。已完成授权、开始传输的响应可以持有字节直到结束，不持有会话锁；无法撤回用户已经下载的内容。
 - 实现位于 `resource.get_communication_pdf`、`ConversationHistoryService.read_file` 和 `communication_files.read_uploaded_pdf`。测试见 `tests/test_communication_pdf_resource.py`，覆盖 HTTP 鉴权、内存读取、跨摘要 refresh、磁盘安全和驱逐竞态。
+
+
+---
+
+## 读取待审 PDF
+
+`GET /contract/api/resource/pending-review-pdf/{submission_id}` 使用 `Authorization: Bearer <免登码>`。已登录系统用户可读取仍保留的待审 PDF。
+
+路径参数 `submission_id` 为 UUID，无请求体。返回200 `application/pdf`，`Content-Disposition: inline`，文件名为申请 UUID。
+
+服务端根据申请身份生成固定文件路径，并校验 PDF 字节哈希与快照中的 document_id 一致，不把调用方路径用于读盘。可通过带 Authorization 的 fetch 获取 Blob 供前端预览；普通 iframe 不会自动携带自定义 Bearer 头。
+
+| 状态码 | 含义 |
+| --- | --- |
+| 404 | 申请不存在、已清理或临时 PDF 已不存在 |
+| 409 | 临时 PDF 哈希校验失败，拒绝返回不匹配文件 |
+| 422 | submission_id 不是合法 UUID |
+| 503 | 存储暂时无法读取 |
+
+已完成申请也只能在保留期内预览临时 PDF；正式入库合同的长期原文仍通过既有正式合同资源接口读取。
+
+
+此 PDF 是提取流程保存的处理版 PDF，不保证与最初上传文件的原始字节一致。地址由[待入库详情](pending-review.md#获取待入库申请详情)的 `pdf.url` 提供；旧 `/pending-reviews/{submission_id}/pdf` 已移除。

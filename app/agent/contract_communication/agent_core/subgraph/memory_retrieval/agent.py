@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import json
 
 from app.core.config import get_settings
-from app.core.tool_tag import get_mllm_tool_tag
+from app.core.tool_tag import resolve_mllm_tool_tag, tool_tag_section
 from app.infrastructure.mllm import MLLMClient
 from app.agent.contract_extraction.tool_protocol import ToolProtocolRecovery
 from ...prompt.guidance import build_system_guidence_message
@@ -28,7 +28,7 @@ async def run_memory_retrieval(request, *, result_pool, client=None, settings=No
     if request.conversation_id != result_pool.conversation_id:
         return failure('invalid_scope','查询会话与结果池不一致。')
     settings = settings or get_settings().mllm
-    template = tool_template if tool_template is not None else get_mllm_tool_tag()
+    template = resolve_mllm_tool_tag(settings, tool_template)
     session = MemoryRetrievalSession(request,database=result_pool.database,encoder=encoder,result_pool=result_pool)
     stamp = datetime.fromtimestamp(request.reference_time/1000,timezone(timedelta(hours=8))).isoformat()
     # 任务变量不混入稳定系统前缀；JSON字符串编码防止正文伪造字段边界。
@@ -68,7 +68,7 @@ async def run_memory_retrieval(request, *, result_pool, client=None, settings=No
                     return failure(feedback['error_code'],feedback.get('error') or feedback.get('message'))
                 errors+=1
                 guidance=build_system_guidence_message(kind='invalid_action',reason=json.dumps(feedback,ensure_ascii=False),
-                    required_action='依据字段说明修正；本轮只调用一个实际提供的工具。调用格式：\n'+template)
+                    required_action='依据字段说明修正；本轮只调用一个实际提供的工具。'+tool_tag_section(template))
                 recovery.record_tool_failure(history,assistant_message={'role':'assistant','content':''},tool_message=guidance)
                 if errors>=max_errors:
                     return failure('correction_limit','记忆检索连续调用错误达到上限，本次查询未完成。')

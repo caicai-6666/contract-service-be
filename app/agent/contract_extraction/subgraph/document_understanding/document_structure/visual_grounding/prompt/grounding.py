@@ -14,9 +14,9 @@ from app.agent.contract_extraction.subgraph.document_understanding.document_stru
 from app.agent.contract_extraction.subgraph.document_understanding.prompt import (
     build_pdf_common_messages,
 )
-from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
+from app.core.tool_tag import TOOL_TAG_PLACEHOLDER, render_mllm_tool_tag
 
-UNIT_VISUAL_GROUNDING_PROMPT_VERSION = "unit-visual-grounding-v4"
+UNIT_VISUAL_GROUNDING_PROMPT_VERSION = "unit-visual-grounding-v5"
 
 UNIT_VISUAL_GROUNDING_COMMON_TASK = f"""你负责把一个已经确认的合同语义单元定位到页面图像区域。
 
@@ -37,7 +37,7 @@ UNIT_VISUAL_GROUNDING_COMMON_TASK = f"""你负责把一个已经确认的合同�
 1. 可调用 think 简洁分析下一框；不得连续思考而不推进定位。
 2. draw_bbox 成功后根据工具反馈继续处理剩余锚点；错误时按反馈修正。
 3. 只有所有锚点都被成功定位后才能调用 finish。每轮必须且只能调用一个工具。
-4. {TOOL_CALL_XML_INSTRUCTION}
+{TOOL_TAG_PLACEHOLDER}
 """
 
 
@@ -56,7 +56,7 @@ def build_unit_visual_grounding_messages(
     messages.append(
         {
             "role": "user",
-            "content": UNIT_VISUAL_GROUNDING_COMMON_TASK,
+            "content": render_mllm_tool_tag(UNIT_VISUAL_GROUNDING_COMMON_TASK),
         }
     )
     target = {

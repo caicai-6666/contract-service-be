@@ -1,6 +1,8 @@
 """记忆检索子Agent提示词；工具协议模板由调用方注入，不在此复制。"""
 
-MEMORY_RETRIEVAL_PROMPT_VERSION = 'memory-retrieval-v2'
+from app.core.tool_tag import tool_tag_section
+
+MEMORY_RETRIEVAL_PROMPT_VERSION = 'memory-retrieval-v3'
 
 MEMORY_RETRIEVAL_PROMPT = '''# 历史任务记忆检索
 
@@ -59,12 +61,9 @@ execute_query成功即完成本次检索，由程序直接返回结果；真实�
 需求：“找回关于尚未完成的验收事项的最终答复。”
 设置最终结论查询，保留“尚未完成”的事项条件；不据此添加failed终态过滤。
 
-## 当前工具调用格式
 '''
 
 
 def build_memory_retrieval_prompt(tool_template: str) -> str:
     """固定规则加真实协议模板；动态需求、参考时间和条件由运行时另行注入。"""
-    if not isinstance(tool_template, str) or not tool_template.strip():
-        raise ValueError('工具协议模板不能为空')
-    return MEMORY_RETRIEVAL_PROMPT + tool_template
+    return MEMORY_RETRIEVAL_PROMPT + tool_tag_section(tool_template)

@@ -36,6 +36,12 @@ from app.infrastructure.contract_graph_store import ContractGraphStore
 from app.infrastructure.pdf_candidate_loader import (
     LocalPDFDuplicateCandidateLoader,
 )
+from app.service.middleware_session import MiddlewareSessionService
+from app.infrastructure.pending_review_store import SQLitePendingReviewStore
+from app.service.pending_review import PendingReviewService
+from app.service.pending_review_publisher import PendingReviewPublisher
+from app.service.pending_review_consumer import PendingReviewConsumer
+from app.service.pending_review_cleanup import PendingReviewCleanupService
 from app.service.auth import AuthService, LoginCodeCache
 from app.service.communication_workflow import CommunicationWorkflowService
 from app.service.communication_file_tools import CommunicationFileTools
@@ -66,6 +72,13 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     # 在任何工作流启动前固定两类全局请求额度，客户端只复用、不重建。
     get_model_request_limiter("mllm", settings.mllm.max_concurrent_requests)
     get_model_request_limiter("embedding", settings.embedding.max_concurrent_requests)
+    # 待审区仅初始化，不触发消息发送或正式入库。
+    pending_review_store = SQLitePendingReviewStore(settings.pending_review_path)
+    pending_review_service = PendingReviewService(pending_review_store,
+        vector_dimensions=settings.elasticsearch_vector_dimensions)
+    await pending_review_service.initialize()
+    application.state.pending_review_store = pending_review_store
+    application.state.pending_review_service = pending_review_service
     # 先初始化持久化结构；归档只消费统一历史，不将 SSE 快照当作原轨迹。
     communication_store = SQLiteCommunicationStore(settings.communication_database_path)
     communication_store.initialize()
@@ -137,12 +150,21 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         relation_page_size=settings.communication_contract_relations_page_size,
         notes_cache_capacity=settings.communication_contract_notes_cache_max_contracts,
         notes_page_size=settings.communication_contract_notes_page_size,
+        passport_cache_capacity=settings.communication_contract_passport_cache_max_queries,
+        passport_page_size=settings.communication_contract_passport_page_size,
         agent_core_runner=partial(run_agent_core, settings=settings.mllm),
         file_tools=communication_file_tools,
     )
     logger.info("Communication 正式问答已启用：真实门禁通过后进入 Agent Core，共用本轮 SSE 与驻留会话")
     application.state.communication_event_service = communication_event_service
     communication_event_service.bind_history(communication_history_service)
+    middleware_session = MiddlewareSessionService(settings)
+    application.state.middleware_session_service = middleware_session
+    pending_review_consumer = None
+    pending_review_cleanup = PendingReviewCleanupService(pending_review_store, settings)
+    application.state.pending_review_cleanup_service = pending_review_cleanup
+    pending_review_publisher = PendingReviewPublisher(pending_review_store, middleware_session, settings)
+    application.state.pending_review_publisher = pending_review_publisher
     neo4j: Neo4jClient | None = None
     try:
         neo4j = Neo4jClient(settings)
@@ -207,6 +229,9 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         )
         await contract_ingestion_service.initialize()
         application.state.contract_metadata_store = contract_metadata_store
+        from app.service.pending_review_query import PendingReviewQueryService
+        application.state.pending_review_query_service = PendingReviewQueryService(
+            pending_review_store, contract_metadata_store, settings)
         application.state.contract_ingestion_service = contract_ingestion_service
         application.state.contract_relation_service = ContractRelationService(
             graph_store=contract_graph_store, metadata_store=contract_metadata_store,
@@ -231,6 +256,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
             ),
             pdf_preparation_service=pdf_preparation_service,
             ingestion_service=contract_ingestion_service,
+            pending_review_service=pending_review_service,
             run_ttl_seconds=settings.contract_extraction_run_ttl_seconds,
             deduplication_review_ttl_seconds=(
                 settings.contract_deduplication_review_ttl_seconds
@@ -249,9 +275,20 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
             contract_extraction_service
         )
         await communication_archive_service.start()
+        await middleware_session.start()
+        await pending_review_publisher.start()
+        pending_review_consumer = PendingReviewConsumer(pending_review_store, middleware_session,
+            contract_ingestion_service, settings)
+        application.state.pending_review_consumer = pending_review_consumer
+        await pending_review_consumer.start()
+        await pending_review_cleanup.start()
         yield
     finally:
         try:
+            await pending_review_cleanup.close()
+            # 先停止审核入库，避免后台任务使用已关闭的 ES / Neo4j。
+            if pending_review_consumer is not None:
+                await pending_review_consumer.close()
             # 先停止归档模型作业，再冻结事件生产，最后备份原轨迹及工作区。
             await communication_archive_service.close()
             await communication_event_service.close()
@@ -263,4 +300,10 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
                 if neo4j is not None:
                     await neo4j.close()
             finally:
-                await elasticsearch.close()
+                try:
+                    try:
+                        await pending_review_publisher.close()
+                    finally:
+                        await middleware_session.close()
+                finally:
+                    await elasticsearch.close()

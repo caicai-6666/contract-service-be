@@ -57,12 +57,13 @@ class ContractMetadata:
     category: str
     contract_time: str | None
     file_uri: str
-    reviewer: str
+    uploader: str
     ingested_at: datetime
     status: ContractMetadataStatus
     ingestion_id: str
     category_assignments: tuple[ContractCategoryAssignment, ...] = ()
     summary: str | None = None
+    passport: str | None = None
 
     @property
     def category_codes(self) -> tuple[str, ...]:
@@ -126,6 +127,10 @@ class SQLiteContractMetadataStore:
                     if_not_exists=True,
                 )
             )
+            # 仅迁移正式合同归属列；旧值原样保留，不从姓名猜测上传身份。
+            columns = {row['name'] for row in connection.execute('PRAGMA table_info(contracts)')}
+            if 'reviewer' in columns and 'uploader' not in columns:
+                connection.execute('ALTER TABLE contracts RENAME COLUMN reviewer TO uploader')
             self._migrate_legacy_schema(connection)
             self._initialize_summary_and_notes(connection)
             from app.infrastructure.contract_note_search import initialize_note_search
@@ -136,6 +141,13 @@ class SQLiteContractMetadataStore:
             initialize_name_search(connection)
             # 增量增列，历史数据保持 NULL，不在启动时调用模型回填。
             columns = {row['name'] for row in connection.execute('PRAGMA table_info(contracts)')}
+            if 'passport' not in columns:
+                connection.execute('ALTER TABLE contracts ADD COLUMN passport TEXT')
+            # 通行证可关联多份合同；升级旧库时移除历史唯一约束，保留查询索引。
+            index = next((row for row in connection.execute('PRAGMA index_list(contracts)') if row['name'] == 'contracts_passport'), None)
+            if index is not None and index['unique']:
+                connection.execute('DROP INDEX contracts_passport')
+            connection.execute('CREATE INDEX IF NOT EXISTS contracts_passport ON contracts(passport) WHERE passport IS NOT NULL')
             for prefix in ('summary',):
                 for suffix, kind in (('', 'BLOB'), ('_model', 'TEXT'), ('_version', 'TEXT'), ('_dimensions', 'INTEGER')):
                     name = prefix + '_embedding' + suffix
@@ -305,9 +317,13 @@ class SQLiteContractMetadataStore:
         if summary_embedding is not None and not (metadata.summary and metadata.summary.strip()):
             raise ValueError("保存摘要向量必须包含摘要原文")
         with self._transaction() as connection:
-            current = connection.execute("SELECT status FROM contracts WHERE document_id=?", (metadata.document_id,)).fetchone()
+            current = connection.execute("SELECT status, passport FROM contracts WHERE document_id=?", (metadata.document_id,)).fetchone()
             if current is not None and current["status"] == "deleting":
                 raise ContractMetadataStateError("合同正在删除，请先完成删除再重新入库")
+            if metadata.passport is not None and (not metadata.passport or metadata.passport != metadata.passport.strip()):
+                raise ValueError("正式合同 passport 必须为非空且无首尾空白的标识")
+            if current is not None and current['passport'] is not None and current['passport'] != metadata.passport:
+                raise ContractMetadataStateError("已有合同 passport 不允许被覆盖或清空")
             connection.execute(
                 """
                 INSERT INTO contracts (
@@ -316,22 +332,23 @@ class SQLiteContractMetadataStore:
                     category,
                     contract_time,
                     file_uri,
-                    reviewer,
+                    uploader,
                     ingested_at,
                     status,
                     ingestion_id,
-                    summary
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    summary, passport
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(document_id) DO UPDATE SET
                     file_name = excluded.file_name,
                     category = excluded.category,
                     contract_time = excluded.contract_time,
                     file_uri = excluded.file_uri,
-                    reviewer = excluded.reviewer,
+                    uploader = excluded.uploader,
                     ingested_at = excluded.ingested_at,
                     status = excluded.status,
                     ingestion_id = excluded.ingestion_id,
-                    summary = excluded.summary
+                    summary = excluded.summary,
+                    passport = excluded.passport
                 """,
                 (
                     metadata.document_id,
@@ -339,11 +356,12 @@ class SQLiteContractMetadataStore:
                     " / ".join(category_codes) if category_codes else metadata.category,
                     contract_time,
                     metadata.file_uri,
-                    metadata.reviewer,
+                    metadata.uploader,
                     ingested_at,
                     metadata.status.value,
                     metadata.ingestion_id,
                     metadata.summary,
+                    metadata.passport,
                 ),
             )
             # 和本次名称、摘要处于同一事务；无编码的新写入清除旧向量，避免内容错配。
@@ -522,7 +540,7 @@ class SQLiteContractMetadataStore:
         with closing(self._connect()) as connection:
             connection.execute('BEGIN')
             rows = connection.execute(
-                "SELECT document_id, reviewer, ingested_at FROM contracts WHERE status='ready'").fetchall()
+                "SELECT document_id, uploader, ingested_at FROM contracts WHERE status='ready'").fetchall()
             ready_ids = [r['document_id'] for r in rows]
             selected = [r for r in rows
                         if (start_time is None or datetime.fromisoformat(r['ingested_at']) >= start_time)
@@ -545,8 +563,8 @@ class SQLiteContractMetadataStore:
                                  percentage=round(v / total * 100, 2))
                             for k, v in sorted(categories.items(), key=lambda item: (-item[1], item[0]))],
                 uncategorized_count=len(ids - categorized),
-                reviewers=[dict(name=k, count=v) for k, v in sorted(
-                    Counter(r['reviewer'] for r in selected).items(), key=lambda item: (-item[1], item[0]))],
+                uploaders=[dict(name=k, count=v) for k, v in sorted(
+                    Counter(r['uploader'] for r in selected).items(), key=lambda item: (-item[1], item[0]))],
                 notes=dict(total=sum(r['count'] for r in notes), contracts_with_notes=len(notes)))
 
     def list_notes(self, document_id: str) -> list[dict[str, str]]:
@@ -635,6 +653,18 @@ class SQLiteContractMetadataStore:
                 else self._row_to_metadata(connection, row)
             )
 
+    def list_ids_by_passport(self, passport: str) -> tuple[str, ...]:
+        """精确查询 ready 合同身份；按入库时间倒序、ID 升序建立稳定分页快照。"""
+        if not isinstance(passport, str) or not passport or passport != passport.strip():
+            raise ValueError("passport 必须为非空且无首尾空白的完整标识")
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT document_id FROM contracts WHERE passport = ? AND status = ? "
+                "ORDER BY ingested_at DESC, document_id ASC",
+                (passport, ContractMetadataStatus.READY.value),
+            ).fetchall()
+            return tuple(row['document_id'] for row in rows)
+
     def _update_status(
         self,
         *,
@@ -706,10 +736,11 @@ class SQLiteContractMetadataStore:
             document_id=row["document_id"],
             file_name=row["file_name"],
             summary=row["summary"],
+            passport=row["passport"],
             category=row["category"],
             contract_time=row["contract_time"],
             file_uri=row["file_uri"],
-            reviewer=row["reviewer"],
+            uploader=row["uploader"],
             ingested_at=datetime.fromisoformat(row["ingested_at"]),
             status=ContractMetadataStatus(row["status"]),
             ingestion_id=row["ingestion_id"],
@@ -856,12 +887,13 @@ class SQLiteContractMetadataStore:
                 category TEXT NOT NULL,
                 contract_time TEXT,
                 file_uri TEXT NOT NULL UNIQUE,
-                reviewer TEXT NOT NULL,
+                uploader TEXT NOT NULL,
                 ingested_at TEXT NOT NULL,
                 status TEXT NOT NULL CHECK (
                     status IN ('ingesting', 'ready', 'deleting')
                 ),
                 ingestion_id TEXT NOT NULL,
+                passport TEXT,
                 summary TEXT CHECK (summary IS NULL OR length(trim(summary)) > 0),
                 summary_embedding BLOB,
                 summary_embedding_model TEXT,
@@ -870,7 +902,7 @@ class SQLiteContractMetadataStore:
                 CHECK (length(document_id) = 64),
                 CHECK (length(trim(file_name)) BETWEEN 1 AND 255),
                 CHECK (length(trim(category)) > 0),
-                CHECK (length(trim(reviewer)) > 0)
+                CHECK (length(trim(uploader)) > 0)
             )
         """
 
@@ -906,7 +938,7 @@ class SQLiteContractMetadataStore:
                     category,
                     contract_time,
                     file_uri,
-                    reviewer,
+                    uploader,
                     ingested_at,
                     status,
                     ingestion_id
@@ -917,7 +949,7 @@ class SQLiteContractMetadataStore:
                     category,
                     contract_time,
                     file_uri,
-                    reviewer,
+                    uploader,
                     ingested_at,
                     status,
                     ingestion_id
@@ -925,6 +957,8 @@ class SQLiteContractMetadataStore:
                 WHERE status != 'failed'
                 """
             )
+            if 'passport' in columns:
+                connection.execute('UPDATE contracts_migrated SET passport = (SELECT passport FROM contracts WHERE contracts.document_id = contracts_migrated.document_id)')
             if 'summary' in columns:
                 # 兼容已有摘要的旧状态表，重建时不能静默丢弃该字段。
                 connection.execute('''UPDATE contracts_migrated SET summary = (

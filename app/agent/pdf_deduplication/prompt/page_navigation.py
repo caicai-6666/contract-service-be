@@ -13,19 +13,19 @@ from app.agent.contract_extraction.subgraph.document_understanding.prompt import
     build_pdf_content_blocks,
     build_pdf_page_descriptor,
 )
-from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
+from app.core.tool_tag import TOOL_TAG_PLACEHOLDER, render_mllm_tool_tag
 from app.agent.pdf_deduplication.prompt.relation_standard import (
     TOOL_INSTRUCTION_START_DIVIDER,
     append_contract_relation_standard,
 )
 
 PageNavigationJudgmentPromptVersion = Literal[
-    "candidate-page-navigation-judgment-v5"
+    "candidate-page-navigation-judgment-v6"
 ]
 
 PAGE_NAVIGATION_JUDGMENT_PROMPT_VERSION: Final[
     PageNavigationJudgmentPromptVersion
-] = "candidate-page-navigation-judgment-v5"
+] = "candidate-page-navigation-judgment-v6"
 
 # 候选指南和查看工具都位于完整上传合同与共同标准之后，使同一上传合同
 # 比较多个候选时拥有完全一致的最长模型输入前缀。
@@ -76,7 +76,7 @@ PAGE_NAVIGATION_TOOL_INSTRUCTION_PROMPT: Final = f"""工具使用：
 7. 只有已经实际查看候选页面并至少完成一次有效 think 后，仍因关键页面不可读、证据缺失、查看预算耗尽或冲突无法消解而不能可靠三分类时，才可调用 report_unable_to_determine_relation。
 8. inspect_candidate_pages、record_candidate_page_observations、think、正式提交和无法判断出口都是互斥的单次工具动作；任何一轮调用工具后都不得追加说明文字。
 
-{TOOL_CALL_XML_INSTRUCTION}"""
+{TOOL_TAG_PLACEHOLDER}"""
 
 
 def append_page_navigation_judgment_strategy(
@@ -134,7 +134,7 @@ def append_candidate_document_guide(
                         f"{serialized_guide}\n"
                         f"{CANDIDATE_GUIDE_END_DIVIDER}\n\n"
                         f"{TOOL_INSTRUCTION_START_DIVIDER}\n"
-                        f"{PAGE_NAVIGATION_TOOL_INSTRUCTION_PROMPT}"
+                        f"{render_mllm_tool_tag(PAGE_NAVIGATION_TOOL_INSTRUCTION_PROMPT)}"
                     ),
                 }
             ],

@@ -6,9 +6,9 @@ from collections.abc import Iterable
 from copy import deepcopy
 from typing import Any
 
-from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
+from app.core.tool_tag import TOOL_TAG_PLACEHOLDER, render_mllm_tool_tag
 
-CLASSIFICATION_COMMON_PROMPT_VERSION = "classification-common-v8"
+CLASSIFICATION_COMMON_PROMPT_VERSION = "classification-common-v9"
 
 CLASSIFICATION_COMMON_HEADER = """你已获得当前合同按原始顺序排列的页面图像、文档导航结构和单类别判别通用规则。当前唯一目标类别的权威定义及专家正反例将在独立材料中给出；只有读到这些类别资料后才能作出判断。"""
 
@@ -38,8 +38,7 @@ CLASSIFICATION_COMMON_TASK = f"""任务目标：
 6. 页面证据只保留物理页码和足以核对判断的短内容，不输出坐标或其他视觉位置。
 7. 工具返回 ok=false 时，按照反馈指出的参数位置、问题和修正方向重新调用。
 
-工具调用格式：
-{TOOL_CALL_XML_INSTRUCTION}"""
+{TOOL_TAG_PLACEHOLDER}"""
 
 
 def build_classification_common_messages(
@@ -57,7 +56,7 @@ def build_classification_common_messages(
             "type": "text",
             "text": (
                 f"{CLASSIFICATION_COMMON_HEADER}\n\n"
-                f"{CLASSIFICATION_COMMON_TASK}"
+                f"{render_mllm_tool_tag(CLASSIFICATION_COMMON_TASK)}"
             ),
         }
     )

@@ -19,6 +19,7 @@
 | 进行代码开发或功能扩展 | 先阅读项目根目录的 [`AGENTS.md`](../AGENTS.md)，再阅读[项目说明](project.md) |
 | 查找服务入口、全局约定或业务接口 | [API 参考](api/readme.md) |
 | 对接 Core 表单定义、未入库运行恢复、合同上传、查重暂停/继续、SSE 进度、Core/Clause 查询、失败阶段重试或正式入库 | [合同 API](api/contract.md) |
+| 查询待审核申请、审核结果及清理剩余时间 | [待入库申请 API](api/pending-review.md) |
 | 了解最终审核值校验、PDF 保存和正式 ES 写入 | [复核后合同正式入库](capability/application/contract-ingestion.md) |
 | 修改内存任务、查重暂停 TTL、阶段状态、增量草稿或重试机制 | [合同提取应用运行时](architecture/system/contract-extraction-runtime.md) |
 | 设计或实现复核后合同的 Elasticsearch 入库 | [合同 Elasticsearch 文档结构](architecture/data/contract-elasticsearch-document.md) |
@@ -138,6 +139,10 @@ description/
 
 - [Communication SQLite 存储](architecture/data/communication-sqlite.md)：定义会话、任务/摘要和独立工作区三表，以及摘要恢复边界与密钥归属。
 - [合同 SQLite 元数据结构](architecture/data/contract-sqlite-metadata.md)：定义文件管理目录、入库状态及 SQLite、PDF、ES 三处一致性边界。
+- [合同待审快照存储](architecture/data/pending-review.md)：独立待审 SQLite、PDF、备注、消息关联及幂等存入服务。
+- [已完成待审申请清理](capability/application/pending-review-cleanup.md)：按完成时间保留、快照与 PDF 删除、最小幂等凭据及重投恢复。
+- [审核反馈拉取与批准入库](capability/application/pending-review-consumer.md)：反馈轮询、passport、外部审核备注、幂等入库与 ack 恢复。
+- [待审请求后台发布](capability/application/pending-review-publisher.md)：后台扫描、令牌复用、文件上传及不确定投递处理。
 - [合同关联图存储契约](architecture/data/contract-graph.md)：定义合同节点、不可修改的无向关系边、创建人和创建时间，以及删除重建规则。
 - [合同 Elasticsearch 文档结构](architecture/data/contract-elasticsearch-document.md)：定义复核后合同的正式索引结构、启动创建及 Core mapping 增量同步边界。
 - [模型提取对象定义结构](architecture/data/field-definition.md)：定义单值或多值扁平对象的 YAML 结构、稳定索引代码、分词策略、基本类型及禁止嵌套约束。
@@ -175,6 +180,7 @@ description/
 
 - [Elasticsearch 本地开发部署](capability/infrastructure/elasticsearch-development.md)：说明单节点 Docker Compose、应用连接、启动索引同步、数据卷和本机安全边界。
 - [Neo4j 部署与开发连接](capability/infrastructure/neo4j-development.md)：说明合同关联图基础设施、开发端口、认证及持久化边界。
+- [中间件平台会话](capability/infrastructure/middleware-session.md)：后台平台登录、心跳续期、失败重试与生命周期管理。
 - [开发合同入库脚本](capability/infrastructure/development-contract-ingestion.md)：调用正式提取流程并为开发测试写入带双融合向量的合同文档。
 - [GLM-5.3-Flash 模板](capability/infrastructure/glm53-template.md)：说明 GLM 工具协议、三档映射、工具位置及思考开关边界。
 - [DeepSeek V4.1 Flash 模板](capability/infrastructure/deepseek-v41-template.md)：说明 DSML、思考强度、模板边界及官方编码器对照验证。

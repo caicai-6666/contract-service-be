@@ -1,11 +1,16 @@
 """本地资源文件读取接口。"""
 
+import logging
+
 from typing import Annotated
 from urllib.parse import quote
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
 from fastapi.responses import FileResponse, StreamingResponse
+
+from app.router.pending_review import QueryService
+from app.infrastructure.pending_review_store import PendingReviewFileError
 
 from app.router.contract import ContractExtractionServiceDependency
 from app.router.communication import HistoryDependency
@@ -20,6 +25,7 @@ from app.infrastructure.contract_file_store import (
 )
 
 router = APIRouter(prefix="/resource", tags=["resource"])
+logger = logging.getLogger(__name__)
 
 
 def get_contract_file_store(request: Request) -> LocalContractFileStore:
@@ -156,3 +162,22 @@ async def get_communication_pdf(
 
 
 __all__ = ["router"]
+
+
+@router.get('/pending-review-pdf/{submission_id}', summary='读取待入库申请 PDF',
+    responses={200: {'content': {'application/pdf': {}}}, 404: {'description': '申请已清理或文件不存在'},
+               409: {'description': '文件校验失败'}})
+async def read_pending_pdf(submission_id: UUID, service: QueryService):
+    try:
+        content = await service.read_pdf(submission_id)
+    except LookupError:
+        raise HTTPException(404, '待入库申请不存在或已清理') from None
+    except PendingReviewFileError as exc:
+        if isinstance(exc.__cause__, FileNotFoundError):
+            raise HTTPException(404, '待入库申请文件不存在或已清理') from None
+        raise HTTPException(409, '待入库文件校验失败，暂时无法预览') from None
+    except Exception:
+        logger.exception('待入库 PDF 读取失败')
+        raise HTTPException(503, '待入库文件暂时无法读取，请稍后重试') from None
+    return Response(content, media_type='application/pdf', headers={'Cache-Control': 'no-store',
+        'Content-Disposition': f'inline; filename="{submission_id}.pdf"'})

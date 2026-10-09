@@ -13,9 +13,9 @@ from app.agent.contract_extraction.state import ContractPrefillContext
 from app.agent.contract_extraction.subgraph.clause_extraction.tool import (
     ClauseCandidateWorkspaceItem,
 )
-from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
+from app.core.tool_tag import TOOL_TAG_PLACEHOLDER, render_mllm_tool_tag
 
-CLAUSE_CONTENT_COMMON_PROMPT_VERSION: Final = "clause-content-common-v11"
+CLAUSE_CONTENT_COMMON_PROMPT_VERSION: Final = "clause-content-common-v12"
 CLAUSE_CONTENT_TARGET_PROMPT_VERSION: Final = "clause-content-target-v5"
 CLAUSE_CONTENT_TOOL_PLACEMENT: Final = "before_task"
 
@@ -73,8 +73,8 @@ _CLAUSE_CONTENT_COMMON_TASK_BASE: Final = """你已获得当前合同按原始�
 3. 父候选 content 不含任何 descendants 的起始 anchor 或正文；叶子候选没有擅自排除合法内容。
 4. 输出只含页面可见原文和必要的局部“〔无法辨认〕”标记，没有摘要、解释、补全或其他候选内容。"""
 CLAUSE_CONTENT_COMMON_TASK: Final = (
-    f"{_CLAUSE_CONTENT_COMMON_TASK_BASE}\n\n工具调用格式：\n"
-    f"{TOOL_CALL_XML_INSTRUCTION}"
+    f"{_CLAUSE_CONTENT_COMMON_TASK_BASE}\n\n"
+    f"{TOOL_TAG_PLACEHOLDER}"
 )
 
 class _IndentedSafeDumper(yaml.SafeDumper):
@@ -164,7 +164,7 @@ def build_clause_content_common_messages(
     candidates: tuple[ClauseCandidateWorkspaceItem, ...],
 ) -> list[dict[str, Any]]:
     """在最终合同前缀尾部追加共享任务规则和完整候选目录。"""
-    task = f"{CLAUSE_CONTENT_COMMON_TASK}\n\n{render_clause_content_catalog(candidates)}"
+    task = f"{render_mllm_tool_tag(CLAUSE_CONTENT_COMMON_TASK)}\n\n{render_clause_content_catalog(candidates)}"
     return append_contract_task(
         prefill_context.messages,
         task_suffix=task,

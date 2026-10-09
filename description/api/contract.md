@@ -17,7 +17,7 @@
 | [确认查重并继续](#确认查重并继续) | `POST` | `/contract/api/contract/extraction-runs/{run_id}/continue` |
 | [订阅处理事件](#订阅处理事件) | `GET` | `/contract/api/contract/extraction-runs/{run_id}/events` |
 | [重试失败阶段](#重试失败阶段) | `POST` | `/contract/api/contract/extraction-runs/{run_id}/stages/{stage_code}/retry` |
-| [正式入库合同](#正式入库合同) | `POST` | `/contract/api/contract/extraction-runs/{run_id}/ingestion` |
+| [提交合同待审申请](#正式入库合同) | `POST` | `/contract/api/contract/extraction-runs/{run_id}/ingestion` |
 | [获取合同注意事项列表](#获取合同注意事项列表) | `GET` | `/contract/api/contract/documents/{document_id}/notes` |
 | [新增合同注意事项](#新增合同注意事项) | `POST` | `/contract/api/contract/documents/{document_id}/notes` |
 | [获取合同内容摘要](#获取合同内容摘要) | `GET` | `/contract/api/contract/documents/{document_id}/summary` |
@@ -60,7 +60,7 @@ GET /contract/api/contract/documents
     "category": "sale / construction",
     "contract_time": "2026-09-07",
     "file_uri": "/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pdf",
-    "reviewer": "审核人甲",
+    "uploader": "上传人甲",
     "ingested_at": "2026-09-07T06:00:00Z"
   }
 ]
@@ -73,7 +73,7 @@ GET /contract/api/contract/documents
 | `category` | string | 类别 `code` 以 ` / ` 连接；不是数组或类别 ID。未映射时保留类型说明。 |
 | `contract_time` | string 或 null | 签订日期，格式为 `YYYY-MM-DD`；缺失时返回 `null`。 |
 | `file_uri` | string | 处理版 PDF 的稳定根相对读取地址。 |
-| `reviewer` | string | 确认最终结果并执行入库的审核人名称。 |
+| `uploader` | string | 本平台提交待审申请的上传人，取自 submitted_by，不是外部审核员。 |
 | `ingested_at` | string | 带时区的 ISO 8601 入库时间。 |
 
 响应每项仅包含以上七个必有字段，不返回入库状态、尝试标识、分类理由或完整 Core/Clause。接口复用 `SQLiteContractMetadataStore.list_ready()`，同步查询在线程池中执行，不访问 Elasticsearch 或读取 PDF。当前不提供筛选与分页。
@@ -264,7 +264,7 @@ GET /contract/api/contract/extraction-runs
 
 恢复 PDF 预览时，使用 `file_id` 请求 `GET /contract/api/resource/extraction-pdf/{file_id}`，携带同一用户的 Bearer 免登码。读取原有内存处理版，不重新渲染；完整协议与生命周期见[内存处理版 PDF 读取](resource.md#读取提取任务的内存处理版-pdf)。
 
-> **入库后释放：** 正式入库成功后，入库服务会从内存注册表删除对应 `run_id`；该任务随后不再出现在本列表中。
+> **送审后释放：** 待审快照与 PDF 保存成功后，提取服务从内存注册表删除对应 `run_id`；该任务随后不再出现在本列表中，正式入库等待外部审核。
 
 ---
 
@@ -419,7 +419,7 @@ draft:
 | `failed` | 串行公共处理或建议名称失败，或三个业务分支均未形成结果。 |
 | `cancelled` | 只会在现有连接的取消 SSE 事件中观察到；随后查询返回 `404`。 |
 | `expired` | 只会在到期 SSE 事件中观察到；随后查询返回 `404`。 |
-| `ingested` | 只会在现有连接的正式入库终态事件中观察到；随后查询返回 `404`。 |
+| `submitted` | 待审快照已保存，仅在已有连接的送审终态事件中观察到；提取快照查询随后返回 `404`。 |
 
 ### 合同文档识别结果
 
@@ -455,7 +455,7 @@ draft:
       "document_id": "e7591f0d...",
       "file_name": "设备采购合同（友好名称）.pdf",
       "file_uri": "/e7591f0d....pdf",
-      "reviewer": "张三",
+      "uploader": "张三",
       "page_count": 21,
       "reasoning_summary": "合同身份和核心交易条款一致，属于同一合同的完整版本。"
     }
@@ -470,7 +470,7 @@ draft:
 - `cosine_similarity` 是 `[-1, 1]` 的原始 cosine，不是 Elasticsearch 变换后的 `_score`。
 - `relation` 为 `duplicate`、`similar` 或 `different`，表示实际模型判断；超过召回阈值但判为 `different` 的候选同样需要人工核对。
 - `document_id` 与上传处理版 PDF 完全一致时，服务依据 SHA-256 文件身份直接形成 `duplicate`，不加载候选文件或调用 MLLM；其他候选仍执行视觉判断。
-- `file_name`、`file_uri` 和 `reviewer` 均直接来自该候选的 Elasticsearch 文档；`reviewer` 表示确认该合同最终结果并执行入库的审核人。服务不使用哈希文件名覆盖友好展示名称，也不生成运行级下载地址。
+- `file_name`、`file_uri` 和 `uploader` 均直接来自该候选的 Elasticsearch 文档；`uploader` 表示本平台提交该合同待审申请的上传人。服务不使用哈希文件名覆盖友好展示名称，也不生成运行级下载地址。
 - `failed` 判断只保留在内部结果及私有审计中，不作为有效候选返回前端；查重技术失败不会自动推进。
 - 每个返回候选都提供 `reasoning_summary`；精确哈希命中只说明文件身份一致，MLLM 判断也不公开完整工具轨迹。
 - 前端需要预览 PDF 时，将 `file_uri` 作为查询参数传给[资源文件 API](resource.md)，即 `GET /contract/api/resource/contract?file_uri=...`。SSE 不内联 PDF 二进制或 Base64。
@@ -613,7 +613,7 @@ data: {"sequence":12,"run_id":"...","event_type":"stage.completed","overall_stat
 | `run.review_ready` | 首份草稿已可查看。 |
 | `run.cancelled` | 当前任务已由用户取消；结束订阅并从界面移除该任务。 |
 | `run.expired` | 结束订阅并提示重新上传。 |
-| `run.ingested` | 合同已正式入库且 `run_id` 已释放；结束订阅并从界面移除该任务。 |
+| `run.submitted` | 合同已保存至待审核区且提取 `run_id` 已释放；结束订阅，显示已提交审核，不得显示已正式入库。 |
 
 非合同终态直接携带合同文档识别结果：
 
@@ -773,7 +773,9 @@ POST /contract/api/contract/extraction-runs/{run_id}/stages/{stage_code}/retry
 
 ---
 
-## 正式入库合同
+<a id="正式入库合同"></a>
+
+## 提交合同待审申请
 
 服务端会将用户最终确认的名称与摘要合并向量化并保存至 SQLite，客户端无需增加参数，响应字段不变。此步骤依赖 Embedding 服务；编码失败返回 `502`，不会开始本次持久化，可修复服务后重试。
 
@@ -782,9 +784,11 @@ POST /contract/api/contract/extraction-runs/{run_id}/ingestion
 Content-Type: application/json
 ```
 
-八个用户业务阶段全部为 `succeeded` 后，审核用户提交最终展示文件名、合同摘要以及完整 Core、Clause。请求体不接受建议名称、`document_id`、分类、检索问题、向量、PDF 地址、审核人或入库时间，这些信息均由服务端根据当前运行和登录用户补齐。最终 `file_name` 可以沿用、修改或完全替换自动建议。Core 目录已移除 `contract_name`，不再重复提取正文标题；前端应按最新 Core 定义构造审核表单，提交时不要携带旧 `core.contract_name`，否则按未知字段拒绝。生成问题原文由服务端保存至 ES `retrieval_questions` 数组，供后续更换模型重算向量，无需前端新增字段。
+八个用户业务阶段全部为 `succeeded` 后，审核用户提交最终展示文件名、合同摘要、入库员备注 `note` 以及完整 Core、Clause。请求体不接受建议名称、`document_id`、分类、检索问题、向量、PDF 地址、审核人或入库时间，这些信息均由服务端根据当前运行和登录用户补齐。最终 `file_name` 可以沿用、修改或完全替换自动建议。Core 目录已移除 `contract_name`，不再重复提取正文标题；前端应按最新 Core 定义构造审核表单，提交时不要携带旧 `core.contract_name`，否则按未知字段拒绝。生成问题原文由服务端保存至 ES `retrieval_questions` 数组，供后续更换模型重算向量，无需前端新增字段。
 
-`file_name` 与 `summary` 均为必填字符串，先去除首尾空白，再校验非空；缺失、null、空串或纯空白返回 `422`。名称最多 255 个字符，摘要最多 3000 个字符。前端可用 `contract_overview` 初始化二者，最终以用户提交值为准；摘要仅写入 SQLite `contracts.summary`，不写入 ES，也不从生成结果自动补齐。
+`file_name` 与 `summary` 均为必填字符串，先去除首尾空白，再校验非空；缺失、null、空串或纯空白返回 `422`。名称最多 200 个字符（与中间件发布契约一致），摘要最多 3000 个字符。前端可用 `contract_overview` 初始化二者，最终以用户提交值为准；摘要先进入待审快照，批准后写入正式 SQLite `contracts.summary`；不从生成结果自动补齐。
+
+`note` 为必填字符串，无默认值，允许空字符串，最多 10000 字符；缺失、null、非字符串或超长返回 `422`。原样保存于 `pending_reviews.note` 并用于中间件审核沟通，不进入正式合同。
 
 `core.signing_date` 是入库必填项，必须提供完整合法的签订日期。缺失、`null`、空白或非法日期返回 `422`，不会写入任何正式存储；日期统一规范为 `YYYY-MM-DD`。提取结果仍可能为 `null`，前端需提示审核人依据合同补充日期后再入库，不得自动用当前日期或其他业务日期替代。历史合同查询仍兼容空日期。
 
@@ -792,6 +796,7 @@ Content-Type: application/json
 {
   "file_name": "设备采购合同",
   "summary": "双方就工业机械臂采购约定供货与付款事项。",
+  "note": "请重点核对交付与付款安排。",
   "core": {
     "contract_number": null,
     "contract_subjects": [
@@ -829,34 +834,40 @@ Content-Type: application/json
 
 `core` 必须包含 Core 定义接口返回的全部顶层 `code`，未知或缺失字段都会被拒绝；没有最终值时提交 `null`。非空值必须符合目录中的基数、属性、必填项、基本类型、枚举及数值范围/倍数约束；非法值返回带 Core 字段路径和允许值或边界的 422 错误，不自动猜测转换。`clauses` 至少包含一条，按数组顺序使用从 1 连续增长的 `order`，父条款必须先出现，页码不能超过处理版 PDF 总页数。
 
-成功状态码：`201 Created`。
+成功状态码：`201 Created`，表示待审申请已经本地持久化；不表示已成功发送中间件、审核通过或正式入库。
 
 ```json
 {
-  "status": "ingested",
-  "document_id": "e7591f0d...64位哈希...",
+  "status": "submitted",
+  "submission_id": "555eb083-cf68-5c89-8c78-6f59281a52b4",
+  "document_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "file_name": "设备采购合同",
-  "file_uri": "/e7591f0d...64位哈希....pdf",
   "page_count": 12,
-  "ingestion": {
-    "reviewer": "张三",
-    "ingested_at": "2026-09-04T12:00:00+00:00"
-  }
+  "submitted_by": "张三",
+  "submitted_at": "2026-10-09T08:00:00Z",
+  "review_status": "pending_send",
+  "ingestion_status": "pending"
 }
 ```
 
-服务先在 `data/abstract/contracts.db` 中登记不可见的 `ingesting` 元数据，再幂等保存处理版 PDF，再写入 `ELASTICSEARCH_INDEX_NAME` 指定的正式索引（默认 `contracts-v1`，不使用实验索引）。相同 `document_id` 会覆盖已有 ES 文档；ES 成功后幂等创建 Neo4j 合同节点；只有 SQLite 转为 `ready`、文件、ES 和图节点均成功后才删除运行并发布 `run.ingested`。持久化失败时 SQLite 保留 `ingesting` 恢复状态，失败原因记入日志，运行保留，调用方可以使用同一请求重试。
+`submission_id` 是稳定的本地申请 UUID；提交人取自认证身份。首次通常返回 `pending_send/pending`；重复请求返回当前保存状态。响应移除原来的正式文件地址 `file_uri` 和 `ingestion.reviewer/ingested_at`，此时尚无正式入库结果。
+
+请求内只做业务校验、封装处理版 PDF、保存独立待审 SQLite 与 PDF。保存成功后发布 `run.submitted`，释放提取运行。正式 SQLite、ES、Neo4j、正式 PDF 及摘要向量化均不在此请求中执行。随后后台发布服务发送中间件，审核反馈消费者依据 passport 决定拒绝或正式入库。
+
+相同 run_id、用户及相同确认内容（包括 note）重试，返回同一申请，释放运行或重启后，在待审保留期内仍可恢复回执；同一任务改内容返回 `409`。已完成且超过保留期的申请被清理后，原接口返回 `404`，不能再恢复完整回执。即使浏览器未收到成功响应，也不要自动创建新任务重复送审。已提交申请不可原位修改，重审流程尚未定义。
 
 ### 错误响应
 
 | 状态码 | 条件 |
 | --- | --- |
-| `404` | `run_id` 不存在、已经过期、已经入库，或不属于当前审核用户。 |
-| `409` | 尚有阶段未成功，或分类、Core、Clause、检索向量、页面向量等前置结果缺失。 |
-| `422` | 文件名、完整 Core 或 Clause 不符合最终入库契约。 |
-| `502` | SQLite、处理版 PDF、Elasticsearch 或 Neo4j 写入失败；运行仍保留，可重试入库。 |
+| `404` | run_id 不存在或已过期且无已保存的本人申请，或不属于当前用户。 |
+| `409` | 阶段/前置结果未就绪、判重拒绝，或同一任务已提交不同内容。 |
+| `422` | 名称、摘要、note、完整 Core 或 Clause 不符合送审契约。 |
+| `502` | 待审 SQLite/PDF 保存或已保存回执读取失败；可用相同内容重试。 |
 
-更完整的校验、覆盖写入和失败边界见[复核后合同正式入库](../capability/application/contract-ingestion.md)。
+中间件离线不会使已保存申请提交失败，后台发送服务等待可用令牌后处理。送审成功后的提取快照/PDF 运行资源不再可读；审核状态查询接口另行设计。本次只修改后端契约，前端需新增 note，并切换 status 与 SSE 终态处理。
+
+完整流程见[待审提交与正式入库](../capability/application/contract-ingestion.md)。
 
 ---
 
@@ -874,7 +885,7 @@ Content-Type: application/json
 10. 对 `retryable: true` 的失败阶段提供断点重试入口；阶段成功后继续消费后续 SSE，并在 `draft.updated` 后获取最新修订。
 11. 用户放弃当前任务时调用 `DELETE .../{run_id}`；收到 `run.cancelled` 后关闭 SSE 并从界面移除任务。仅关闭 SSE 不会取消后台任务。
 12. 八个阶段全部成功后，提交用户确认的最终 `file_name`、完整 Core 和 Clause 到入库接口。
-13. 收到 `run.ingested` 或 `201 Created` 后关闭 SSE 并移除本地运行；服务端已经删除该 `run_id`。收到 `run.expired` 时关闭 SSE 并提示重新上传。
+13. 提交时必须包含 `note`；收到 `run.submitted` 或该接口 `201 Created` 后关闭 SSE、移除本地提取运行并显示“已提交审核”；保存 submission_id，不得直接显示“已入库”。收到 `run.expired` 时关闭 SSE 并提示重新上传。
 
 ---
 

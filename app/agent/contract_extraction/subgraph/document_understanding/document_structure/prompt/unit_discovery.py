@@ -6,9 +6,9 @@ from app.agent.contract_extraction.state import PDFPromptPage, PreparedPDFPage
 from app.agent.contract_extraction.subgraph.document_understanding.prompt import (
     build_pdf_messages,
 )
-from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
+from app.core.tool_tag import TOOL_TAG_PLACEHOLDER, render_mllm_tool_tag
 
-UNIT_DISCOVERY_PROMPT_VERSION = "document-structure-unit-discovery-v13"
+UNIT_DISCOVERY_PROMPT_VERSION = "document-structure-unit-discovery-v14"
 
 UNIT_DISCOVERY_TASK = f"""你已获得按物理页码排列的完整合同页面图像。当前任务是建立一份中等粒度的合同导航结构，供字段、条款和问题驱动的检索视图等具体任务准确定位合同内容。
 
@@ -75,8 +75,7 @@ UNIT_DISCOVERY_TASK = f"""你已获得按物理页码排列的完整合同页面
 11. 只有确认所有页面中的宏观内容都已经被合理单元覆盖后才能调用 finish。
 12. 工具返回 ok=false 时，严格按照 message 指出的错误位置、问题和改进方向修正下一次调用。
 
-工具调用格式：
-{TOOL_CALL_XML_INSTRUCTION}
+{TOOL_TAG_PLACEHOLDER}
 """
 
 
@@ -88,5 +87,5 @@ def build_unit_discovery_messages(
     return build_pdf_messages(
         pages,
         prompt_pages,
-        task_suffix=UNIT_DISCOVERY_TASK,
+        task_suffix=render_mllm_tool_tag(UNIT_DISCOVERY_TASK),
     )
