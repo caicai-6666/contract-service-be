@@ -6,15 +6,15 @@ Neo4j 为后续合同关联和限定深度的邻域查询提供图存储。已�
 
 ## 配置与启动
 
-与 Elasticsearch 一致，由同级 `contract-service-deploy` 维护 `neo4j/Dockerfile`、主 `docker-compose.yml`、`.env.example` 和开发端口覆盖 `compose.neo4j-dev.yml`。完整操作见 [deploy 部署说明](../../../../contract-service-deploy/README.md#neo4j-部署与本地开发)。
+与 Elasticsearch 一致，由同级 `contract-service-deploy` 维护 `neo4j/Dockerfile`、主 `docker-compose.yml`和 `.env.example`。完整操作见 [deploy 部署说明](../../../../contract-service-deploy/README.md#neo4j-部署与本地开发)。
 
-默认版本为 Neo4j Community `5.26.30-community`。主 Compose 仅允许内部网络访问；开发覆盖文件固定监听回环地址 HTTP 7474、Bolt 7687。与 ES 一致关闭认证（`NEO4J_AUTH: "none"`），无需用户名和密码。宿主机后续驱动使用 `bolt://127.0.0.1:7687`；容器后端使用 `bolt://neo4j:7687`。
+默认版本为 Neo4j Community `5.26.30-community`。主 Compose 统一提供端口映射，通过 `.env` 的 `NEO4J_BIND_ADDRESS`、`NEO4J_HTTP_PORT`、`NEO4J_BOLT_PORT` 配置；默认监听回环地址 HTTP 7474、Bolt 7687，数据库绑定地址独立于前后端。与 ES 一致关闭认证（`NEO4J_AUTH: "none"`），无需用户名和密码。宿主机后续驱动使用 `bolt://127.0.0.1:7687`；容器后端使用 `bolt://neo4j:7687`。
 
 在 deploy 目录执行：
 
 ```bash
-docker compose -f docker-compose.yml -f compose.neo4j-dev.yml up -d --build --wait neo4j
-docker compose -f docker-compose.yml -f compose.neo4j-dev.yml ps neo4j
+docker compose up -d --build --wait neo4j
+docker compose ps neo4j
 ```
 
 仅操作 Neo4j，不依赖模型服务，不启动其他应用。健康检查执行无认证的 Bolt 查询；容器运行不等于健康检查已通过。
