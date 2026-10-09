@@ -27,7 +27,7 @@ def load_lindera(connection: sqlite3.Connection) -> None:
         suffix = '.dylib' if sys.platform == 'darwin' else '.dll' if sys.platform == 'win32' else '.so'
         library = Path(str(library) + suffix)
     if not config.is_file() or not library.is_file():
-        raise RuntimeError('Lindera扩展或配置不存在，请运行scripts/install_lindera.py并检查路径配置。')
+        raise RuntimeError('Lindera扩展或配置不存在，请检查扩展安装及 SQLITE_LINDERA_EXTENSION_PATH、LINDERA_CONFIG_PATH 配置；容器部署请重新构建后端镜像。')
     with _CONFIG_LOCK:
         if _active_config is not None and _active_config != config:
             raise RuntimeError('Lindera配置不能在同一进程内切换，请重启服务。')

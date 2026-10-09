@@ -47,3 +47,6 @@ __pycache__/
 !/data/tool-tag/deepseek-v4.1-flash.txt
 !/data/template/glm-5.3-flash.jinja
 !/data/tool-tag/glm-5.3-flash.txt
+
+# 本地辅助脚本不纳入 Git。
+/scripts/
