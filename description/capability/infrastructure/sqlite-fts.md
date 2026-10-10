@@ -1,8 +1,8 @@
 # SQLite 中文全文检索依赖
 
-为记忆检索准备 Lindera FTS5 原生扩展，采用内嵌 Jieba 词典。原文和查询由同一分词器切分，SQLite 提供 BM25 排序；向量能力继续复用 [sqlite-vec](sqlite-vector.md)。
+Lindera FTS5 原生扩展采用内嵌 Jieba 词典，为会话记忆与合同名称、摘要、注意事项提供中文检索。原文和查询由同一分词器切分，SQLite 提供 BM25 排序；向量能力继续复用 [sqlite-vec](sqlite-vector.md)。
 
-当前已完成本机安装、配置与连接入口。尚未创建业务 FTS 表、同步历史索引或接入[记忆检索子图](../../architecture/workflow/contract-communication/memory-retrieval.md)。原有 CommunicationStore 仍使用原连接，不会因本次准备工作改变读写行为。
+当前已接入[记忆检索子图](../../architecture/workflow/contract-communication/memory-retrieval.md)：读取筛选后的任务检索投影，在内存 FTS 表中进行 BM25。正式合同的名称、摘要和注意事项使用持久化 FTS 表及同步触发器；业务库初始化与检索连接均需可用的扩展。CommunicationStore 的普通持久化连接继续加载 sqlite-vec，不在归档写入时构建记忆 FTS 表。
 
 ---
 

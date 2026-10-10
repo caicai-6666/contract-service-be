@@ -56,7 +56,7 @@
 本地默认服务地址为：
 
 ```text
-http://127.0.0.1:10000
+http://127.0.0.1:20000
 ```
 
 业务接口统一使用 `/contract/api` 前缀。当前自动生成的接口资料为：
@@ -108,7 +108,7 @@ GET /contract/api/health
 
 ## 业务接口
 
-- [多轮对话 API](communication.md)：提供表单创建或替换、180 秒内订阅激活、SSE、快照和主动取消；工作流与上下文待接入。
+- [多轮对话 API](communication.md)：提供会话及任务创建、180 秒内订阅激活、业务门禁和 Agent Core、SSE、快照、主动取消与历史恢复。
 - [审核用户登录 API](auth.md)：使用审核用户密钥获取限时免登码。
 - [资源文件 API](resource.md)：根据 `file_uri` 读取正式合同 PDF，或按快照中的 UUID 读取本人提取任务的内存处理版 PDF。
 - [合同 API](contract.md)：获取 Core 表单定义、列出并恢复未入库运行、上传 PDF、获取建议文件名与 Core/Clause 结果、订阅 SSE、重试失败阶段并提交正式入库。

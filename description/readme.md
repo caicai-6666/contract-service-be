@@ -8,6 +8,7 @@
 
 | 当前目标 | 建议阅读 |
 | --- | --- |
+| 首次了解项目、准备依赖或启动服务 | [仓库 README](../README.md) |
 | 了解项目目标、范围、术语与全局约束 | [项目说明](project.md) |
 | 新建、修改或审查项目文档 | [文档撰写风格手册](documentation.md) |
 | 新增或修改模型提示词 | [提示词工程规范](standard/prompt-engineering.md) |

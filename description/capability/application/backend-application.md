@@ -88,14 +88,16 @@ SQLite 是正式合同文件管理的权威目录，Elasticsearch 是完整合�
 本地开发可从项目根目录直接启动应用：
 
 ```bash
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 python -m app.main
 ```
 
-运行依赖统一维护在项目根目录的 `requirements.txt`，使用兼容版本区间而不是应用打包元数据。 网页搜索复用 `httpx` 异步请求博查，`trafilatura>=2.2,<3.0` 用于本地 HTML 正文提取；搜索和结果列表工具已接入会话缓存、分页与主循环；网页子图已实现 HTTP、正文提取和模型精炼，打开工具已注册主循环并接入正文缓存与分页，详见[网页工具](../../architecture/workflow/contract-communication/web-search.md)。 历史搜索与正文提取验证见[归档报告](../../../experiment/web-search-extraction/REPORT.md)，已记录误召回、权限限制提示遗漏及附件链接丢失等边界。`.venv` 只用于本机隔离且已被 Git 忽略。`app.main` 的 `__main__` 分支直接调用 `uvicorn.run`，因此可以在 IDE 中运行该文件；监听地址、端口、日志级别和热重载开关均在入口代码中显式列出。默认监听 `127.0.0.1:10000` 并开启源码热重载，避免与默认监听 `8000` 的 MLLM 冲突。
+首次配置及依赖准备见[仓库 README](../../../README.md#启动方式)。Lindera 是需单独准备的原生扩展，不能仅靠安装 Python 依赖完成启动环境。
+
+运行依赖统一维护在项目根目录的 `requirements.txt`，使用兼容版本区间而不是应用打包元数据。 网页搜索复用 `httpx` 异步请求博查，`trafilatura>=2.2,<3.0` 用于本地 HTML 正文提取；搜索和结果列表工具已接入会话缓存、分页与主循环；网页子图已实现 HTTP、正文提取和模型精炼，打开工具已注册主循环并接入正文缓存与分页，详见[网页工具](../../architecture/workflow/contract-communication/web-search.md)。 历史搜索与正文提取验证见[归档报告](../../../experiment/web-search-extraction/REPORT.md)，已记录误召回、权限限制提示遗漏及附件链接丢失等边界。`.venv` 只用于本机隔离且已被 Git 忽略。`app.main` 的 `__main__` 分支直接调用 `uvicorn.run`；从项目根目录执行 `python -m app.main`，默认监听 `0.0.0.0:20000` 并开启源码热重载。IDE 运行时应将项目根目录加入 Python 包搜索路径。
 
 热重载会重启唯一工作进程并清空内存合同任务，只适合本地开发。部署入口应由外部 ASGI 进程管理器加载 `app.main:app`，关闭热重载，并继续保持单 worker。
 
