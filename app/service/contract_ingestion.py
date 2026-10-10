@@ -217,7 +217,7 @@ class ContractIngestionService:
         except Exception as exc:
             raise ContractPersistenceError("Neo4j 合同节点同步失败，保留入库状态供重试") from exc
 
-    def validate_pending_review(self, snapshot) -> None:
+    def validate_ingestion_review(self, snapshot) -> None:
         """送审前复用正式入库约束，纯校验，不调用模型或外部存储。"""
         self._validate_file_name(snapshot.file_name)
         if len(snapshot.file_name) > 200:
@@ -379,7 +379,9 @@ class ContractIngestionService:
                 processed_pdf_bytes=processed_pdf_bytes,
             )
 
-    async def delete_document(self, document_id: str, *, reviewer: str) -> None:
+    async def delete_document(self, document_id: str, *, reviewer: str,
+                              expected_ingested_at: datetime | None = None,
+                              expected_passport: str | None = None) -> None:
         """与同文档入库串行，先登记删除意图，再清理 Neo4j、ES、PDF 和 SQLite。"""
         if re.fullmatch(r"[0-9a-f]{64}", document_id) is None:
             raise ValueError("document_id 必须是 64 位小写 SHA-256")
@@ -391,6 +393,11 @@ class ContractIngestionService:
                 raise ContractPersistenceError("读取合同 SQLite 元数据失败") from exc
             if metadata is None:
                 raise ContractDocumentNotFoundError(document_id)
+            # 审核批准的是申请时的合同；相同 PDF 删除后再入库也不能沿用旧批准。
+            if expected_ingested_at is not None and (
+                metadata.ingested_at != expected_ingested_at or metadata.passport != expected_passport
+            ):
+                raise ContractDocumentConflictError('正式合同身份与删除审核快照不一致，拒绝删除')
             if metadata.status not in (ContractMetadataStatus.READY, ContractMetadataStatus.DELETING):
                 raise ContractDocumentConflictError("合同尚未完成入库，不能删除")
             if metadata.file_uri != f"/{document_id}.pdf":

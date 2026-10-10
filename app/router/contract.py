@@ -35,6 +35,9 @@ from app.infrastructure.contract_metadata_store import (
     SQLiteContractMetadataStore, ContractMetadataNotFoundError, ContractMetadataStateError,
 )
 from app.service.contract_relation import ContractRelationService
+from app.service.deletion_review import DeletionReviewService
+from app.infrastructure.deletion_review_store import DeletionReviewConflictError
+from app.schema.deletion_review import DeletionReviewSubmissionRequest, DeletionReviewSubmissionResponse
 from app.core.config import Settings, get_settings
 from app.service.contract_note import create_contract_note
 from app.infrastructure.contract_graph_store import ContractRelationExistsError, ContractGraphNodeMissingError
@@ -115,6 +118,10 @@ def get_contract_ingestion_service(request: Request) -> ContractIngestionService
     return request.app.state.contract_ingestion_service
 
 
+def get_deletion_review_service(request: Request) -> DeletionReviewService:
+    return request.app.state.deletion_review_service
+
+
 def get_contract_relation_service(request: Request) -> ContractRelationService:
     return request.app.state.contract_relation_service
 
@@ -192,31 +199,32 @@ async def create_contract_relation(
 
 @router.delete(
     "/documents/{document_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="删除已入库合同及其全部正式存储数据",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=DeletionReviewSubmissionResponse,
+    summary="提交正式合同删除审核申请",
     responses={
         404: {"description": "合同不存在或已删除。"},
-        409: {"description": "合同尚未完成入库。"},
-        502: {"description": "存储删除失败，可能部分完成，可重试。"},
+        409: {"description": "合同尚未就绪、不允许申请删除或已有删除申请。"},
+        503: {"description": "删除申请暂时无法保存；若申请已保存，标志将后台补齐。"},
     },
 )
 async def delete_contract_document(
     document_id: Annotated[str, Path(pattern=r"^[0-9a-f]{64}$", description="合同 document_id，即处理版 PDF 的 SHA-256。")],
-    service: Annotated[ContractIngestionService, Depends(get_contract_ingestion_service)],
+    payload: DeletionReviewSubmissionRequest,
+    service: Annotated[DeletionReviewService, Depends(get_deletion_review_service)],
     reviewer_user_name: ReviewerUserDependency,
-) -> Response:
-    """已登录用户可删除共享目录中任意正式合同，不以原上传人过滤。"""
+) -> DeletionReviewSubmissionResponse:
+    """提交人来自登录身份；保存审核申请并锁定标志，不直接清理正式存储。"""
     try:
-        await service.delete_document(document_id, reviewer=reviewer_user_name)
-    except ContractDocumentNotFoundError as exc:
+        record = await service.submit(document_id=document_id, requested_by=reviewer_user_name, note=payload.note)
+    except ContractMetadataNotFoundError as exc:
         raise HTTPException(status_code=404, detail="合同不存在或已删除") from exc
-    except ContractDocumentConflictError as exc:
+    except (ContractMetadataStateError, DeletionReviewConflictError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except ContractPersistenceError as exc:
-        # 完整错误链保留在服务日志，不向前端暴露连接信息与本地路径。
-        logging.getLogger(__name__).exception("正式合同删除未完成：document_id=%s", document_id)
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except Exception:
+        logging.getLogger(__name__).exception("删除申请保存失败：document_id=%s", document_id)
+        raise HTTPException(status_code=503, detail='删除申请暂时无法保存，请查询申请列表或稍后重试') from None
+    return DeletionReviewSubmissionResponse(submission_id=record.submission_id, document_id=record.document_id)
 
 
 @router.get('/documents/{document_id}/summary', response_model=ContractSummaryResponse,
@@ -315,6 +323,7 @@ def get_contract_documents(
             contract_time=metadata.contract_time,
             file_uri=metadata.file_uri,
             uploader=metadata.uploader,
+            can_delete=metadata.can_delete,
             ingested_at=metadata.ingested_at,
         )
         for metadata in store.list_ready()

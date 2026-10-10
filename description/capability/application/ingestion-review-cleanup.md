@@ -1,6 +1,6 @@
 # 已完成待审申请定时清理
 
-`PendingReviewCleanupService` 定时删除已完成申请的待审快照、`pending_reviews` 行以及 `data/pending-review/files/<submission_id>.pdf`，不访问或删除正式合同 SQLite、PDF、ES、Neo4j。服务依赖[待审存储](../../architecture/data/pending-review.md)，与[审核反馈消费](pending-review-consumer.md)共同维护重投幂等。
+`IngestionReviewCleanupService` 定时删除已完成申请的待审快照、`ingestion_reviews` 行以及 `data/ingestion-review/files/<submission_id>.pdf`，不访问或删除正式合同 SQLite、PDF、ES、Neo4j。服务依赖[待审存储](../../architecture/data/ingestion-review.md)，与[审核反馈消费](ingestion-review-consumer.md)共同维护重投幂等。
 
 ---
 
@@ -24,7 +24,7 @@
 
 1. 在 `processed_review_receipts` 保存最小处理凭据。
 2. 删除以规范 UUID 生成的待审 PDF 路径，并同步文件目录。
-3. 删除 `pending_reviews` 整行并提交事务；快照 JSON、融合向量、提交备注、审核备注及其他申请字段随行删除。
+3. 删除 `ingestion_reviews` 整行并提交事务；快照 JSON、融合向量、提交备注、审核备注及其他申请字段随行删除。
 
 凭据只含 submission_id、原请求 ID、反馈 ID、反馈内容 SHA-256、本地处理完成时间、本地 ack 时间与清理时间。不保存合同正文、PDF、快照、双方备注、用户名称或 passport。由于消息重投没有约定最大期限，该最小表暂不自动过期；它不用于恢复已删除快照。
 
@@ -51,15 +51,15 @@
 
 ## 装配与配置
 
-代码入口：`app/service/pending_review_cleanup.py`。`start()` 非阻塞启动、`scan_once()` 返回本次删除数量、`close()` 停止并等待删除任务。数据库方法为 `list_cleanup_candidates(cutoff, limit)` 与 `cleanup_completed(submission_id, cutoff)`。
+代码入口：`app/service/ingestion_review_cleanup.py`。`start()` 非阻塞启动、`scan_once()` 返回本次删除数量、`close()` 停止并等待删除任务。数据库方法为 `list_cleanup_candidates(cutoff, limit)` 与 `cleanup_completed(submission_id, cutoff)`。
 
-lifespan 将服务保存在 `application.state.pending_review_cleanup_service`，待审消费者启动后启动清理，退出时先停止清理。
+lifespan 将服务保存在 `application.state.ingestion_review_cleanup_service`，待审消费者启动后启动清理，退出时先停止清理。
 
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `PENDING_REVIEW_RETENTION_SECONDS` | `604800` | 本地处理完成后的保留秒数，即 7 天，有限正数。 |
-| `PENDING_REVIEW_CLEANUP_INTERVAL_SECONDS` | `3600` | 每轮结束后等待秒数，有限正数。 |
-| `PENDING_REVIEW_CLEANUP_BATCH_SIZE` | `100` | 每轮最多处理申请数，正整数。 |
+| `INGESTION_REVIEW_RETENTION_SECONDS` | `604800` | 本地处理完成后的保留秒数，即 7 天，有限正数。 |
+| `INGESTION_REVIEW_CLEANUP_INTERVAL_SECONDS` | `3600` | 每轮结束后等待秒数，有限正数。 |
+| `INGESTION_REVIEW_CLEANUP_BATCH_SIZE` | `100` | 每轮最多处理申请数，正整数。 |
 
 `.env` 和 `.env.example` 已提供配置。初始化幂等补建凭据表和清理索引，不对未完成申请补造完成时间。
 
@@ -67,4 +67,4 @@ lifespan 将服务保存在 `application.state.pending_review_cleanup_service`�
 
 ## 验证
 
-`tests/test_pending_review_cleanup.py` 使用临时真实 SQLite/PDF，覆盖批准/拒绝删除、保留期边界、失败及未完成保留、无 ack 时间清理、清理后重投、反馈冲突、清理/ack 交错、文件失败、删除后事务失败恢复、路径隔离、禁止复活、批量并发、定时失败重试和停止等待。仅操作临时测试数据，不执行当前开发库的清理。
+`tests/test_ingestion_review_cleanup.py` 使用临时真实 SQLite/PDF，覆盖批准/拒绝删除、保留期边界、失败及未完成保留、无 ack 时间清理、清理后重投、反馈冲突、清理/ack 交错、文件失败、删除后事务失败恢复、路径隔离、禁止复活、批量并发、定时失败重试和停止等待。仅操作临时测试数据，不执行当前开发库的清理。

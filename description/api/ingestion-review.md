@@ -1,14 +1,13 @@
-# 待入库申请 API
+# 合同入库审核 API
 
-用于查看仍保留在待审区的申请、审核结果和临时 PDF。它与正式合同列表、内存提取任务列表分别管理；审核通过、审核拒绝的记录在清理之前都会出现在这里。
+路由前缀为 `/contract/api/ingestion-reviews`，原 `/contract/api/pending-reviews` 前缀已移除。用于查看仍保留在待审区的申请、审核结果和临时 PDF。它与正式合同列表、内存提取任务列表分别管理；审核通过、审核拒绝的记录在清理之前都会出现在这里。
 
 ## 接口目录
 
 | 接口 | 方法 | 完整路径 |
 | --- | --- | --- |
-| [获取清理配置](#获取清理配置) | GET | `/contract/api/pending-reviews/cleanup-policy` |
-| [获取待入库申请 ID 列表](#获取待入库申请-id-列表) | GET | `/contract/api/pending-reviews/list` |
-| [获取待入库申请详情](#获取待入库申请详情) | GET | `/contract/api/pending-reviews/detail/{submission_id}` |
+| [获取待入库申请 ID 列表](#获取待入库申请-id-列表) | GET | `/contract/api/ingestion-reviews/list` |
+| [获取待入库申请详情](#获取待入库申请详情) | GET | `/contract/api/ingestion-reviews/detail/{submission_id}` |
 
 PDF 预览已迁移至[资源文件 API](resource.md#读取待审-pdf)：`GET /contract/api/resource/pending-review-pdf/{submission_id}`，原待审路由下的 PDF 接口已移除。
 
@@ -16,30 +15,9 @@ PDF 预览已迁移至[资源文件 API](resource.md#读取待审-pdf)：`GET /c
 
 ---
 
-## 获取清理配置
-
-无请求参数。返回启动时实际采用的配置与服务器时间：
-
-```json
-{
-  "retention_seconds": 604800,
-  "cleanup_interval_seconds": 3600,
-  "countdown_from": "review_processed_at",
-  "server_time": "2026-10-09T08:00:00Z"
-}
-```
-
-`retention_seconds` 对应 `PENDING_REVIEW_RETENTION_SECONDS`；`cleanup_interval_seconds` 对应后台扫描间隔。修改环境配置需重启后端。
-
-前端优先使用详情的 `cleanup.eligible_at` 与服务器时间计算剩余时长：`max(0, cleanup.eligible_at - 当前服务器时间)`。只有“审核通过且正式入库成功”或“审核拒绝且本地处理完成”才开始计时。未完成、入库失败等情况为 null，不能按 created_at 或 reviewed_at 开始倒计时。
-
-截止时刻表示允许清理，不保证该秒立刻删除：后台扫描、批次限制或清理失败重试都可能使实际删除更晚。倒计时为0但记录仍存在是合法状态，可展示“等待清理”。
-
----
-
 ## 获取待入库申请 ID 列表
 
-`GET /contract/api/pending-reviews/list`，无参数、无分页。只返回所有尚未清理的申请 ID；不创建临时查询结果集，`submission_id` 就是用于查询详情的 ID。
+`GET /contract/api/ingestion-reviews/list`，无参数、无分页。只返回所有尚未清理的申请 ID；不创建临时查询结果集，`submission_id` 就是用于查询详情的 ID。
 
 ```json
 {
@@ -47,13 +25,13 @@ PDF 预览已迁移至[资源文件 API](resource.md#读取待审-pdf)：`GET /c
 }
 ```
 
-按提交时间倒序、相同时间按申请 ID 升序排列。空列表返回 `{"submission_ids": []}`。包括待发送、待审核、已批准和已拒绝等所有仍保留记录。仅从 SQLite 读取 ID，不加载快照、合同内容或正式库数据。原根路径 `GET /contract/api/pending-reviews` 已移除。
+按提交时间倒序、相同时间按申请 ID 升序排列。空列表返回 `{"submission_ids": []}`。包括待发送、待审核、已批准和已拒绝等所有仍保留记录。仅从 SQLite 读取 ID，不加载快照、合同内容或正式库数据。当前不提供根路径列表接口，需调用 `/list`。
 
 ---
 
 ## 获取待入库申请详情
 
-`GET /contract/api/pending-reviews/detail/{submission_id}`，路径参数为列表返回的申请 UUID，不是合同 ID、通行证或中间件消息 ID。
+`GET /contract/api/ingestion-reviews/detail/{submission_id}`，路径参数为列表返回的申请 UUID，不是合同 ID、通行证或中间件消息 ID。
 
 详情采用稳定分区，各阶段尚未产生的值返回 null，不省略分区。下面为刚提交、尚未送审的示例：
 
@@ -106,7 +84,11 @@ PDF 预览已迁移至[资源文件 API](resource.md#读取待审-pdf)：`GET /c
 | 批准、正式入库成功且本地处理完成 | approved | succeeded | 处理完成时间 + 保留时长 |
 | 拒绝且本地处理完成 | rejected | pending | 处理完成时间 + 保留时长 |
 
+前端直接使用详情的 `cleanup.eligible_at` 与 `server_time` 校正后的当前服务器时间计算剩余时长：`max(0, cleanup.eligible_at - 当前服务器时间)`。`eligible_at` 为 null 时不显示倒计时，无需额外查询清理配置。截止时刻表示允许清理，后台扫描、批次限制或失败重试可能使实际清理更晚；倒计时为0但记录仍存在时可显示“等待清理”。
+
 审核反馈保存与本地处理完成存在短暂间隔；此时可已显示 approved/rejected，但处理完成时间及清理时刻仍为 null。以返回字段为准，不自行用提交时间或远端审核时间替代。
+
+`delivery.status=uncertain` 表示尚未确认发布，后台会使用同一 source_id 定时重试；合法409重复回执会关联原消息并转为 published/pending_review。详细边界见[待审发布服务](../capability/application/ingestion-review-publisher.md)。
 
 时间均为带时区的 ISO 8601 字符串。详情不返回 Core、Clause、向量、完整 snapshot_json 或内部错误日志。列表读取后申请可能被清理，因此详情返回404是正常边界。
 
@@ -120,6 +102,6 @@ PDF 预览已迁移至[资源文件 API](resource.md#读取待审-pdf)：`GET /c
 
 ## 实现与验证
 
-路由为 `app/router/pending_review.py`，查询投影由 `PendingReviewQueryService` 负责，启动时注入待审存储、正式合同元数据存储和配置。列表仅查询 ID；详情从 snapshot_json 提取必要字段，不加载大型向量。两者均不触发发布、审核或入库。
+路由为 `app/router/ingestion_review.py`，查询投影由 `IngestionReviewQueryService` 负责，启动时注入待审存储、正式合同元数据存储和配置。列表仅查询 ID；详情从 snapshot_json 提取必要字段，不加载大型向量。两者均不触发发布、审核或入库。
 
-`tests/test_pending_review_query.py` 覆盖认证、全量 ID 列表、详情各类状态、双方备注、正式入库时间、清理计时、清理后404、资源 PDF 成功/缺失/校验失败与错误隔离。生命周期规则见[待审清理服务](../capability/application/pending-review-cleanup.md)。
+`tests/test_ingestion_review_query.py` 覆盖认证、全量 ID 列表、详情各类状态、双方备注、正式入库时间、清理计时、清理后404、资源 PDF 成功/缺失/校验失败与错误隔离。生命周期规则见[待审清理服务](../capability/application/ingestion-review-cleanup.md)。

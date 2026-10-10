@@ -193,4 +193,4 @@ curl --header 'Authorization: Bearer <login_code>' \
 已完成申请也只能在保留期内预览临时 PDF；正式入库合同的长期原文仍通过既有正式合同资源接口读取。
 
 
-此 PDF 是提取流程保存的处理版 PDF，不保证与最初上传文件的原始字节一致。地址由[待入库详情](pending-review.md#获取待入库申请详情)的 `pdf.url` 提供；旧 `/pending-reviews/{submission_id}/pdf` 已移除。
+此 PDF 是提取流程保存的处理版 PDF，不保证与最初上传文件的原始字节一致。地址由[待入库详情](ingestion-review.md#获取待入库申请详情)的 `pdf.url` 提供；旧 `/pending-reviews/{submission_id}/pdf` 已移除。

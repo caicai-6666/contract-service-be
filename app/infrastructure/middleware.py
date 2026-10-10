@@ -54,8 +54,13 @@ class MiddlewareClient:
         return await publish_ingestion_request(self, token=token, fields=fields,
             pdf_bytes=pdf_bytes, timeout_seconds=timeout_seconds)
 
+    async def publish_deletion(self, *, token, fields, pdf_bytes, timeout_seconds):
+        return await _publish_file_request(self, path='middleware-service/api/deletion-requests/publish',
+            token=token, fields=fields, pdf_bytes=pdf_bytes, timeout_seconds=timeout_seconds,
+            duplicate_message='该平台的 source_id 已有尚未确认的删除申请')
+
     async def pull_review_result(self, *, token):
-        response = await self._http.post('middleware-service/api/review-results/pull',
+        response = await self._http.post('middleware-service/api/ingestion-results/pull',
             headers={'Authorization': f'Bearer {token.get_secret_value()}'})
         response.raise_for_status()
         if response.status_code == 204:
@@ -65,7 +70,7 @@ class MiddlewareClient:
         return MiddlewareReviewDelivery.model_validate(response.json())
 
     async def ack_review_result(self, *, token, message_id, offset):
-        response = await self._http.post('middleware-service/api/review-results/ack',
+        response = await self._http.post('middleware-service/api/ingestion-results/ack',
             headers={'Authorization': f'Bearer {token.get_secret_value()}'},
             json={'message_id': message_id})
         response.raise_for_status()
@@ -85,14 +90,35 @@ class MiddlewarePublishFields(BaseModel):
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=False)
     name: str = Field(min_length=1, max_length=200)
     abstract: str = Field(min_length=1, max_length=10000)
+    source_id: str = Field(min_length=1, max_length=128, description='数据在本平台的唯一 ID，合同使用 document_id。')
     note: str = Field(max_length=10000)
     reviewer: str = Field(min_length=1, max_length=200)
     file_extension: Literal['pdf'] = 'pdf'
 
     @model_validator(mode='after')
     def required_text(self):
-        if any(not value.strip() for value in (self.name, self.abstract, self.reviewer)):
-            raise ValueError('发布名称、摘要与审核员不得为空白')
+        if any(not value.strip() for value in (self.name, self.abstract, self.source_id, self.reviewer)):
+            raise ValueError('发布名称、摘要、源数据 ID 与审核员不得为空白')
+        return self
+
+
+class MiddlewareDeletionPublishFields(BaseModel):
+    """删除送审表单：上传人与申请人来自本地快照，身份认证只使用令牌。"""
+    model_config = ConfigDict(extra='forbid')
+    source_id: str = Field(min_length=1, max_length=128)
+    passport: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=200)
+    abstract: str = Field(min_length=1, max_length=10000)
+    uploader: str = Field(min_length=1, max_length=200)
+    applicant: str = Field(min_length=1, max_length=200)
+    note: str = Field(max_length=10000)
+    file_extension: Literal['pdf'] = 'pdf'
+
+    @model_validator(mode='after')
+    def required_text(self):
+        if any(not value.strip() for value in (
+            self.source_id, self.passport, self.name, self.abstract, self.uploader, self.applicant)):
+            raise ValueError('删除送审的身份、名称、摘要与人员不得为空白')
         return self
 
 
@@ -106,11 +132,19 @@ class MiddlewarePublishOutcome(BaseModel):
 async def publish_ingestion_request(client: MiddlewareClient, *, token: SecretStr,
                                     fields: MiddlewarePublishFields, pdf_bytes: bytes,
                                     timeout_seconds: float) -> MiddlewarePublishOutcome:
+    return await _publish_file_request(client, path='middleware-service/api/ingestion-requests/publish',
+        token=token, fields=fields, pdf_bytes=pdf_bytes, timeout_seconds=timeout_seconds,
+        duplicate_message='该平台的 source_id 已有尚未确认的入库请求')
+
+
+async def _publish_file_request(client: MiddlewareClient, *, path: str, token: SecretStr,
+                                fields: BaseModel, pdf_bytes: bytes,
+                                timeout_seconds: float, duplicate_message: str) -> MiddlewarePublishOutcome:
     """单次上传，无隐式重试；确认丢失时不能推断未发布。"""
     import asyncio
     try:
         async with asyncio.timeout(timeout_seconds):
-            response = await client._http.post('middleware-service/api/ingestion-requests/publish',
+            response = await client._http.post(path,
                 headers={'Authorization': f'Bearer {token.get_secret_value()}'},
                 data=fields.model_dump(), files={'file': ('contract.pdf', pdf_bytes, 'application/pdf')},
                 timeout=timeout_seconds)
@@ -132,11 +166,18 @@ async def publish_ingestion_request(client: MiddlewareClient, *, token: SecretSt
         return MiddlewarePublishOutcome(state='retry', error_code='message_service_unavailable')
     candidate = data if response.status_code == 201 else data.get('detail') if isinstance(data, dict) else None
     message_id = candidate.get('message_id') if isinstance(candidate, dict) else None
-    if not isinstance(message_id, str) or not message_id.strip():
+    if (not isinstance(message_id, str) or not message_id.strip()
+            or message_id != message_id.strip() or len(message_id)>128):
         message_id = None
     if response.status_code == 201 and isinstance(data, dict) and data.get('status') == 'published' and message_id:
         return MiddlewarePublishOutcome(state='published', message_id=message_id)
-    # 503 未确认、未知网关响应及不完整 201 均保守挂起；保留可用的消息 ID 供对账。
+    if response.status_code == 409 and isinstance(candidate, dict):
+        offset = candidate.get('offset')
+        # 两个流各自校验重复响应，不能把另一类申请或普通冲突当成成功。
+        if (message_id and candidate.get('message') == duplicate_message
+                and 'offset' in candidate and (offset is None or type(offset) is int and offset>=0)):
+            return MiddlewarePublishOutcome(state='published', message_id=message_id, error_code='duplicate_request')
+    # 未知响应保留候选 ID 并标记不确定，后台按原 source_id 延迟重试。
     return MiddlewarePublishOutcome(state='uncertain', message_id=message_id, error_code='publish_unconfirmed')
 
 

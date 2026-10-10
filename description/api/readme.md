@@ -11,7 +11,7 @@
 | [健康检查](#健康检查) | `GET` | `/contract/api/health` |
 | [使用密钥登录](auth.md#使用密钥登录) | `POST` | `/contract/api/auth/login` |
 | [获取所有已入库合同元数据](contract.md#获取所有已入库合同元数据) | `GET` | `/contract/api/contract/documents` |
-| [删除正式合同](contract.md#删除正式合同) | `DELETE` | `/contract/api/contract/documents/{document_id}` |
+| [提交正式合同删除审核](contract.md#删除正式合同) | `DELETE` | `/contract/api/contract/documents/{document_id}` |
 | [获取合同类别列表](contract.md#获取合同类别列表) | `GET` | `/contract/api/contract/categories` |
 | [获取 Core 审核表单定义](contract.md#获取-core-审核表单定义) | `GET` | `/contract/api/contract/core-definitions` |
 | [列出尚未入库的运行](contract.md#列出尚未入库的运行) | `GET` | `/contract/api/contract/extraction-runs` |
@@ -29,6 +29,10 @@
 | [创建合同关联](contract.md#创建合同关联) | `POST` | `/contract/api/contract/relations` |
 | [删除合同关联](contract.md#删除合同关联) | `DELETE` | `/contract/api/contract/relations/{relation_id}` |
 | [获取合同一跳关系列表](contract.md#获取合同一跳关系列表) | `GET` | `/contract/api/contract/documents/{document_id}/relations` |
+| [获取待入库申请 ID 列表](ingestion-review.md#获取待入库申请-id-列表) | `GET` | `/contract/api/ingestion-reviews/list` |
+| [获取待入库申请详情](ingestion-review.md#获取待入库申请详情) | `GET` | `/contract/api/ingestion-reviews/detail/{submission_id}` |
+| [获取删除申请 ID 列表](deletion-review.md#获取删除申请-id-列表) | `GET` | `/contract/api/deletion-reviews/list` |
+| [获取删除申请详情](deletion-review.md#获取删除申请详情) | `GET` | `/contract/api/deletion-reviews/detail/{submission_id}` |
 | [读取合同 PDF](resource.md#读取合同-pdf) | `GET` | `/contract/api/resource/contract` |
 | [读取提取任务的内存处理版 PDF](resource.md#读取提取任务的内存处理版-pdf) | `GET` | `/contract/api/resource/extraction-pdf/{file_id}` |
 | [读取已驻留会话任务的 PDF 附件](resource.md#读取已驻留会话任务的-pdf-附件) | `GET` | `/contract/api/resource/conversations/{conversation_id}/files/{file_id}` |
@@ -112,4 +116,6 @@ GET /contract/api/health
 新增业务接口时，应按资源或完整用例在本目录新增 kebab-case 文档，并同步更新[项目文档导航](../readme.md)。
 
 
-待审数据、审核结果、清理计时与临时 PDF 查询见[待入库申请 API](pending-review.md)。
+待审数据、审核结果、清理计时与临时 PDF 查询见[待入库申请 API](ingestion-review.md)。
+
+删除提交人或合同上传人查看相关删除申请、审核结果及实际删除状态，见[删除审核 API](deletion-review.md)。

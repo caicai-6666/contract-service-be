@@ -65,4 +65,4 @@ PYTHONPATH=.:tests python -m unittest test_middleware_session -q
 
 ## 待审消息发送接入
 
-[待审请求发布服务](../application/pending-review-publisher.md)复用本服务的有效令牌，使用独立客户端上传文件。收到 401 时仅失效该请求使用的令牌；心跳和重新登录仍由本服务统一管理，不记录令牌明文。
+[入库待审请求发布服务](../application/ingestion-review-publisher.md)与[删除审核发布服务](../application/deletion-review-publisher.md)复用本服务的有效令牌，使用独立客户端上传文件。收到 401 时仅失效该请求使用的令牌；心跳和重新登录仍由本服务统一管理，不记录令牌明文。

@@ -9,7 +9,7 @@ from app.infrastructure.middleware import MiddlewareClient
 logger = logging.getLogger(__name__)
 
 
-class PendingReviewConsumer:
+class IngestionReviewConsumer:
     def __init__(self, store, session, ingestion_service, settings, *, client=None):
         self._store, self._session = store, session
         self._ingestion, self._settings = ingestion_service, settings
@@ -22,7 +22,7 @@ class PendingReviewConsumer:
         if self._closed:
             raise RuntimeError('审核反馈服务已关闭')
         if self._task is None:
-            self._task = asyncio.create_task(self._run(), name='pending-review-consumer')
+            self._task = asyncio.create_task(self._run(), name='ingestion-review-consumer')
 
     async def _run(self):
         while True:
@@ -34,13 +34,13 @@ class PendingReviewConsumer:
                 # 不记录响应正文、令牌或业务备注；异常消息不 ack、不跳过。
                 logger.warning('审核反馈处理失败，保留消息稍后重试：error_type=%s status=%s',
                     type(exc).__name__, exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None)
-            await asyncio.sleep(self._settings.pending_review_result_poll_interval_seconds)
+            await asyncio.sleep(self._settings.ingestion_review_result_poll_interval_seconds)
 
     async def scan_once(self):
         async with self._lock:
             if self._closed:
                 return
-            for _ in range(self._settings.pending_review_result_batch_size):
+            for _ in range(self._settings.ingestion_review_result_batch_size):
                 token = self._session.get_access_token()
                 if token is None:
                     return

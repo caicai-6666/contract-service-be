@@ -6,7 +6,7 @@ from datetime import datetime, UTC, timedelta
 logger = logging.getLogger(__name__)
 
 
-class PendingReviewCleanupService:
+class IngestionReviewCleanupService:
     def __init__(self, store, settings, *, clock=None):
         self._store, self._settings = store, settings
         self._clock = clock or (lambda: datetime.now(UTC))
@@ -18,7 +18,7 @@ class PendingReviewCleanupService:
         if self._closed:
             raise RuntimeError('待审清理服务已关闭')
         if self._task is None:
-            self._task = asyncio.create_task(self._run(), name='pending-review-cleanup')
+            self._task = asyncio.create_task(self._run(), name='ingestion-review-cleanup')
 
     async def _run(self):
         while True:
@@ -28,15 +28,15 @@ class PendingReviewCleanupService:
                 raise
             except Exception as exc:
                 logger.warning('待审清理扫描失败，将稍后重试：error_type=%s', type(exc).__name__)
-            await asyncio.sleep(self._settings.pending_review_cleanup_interval_seconds)
+            await asyncio.sleep(self._settings.ingestion_review_cleanup_interval_seconds)
 
     async def scan_once(self):
         async with self._lock:
             if self._closed:
                 return 0
-            cutoff = self._clock() - timedelta(seconds=self._settings.pending_review_retention_seconds)
+            cutoff = self._clock() - timedelta(seconds=self._settings.ingestion_review_retention_seconds)
             candidates = await asyncio.to_thread(self._store.list_cleanup_candidates, cutoff=cutoff,
-                limit=self._settings.pending_review_cleanup_batch_size)
+                limit=self._settings.ingestion_review_cleanup_batch_size)
             cleaned = 0
             for sid in candidates:
                 try:

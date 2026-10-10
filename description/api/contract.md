@@ -7,7 +7,7 @@
 | 接口 | 方法 | 完整路径 |
 | --- | --- | --- |
 | [获取所有已入库合同元数据](#获取所有已入库合同元数据) | `GET` | `/contract/api/contract/documents` |
-| [删除正式合同](#删除正式合同) | `DELETE` | `/contract/api/contract/documents/{document_id}` |
+| [提交正式合同删除审核](#删除正式合同) | `DELETE` | `/contract/api/contract/documents/{document_id}` |
 | [获取合同类别列表](#获取合同类别列表) | `GET` | `/contract/api/contract/categories` |
 | [获取 Core 审核表单定义](#获取-core-审核表单定义) | `GET` | `/contract/api/contract/core-definitions` |
 | [列出尚未入库的运行](#列出尚未入库的运行) | `GET` | `/contract/api/contract/extraction-runs` |
@@ -61,6 +61,7 @@ GET /contract/api/contract/documents
     "contract_time": "2026-09-07",
     "file_uri": "/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pdf",
     "uploader": "上传人甲",
+    "can_delete": true,
     "ingested_at": "2026-09-07T06:00:00Z"
   }
 ]
@@ -75,8 +76,9 @@ GET /contract/api/contract/documents
 | `file_uri` | string | 处理版 PDF 的稳定根相对读取地址。 |
 | `uploader` | string | 本平台提交待审申请的上传人，取自 submitted_by，不是外部审核员。 |
 | `ingested_at` | string | 带时区的 ISO 8601 入库时间。 |
+| `can_delete` | boolean | 是否允许发起删除申请；提交申请后 false，审核拒绝后恢复 true。与 ready 状态及合同查看、检索可见性独立。 |
 
-响应每项仅包含以上七个必有字段，不返回入库状态、尝试标识、分类理由或完整 Core/Clause。接口复用 `SQLiteContractMetadataStore.list_ready()`，同步查询在线程池中执行，不访问 Elasticsearch 或读取 PDF。当前不提供筛选与分页。
+响应每项仅包含以上八个必有字段，不返回入库状态、尝试标识、分类理由或完整 Core/Clause。接口复用 `SQLiteContractMetadataStore.list_ready()`，同步查询在线程池中执行，不访问 Elasticsearch 或读取 PDF。当前不提供筛选与分页。
 
 ```bash
 curl --header 'Authorization: Bearer <login_code>' \
@@ -89,28 +91,60 @@ curl --header 'Authorization: Bearer <login_code>' \
 
 ## 删除正式合同
 
-```http
-DELETE /contract/api/contract/documents/{document_id}
+`DELETE /contract/api/contract/documents/{document_id}`，提交正式合同的删除审核申请，替代原立即删除行为。
+
+**认证方式：** `Authorization: Bearer <免登码>`；所有已登录用户均可申请删除共享合同，删除提交人由服务端登录身份取得，不受原上传人限制。
+
+**请求参数：**
+
+| 位置 | 参数 | 类型 | 必填 | 约束 |
+| --- | --- | --- | --- | --- |
+| path | document_id | string | 是 | 正式合同的完整 64 位小写十六进制 SHA-256，不接受缩写、文件名或路径。 |
+| body | note | string | 是 | 删除申请人的审核沟通备注或删除原因，最多 10000 字符，允许空字符串；不接受 null 或其他类型。 |
+
+无 query 参数。请求体为 `application/json`，禁止额外字段；前端必须提交 `note`，缺少请求体或该字段返回 `422`。备注按原文保存，不去除首尾空白，与外部审核备注分别存储，仅用于删除审核沟通。
+
+```json
+{"note": "申请删除重复上传的合同"}
 ```
 
-已登录用户可删除任意审核人已入库的正式合同。路径参数 `document_id` 必须是 64 位小写十六进制 SHA-256；不接受文件名或文件路径，无查询参数及请求体。
+**成功响应：** `202 Accepted`，`application/json`：
 
-先将 SQLite 状态置为 `deleting`，再依次删除 Neo4j 合同节点及其全部关联边、正式 Elasticsearch 同 ID 文档、`data/contract/<document_id>.pdf`、SQLite 合同元数据；类别关联与注意事项由外键级联清除，全局类别字典保留。成功返回 `204 No Content`，无响应体。此操作不自动备份，也不删除历史备份、实验产物或其他内存提取任务。
+```json
+{
+  "submission_id": "12345678-1234-4234-8234-123456789abc",
+  "document_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "review_status": "pending_send",
+  "can_delete": false
+}
+```
+
+成功表示本地申请已保存且合同已禁止重复申请，不表示已发送中间件、审核通过或实际删除。通过[删除审核查询](deletion-review.md)读取申请详情。
+
+**错误响应：**
 
 | 状态码 | 含义 |
 | --- | --- |
 | `401` | 未登录或免登码无效。 |
-| `404` | SQLite 中不存在该合同，包括删除成功后重复请求。 |
-| `409` | 合同尚未完成入库，当前不能删除。 |
-| `422` | 文档 ID 格式错误。 |
-| `502` | 存储操作失败，可能部分完成，应使用同一 ID 重试。 |
+| `404` | 正式 SQLite 不存在该合同或已删除。 |
+| `409` | 合同尚未就绪、正在实际删除、can_delete=false，或已有未拒绝的删除申请。 |
+| `422` | 文档 ID 格式错误、缺少请求体或 note、note 不是字符串或超过 10000 字符，或请求体包含额外字段。 |
+| `503` | 本地申请或标志写入失败；申请可能已保存，请先查询申请列表。 |
 
-Neo4j 节点、ES 文档或 PDF 已不存在不阻断清理。SQLite 始终最后删除，失败时保留 `deleting` 恢复入口，合同不再进入普通目录。可用相同 ID 重试，应用重启时也会继续清理；无跨存储原子回滚。相同 ID 的入库与删除在当前单进程内串行，删除中不能被入库覆盖。
+**请求示例：** 将免登码及合同 ID 替换为实际值。
 
 ```bash
-curl --request DELETE --header 'Authorization: Bearer <login_code>' \
-  'http://127.0.0.1:20000/contract/api/contract/documents/<document_id>'
+curl --request DELETE --header 'Authorization: Bearer replace-with-login-code' \
+  --header 'Content-Type: application/json' \
+  --data '{"note":"申请删除重复上传的合同"}' \
+  'http://127.0.0.1:20000/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 ```
+
+**行为与边界：** 在与正式入库/删除共享的文档锁内保存合同身份快照、上传人、当前删除提交人、申请备注及时间，然后将 `contracts.can_delete` 置为 false。合同仍保持 ready，可正常查看和检索，PDF、ES、Neo4j、注意事项均不清理。并发申请只有一份成功；成功后同一用户或其他用户再次申请均为409。
+
+正式库和审核库是两个独立 SQLite，不提供跨库原子提交。先保存申请作为恢复依据；若后续标志更新失败，部分唯一索引仍阻止重复申请，启动及后台扫描补齐标志。在“同一提交人、备注未变、待发送申请、原合同身份匹配、标志仍为true”的恢复场景，可用同一合同 ID 和原 note 重试并返回原申请 ID，不新增申请；更换备注返回 `409`。请求中断时等待当前跨库写入结束再释放文档锁。
+
+审核拒绝后恢复原合同的 can_delete=true，允许新申请；旧反馈重放不会解锁更新的申请。审核批准后由[后台执行器](../capability/application/deletion-review-executor.md)完成正式清理并保存结果。本接口不直接发送中间件消息，保存后的申请由[后台发布服务](../capability/application/deletion-review-publisher.md)上传原合同 PDF 并送审；审核结果拉取与 ack 仍待中间件协议。
 
 ---
 
@@ -788,7 +822,7 @@ Content-Type: application/json
 
 `file_name` 与 `summary` 均为必填字符串，先去除首尾空白，再校验非空；缺失、null、空串或纯空白返回 `422`。名称最多 200 个字符（与中间件发布契约一致），摘要最多 3000 个字符。前端可用 `contract_overview` 初始化二者，最终以用户提交值为准；摘要先进入待审快照，批准后写入正式 SQLite `contracts.summary`；不从生成结果自动补齐。
 
-`note` 为必填字符串，无默认值，允许空字符串，最多 10000 字符；缺失、null、非字符串或超长返回 `422`。原样保存于 `pending_reviews.note` 并用于中间件审核沟通，不进入正式合同。
+`note` 为必填字符串，无默认值，允许空字符串，最多 10000 字符；缺失、null、非字符串或超长返回 `422`。原样保存于 `ingestion_reviews.note` 并用于中间件审核沟通，不进入正式合同。
 
 `core.signing_date` 是入库必填项，必须提供完整合法的签订日期。缺失、`null`、空白或非法日期返回 `422`，不会写入任何正式存储；日期统一规范为 `YYYY-MM-DD`。提取结果仍可能为 `null`，前端需提示审核人依据合同补充日期后再入库，不得自动用当前日期或其他业务日期替代。历史合同查询仍兼容空日期。
 

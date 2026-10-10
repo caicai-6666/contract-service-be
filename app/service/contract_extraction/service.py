@@ -12,8 +12,8 @@ from typing import Any, TYPE_CHECKING
 from uuid import uuid4, uuid5, NAMESPACE_URL
 from pydantic import ValidationError
 if TYPE_CHECKING:
-    from app.schema.pending_review import PendingReviewRecord
-    from app.service.pending_review import PendingReviewService
+    from app.schema.ingestion_review import IngestionReviewRecord
+    from app.service.ingestion_review import IngestionReviewService
 
 from app.agent.contract_extraction.progress import (
     ParallelProgressPhase,
@@ -225,7 +225,7 @@ class ContractExtractionService:
         deduplication_executor: PDFDeduplicationExecutor,
         pdf_preparation_service: PDFPreparationService,
         ingestion_service: ContractIngestionService,
-        pending_review_service: PendingReviewService | None = None,
+        ingestion_review_service: IngestionReviewService | None = None,
         run_ttl_seconds: int = 3600,
         deduplication_review_ttl_seconds: int = 600,
         cleanup_interval_seconds: int = 30,
@@ -251,7 +251,7 @@ class ContractExtractionService:
         self._deduplication_executor = deduplication_executor
         self._pdf_preparation_service = pdf_preparation_service
         self._ingestion_service = ingestion_service
-        self._pending_review_service = pending_review_service
+        self._ingestion_review_service = ingestion_review_service
         self._run_ttl = timedelta(seconds=run_ttl_seconds)
         self._deduplication_review_ttl = timedelta(
             seconds=deduplication_review_ttl_seconds
@@ -498,18 +498,18 @@ class ContractExtractionService:
         note: str,
         core: CoreDraftData,
         clauses: ClauseDraftData,
-    ) -> PendingReviewRecord:
+    ) -> IngestionReviewRecord:
         """保存不可变待审快照；持久化成功才释放运行，不执行正式入库。"""
-        from app.schema.pending_review import PendingReviewSnapshot
-        from app.infrastructure.pending_review_store import PendingReviewConflictError
+        from app.schema.ingestion_review import IngestionReviewSnapshot
+        from app.infrastructure.ingestion_review_store import IngestionReviewConflictError
 
         submission_id = uuid5(NAMESPACE_URL, f'contract-pending-review:{run_id}')
 
-        async def existing_submission() -> PendingReviewRecord:
-            if self._pending_review_service is None:
+        async def existing_submission() -> IngestionReviewRecord:
+            if self._ingestion_review_service is None:
                 raise RunNotFoundError(run_id)
             try:
-                record = await self._pending_review_service.get(submission_id)
+                record = await self._ingestion_review_service.get(submission_id)
             except LookupError as exc:
                 raise RunNotFoundError(run_id) from exc
             except Exception as exc:
@@ -569,12 +569,12 @@ class ContractExtractionService:
             if question_vector is None:
                 raise RunConflictError("合同运行尚未形成问题融合向量")
 
-            if self._pending_review_service is None:
+            if self._ingestion_review_service is None:
                 raise ContractPersistenceError('待审服务尚未配置')
             if not isinstance(note, str) or len(note) > 10000:
                 raise ContractReviewValidationError('入库员备注必须是最多 10000 字符的字符串')
             try:
-                snapshot = PendingReviewSnapshot(
+                snapshot = IngestionReviewSnapshot(
                     run_id=run_id, document_id=aggregate.source.document_id,
                     page_count=aggregate.prepared_pdf.page_count, file_name=file_name, summary=summary,
                     submitted_by=reviewer_user_name, classification=classification,
@@ -588,13 +588,13 @@ class ContractExtractionService:
                     vector_dimensions=len(question_vector),
                 )
                 # 复用正式入库业务校验，但不编码、不写正式库，避免审核通过后才发现非法字段。
-                self._ingestion_service.validate_pending_review(snapshot)
+                self._ingestion_service.validate_ingestion_review(snapshot)
             except (ValidationError, ValueError) as exc:
                 raise ContractReviewValidationError(str(exc)) from exc
             try:
-                result = await self._pending_review_service.save(submission_id=submission_id,
+                result = await self._ingestion_review_service.save(submission_id=submission_id,
                     snapshot=snapshot, processed_pdf_bytes=await assemble_processed_pdf(aggregate.prepared_pdf), note=note)
-            except PendingReviewConflictError as exc:
+            except IngestionReviewConflictError as exc:
                 raise RunConflictError(str(exc)) from exc
             except Exception as exc:
                 raise ContractPersistenceError('待审快照或 PDF 保存失败，请使用相同内容重试') from exc

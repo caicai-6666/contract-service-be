@@ -64,6 +64,7 @@ class ContractMetadata:
     category_assignments: tuple[ContractCategoryAssignment, ...] = ()
     summary: str | None = None
     passport: str | None = None
+    can_delete: bool = True
 
     @property
     def category_codes(self) -> tuple[str, ...]:
@@ -143,6 +144,8 @@ class SQLiteContractMetadataStore:
             columns = {row['name'] for row in connection.execute('PRAGMA table_info(contracts)')}
             if 'passport' not in columns:
                 connection.execute('ALTER TABLE contracts ADD COLUMN passport TEXT')
+            if 'can_delete' not in columns:
+                connection.execute('ALTER TABLE contracts ADD COLUMN can_delete INTEGER NOT NULL DEFAULT 1 CHECK (can_delete IN (0, 1))')
             # 通行证可关联多份合同；升级旧库时移除历史唯一约束，保留查询索引。
             index = next((row for row in connection.execute('PRAGMA index_list(contracts)') if row['name'] == 'contracts_passport'), None)
             if index is not None and index['unique']:
@@ -324,6 +327,7 @@ class SQLiteContractMetadataStore:
                 raise ValueError("正式合同 passport 必须为非空且无首尾空白的标识")
             if current is not None and current['passport'] is not None and current['passport'] != metadata.passport:
                 raise ContractMetadataStateError("已有合同 passport 不允许被覆盖或清空")
+            # 重放入库只更新内容，不覆盖已有删除申请标志。
             connection.execute(
                 """
                 INSERT INTO contracts (
@@ -336,8 +340,8 @@ class SQLiteContractMetadataStore:
                     ingested_at,
                     status,
                     ingestion_id,
-                    summary, passport
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    summary, passport, can_delete
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(document_id) DO UPDATE SET
                     file_name = excluded.file_name,
                     category = excluded.category,
@@ -362,6 +366,7 @@ class SQLiteContractMetadataStore:
                     metadata.ingestion_id,
                     metadata.summary,
                     metadata.passport,
+                    int(metadata.can_delete),
                 ),
             )
             # 和本次名称、摘要处于同一事务；无编码的新写入清除旧向量，避免内容错配。
@@ -444,6 +449,18 @@ class SQLiteContractMetadataStore:
         """先持久化删除意图；也供启动恢复清理不完整的入库使用。"""
         self._update_status(document_id=document_id, ingestion_id=ingestion_id,
                             status=ContractMetadataStatus.DELETING)
+
+    def set_can_delete(self, *, document_id: str, ingestion_id: str, can_delete: bool) -> None:
+        """只改变指定就绪入库实例的申请标志，不改变合同的可见状态。"""
+        if type(can_delete) is not bool:
+            raise ValueError('can_delete 必须为布尔值')
+        with self._transaction() as connection:
+            cursor = connection.execute(
+                '''UPDATE contracts SET can_delete=?
+                   WHERE document_id=? AND ingestion_id=? AND status='ready' ''',
+                (int(can_delete), document_id, ingestion_id))
+            if cursor.rowcount != 1:
+                raise ContractMetadataStateError('合同不存在、尚未就绪或入库实例已变化')
 
     def delete_ingestion(
         self,
@@ -737,6 +754,7 @@ class SQLiteContractMetadataStore:
             file_name=row["file_name"],
             summary=row["summary"],
             passport=row["passport"],
+            can_delete=bool(row["can_delete"]),
             category=row["category"],
             contract_time=row["contract_time"],
             file_uri=row["file_uri"],
@@ -894,6 +912,7 @@ class SQLiteContractMetadataStore:
                 ),
                 ingestion_id TEXT NOT NULL,
                 passport TEXT,
+                can_delete INTEGER NOT NULL DEFAULT 1 CHECK (can_delete IN (0, 1)),
                 summary TEXT CHECK (summary IS NULL OR length(trim(summary)) > 0),
                 summary_embedding BLOB,
                 summary_embedding_model TEXT,
@@ -957,6 +976,8 @@ class SQLiteContractMetadataStore:
                 WHERE status != 'failed'
                 """
             )
+            if 'can_delete' in columns:
+                connection.execute('UPDATE contracts_migrated SET can_delete = (SELECT can_delete FROM contracts WHERE contracts.document_id = contracts_migrated.document_id)')
             if 'passport' in columns:
                 connection.execute('UPDATE contracts_migrated SET passport = (SELECT passport FROM contracts WHERE contracts.document_id = contracts_migrated.document_id)')
             if 'summary' in columns:

@@ -2,19 +2,19 @@
 
 > **用途：** 说明用户确认后保存独立待审快照，再由中间件审核反馈驱动正式入库的职责划分。
 
-HTTP 契约见[提交合同待审申请](../../api/contract.md#正式入库合同)，存储结构见[待审快照](../../architecture/data/pending-review.md)、[正式 SQLite 元数据](../../architecture/data/contract-sqlite-metadata.md)与[ES 文档](../../architecture/data/contract-elasticsearch-document.md)。
+HTTP 契约见[提交合同待审申请](../../api/contract.md#正式入库合同)，存储结构见[待审快照](../../architecture/data/ingestion-review.md)、[正式 SQLite 元数据](../../architecture/data/contract-sqlite-metadata.md)与[ES 文档](../../architecture/data/contract-elasticsearch-document.md)。
 
 ---
 
 ## 职责与输入
 
-`ContractExtractionService.ingest_run` 按 run_id 和当前认证用户读取内存聚合，接收必填 file_name、summary、note、完整 Core 和 Clause。阶段全部成功且前置结果完整后，复用 `ContractIngestionService.validate_pending_review` 的纯业务校验，补齐处理版 PDF、分类及分类理由、全部检索问题、两个融合向量、向量模型和提交人，交给 `PendingReviewService` 保存。
+`ContractExtractionService.ingest_run` 按 run_id 和当前认证用户读取内存聚合，接收必填 file_name、summary、note、完整 Core 和 Clause。阶段全部成功且前置结果完整后，复用 `ContractIngestionService.validate_ingestion_review` 的纯业务校验，补齐处理版 PDF、分类及分类理由、全部检索问题、两个融合向量、向量模型和提交人，交给 `IngestionReviewService` 保存。
 
 note 允许空字符串、最多 10000 字符，只存于待审表并发送中间件。送审名称最多 200 字符，与中间件 name 限制一致。稳定 submission_id 由 run_id 派生；相同用户、相同确认值重试返回同一申请，释放运行或重启后，在待审保留期内仍可恢复；清理后返回 404。不同内容返回 409，其他用户返回 404。
 
 待审 SQLite 和 PDF 保存成功后，发布 `run.submitted`、关闭已有 SSE 并释放内存运行。失败保留运行，允许同内容重试。该 HTTP 请求不调用模型、中间件或正式存储；201 只表示本地申请已保存，后台发送状态可能仍为 pending_send。
 
-[后台发布服务](pending-review-publisher.md)发送申请；[反馈消费者](pending-review-consumer.md)按 passport 判定：空串拒绝，非空批准。批准才调用 `ContractIngestionService.ingest`，以快照 submitted_by 作为正式 uploader，向量化最终摘要并协调正式 SQLite、PDF、ES 和 Neo4j。合同名称不参与向量化；摘要向量与对应文本在 SQLite 同事务写入。正式合同只保存上传人；外部审核员与审核备注仅留在待审记录中，不写正式合同。
+[后台发布服务](ingestion-review-publisher.md)发送申请；[反馈消费者](ingestion-review-consumer.md)按 passport 判定：空串拒绝，非空批准。批准才调用 `ContractIngestionService.ingest`，以快照 submitted_by 作为正式 uploader，向量化最终摘要并协调正式 SQLite、PDF、ES 和 Neo4j。合同名称不参与向量化；摘要向量与对应文本在 SQLite 同事务写入。正式合同只保存上传人；外部审核员与审核备注仅留在待审记录中，不写正式合同。
 
 合同分类同时投影到 SQLite 两种结构：`contracts.category` 保留以 ` / ` 连接的 code 摘要（未映射时保留类型说明），`contract_category_assignments` 通过类别外键保留可精确筛选的多标签关系，并逐关联保存模型的 `reasoning_summary`。新入库与 ES 对账均按分类 code 生成摘要；前端通过类别目录映射中文名称。推理摘要从运行聚合内的完整分类结果取得，不扩大面向前端的紧凑分类 View。
 
@@ -83,7 +83,7 @@ PDF、ES 或 Neo4j 写入失败时保留 SQLite `ingesting` 记录作为持久�
 
 `ContractIngestionService.delete_document()` 复用文档锁。首次接受 `ready`，重试接受 `deleting`；`ingesting` 仍返回冲突。先以短事务登记 `deleting`，从列表、摘要、注意事项和新的会话合同引用中隐藏，然后依次清理 Neo4j 节点及全部关联边 → ES → PDF → SQLite。SQLite 按 `document_id + ingestion_id` 条件删除，并级联清理类别关联与注意事项。
 
-失败时保留 `deleting`，通过同 ID 删除请求或下次启动继续；不自动回滚已完成删除，当前未提供运行期后台重试队列。图节点、ES 文档、PDF 已不存在均视为该步骤完成。删除中的合同不能被新入库覆盖或重新发布为 `ready`；未来关系新增入口必须校验双方为 `ready`，并协调相同合同锁。PDF 固定路径与符号链接防护保持不变。HTTP 契约见[删除正式合同](../../api/contract.md#删除正式合同)。
+失败时保留 `deleting`，由[后台执行器](deletion-review-executor.md)延迟重试，或下次启动继续清理；不自动回滚已完成删除。图节点、ES 文档、PDF 已不存在均视为该步骤完成。删除中的合同不能被新入库覆盖或重新发布为 `ready`；未来关系新增入口必须校验双方为 `ready`，并协调相同合同锁。PDF 固定路径与符号链接防护保持不变。HTTP 删除入口已改为保存申请并置 can_delete=false，只有审批通过才进入上述清理，见[提交删除审核](../../api/contract.md#删除正式合同)。
 
 ### 装配与验证
 
@@ -101,4 +101,4 @@ python -m compileall -q app
 
 ## 外部审核后的自动入库
 
-[审核反馈消费者](pending-review-consumer.md)复用本服务，传入待审快照、外部审核员及非空 passport。passport 写入 SQLite 合同元数据，不加入 ES；拒绝不调用本服务。对于已 ready 且 document_id、passport 均一致的合同，返回原入库结果以覆盖反馈重投窗口。仍处于 ingesting 的相同身份允许继续修复；不同身份或 deleting 状态拒绝覆盖。HTTP 入库入口已切换为保存待审申请。
+[审核反馈消费者](ingestion-review-consumer.md)复用本服务，传入待审快照、外部审核员及非空 passport。passport 写入 SQLite 合同元数据，不加入 ES；拒绝不调用本服务。对于已 ready 且 document_id、passport 均一致的合同，返回原入库结果以覆盖反馈重投窗口。仍处于 ingesting 的相同身份允许继续修复；不同身份或 deleting 状态拒绝覆盖。HTTP 入库入口已切换为保存待审申请。

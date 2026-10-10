@@ -1,5 +1,6 @@
 """应用启动期依赖装配与资源生命周期管理。"""
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -37,11 +38,16 @@ from app.infrastructure.pdf_candidate_loader import (
     LocalPDFDuplicateCandidateLoader,
 )
 from app.service.middleware_session import MiddlewareSessionService
-from app.infrastructure.pending_review_store import SQLitePendingReviewStore
-from app.service.pending_review import PendingReviewService
-from app.service.pending_review_publisher import PendingReviewPublisher
-from app.service.pending_review_consumer import PendingReviewConsumer
-from app.service.pending_review_cleanup import PendingReviewCleanupService
+from app.infrastructure.ingestion_review_store import SQLiteIngestionReviewStore
+from app.service.ingestion_review import IngestionReviewService
+from app.service.ingestion_review_publisher import IngestionReviewPublisher
+from app.service.ingestion_review_consumer import IngestionReviewConsumer
+from app.service.ingestion_review_cleanup import IngestionReviewCleanupService
+from app.infrastructure.deletion_review_store import SQLiteDeletionReviewStore
+from app.service.deletion_review import DeletionReviewService
+from app.service.deletion_review_executor import DeletionReviewExecutor
+from app.service.deletion_review_cleanup import DeletionReviewCleanupService
+from app.service.deletion_review_publisher import DeletionReviewPublisher
 from app.service.auth import AuthService, LoginCodeCache
 from app.service.communication_workflow import CommunicationWorkflowService
 from app.service.communication_file_tools import CommunicationFileTools
@@ -73,12 +79,12 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     get_model_request_limiter("mllm", settings.mllm.max_concurrent_requests)
     get_model_request_limiter("embedding", settings.embedding.max_concurrent_requests)
     # 待审区仅初始化，不触发消息发送或正式入库。
-    pending_review_store = SQLitePendingReviewStore(settings.pending_review_path)
-    pending_review_service = PendingReviewService(pending_review_store,
+    ingestion_review_store = SQLiteIngestionReviewStore(settings.ingestion_review_path)
+    ingestion_review_service = IngestionReviewService(ingestion_review_store,
         vector_dimensions=settings.elasticsearch_vector_dimensions)
-    await pending_review_service.initialize()
-    application.state.pending_review_store = pending_review_store
-    application.state.pending_review_service = pending_review_service
+    await ingestion_review_service.initialize()
+    application.state.ingestion_review_store = ingestion_review_store
+    application.state.ingestion_review_service = ingestion_review_service
     # 先初始化持久化结构；归档只消费统一历史，不将 SSE 快照当作原轨迹。
     communication_store = SQLiteCommunicationStore(settings.communication_database_path)
     communication_store.initialize()
@@ -137,6 +143,10 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     contract_extraction_service: ContractExtractionService | None = None
     # 完整业务门禁通过后，统一进入正式 Agent Core。
     contract_metadata_store = SQLiteContractMetadataStore(settings.contract_metadata_database_path)
+    # 删除审核库先初始化；申请服务在正式入库就绪后复用同一组文档锁。
+    deletion_review_store = SQLiteDeletionReviewStore(settings.deletion_review_path)
+    await asyncio.to_thread(deletion_review_store.initialize)
+    application.state.deletion_review_store = deletion_review_store
     communication_file_tools = CommunicationFileTools(
         communication_history_service, settings, metadata_store=contract_metadata_store, elasticsearch=elasticsearch,
         field_catalog=field_definition_catalog, category_catalog=contract_category_catalog)
@@ -160,11 +170,14 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     communication_event_service.bind_history(communication_history_service)
     middleware_session = MiddlewareSessionService(settings)
     application.state.middleware_session_service = middleware_session
-    pending_review_consumer = None
-    pending_review_cleanup = PendingReviewCleanupService(pending_review_store, settings)
-    application.state.pending_review_cleanup_service = pending_review_cleanup
-    pending_review_publisher = PendingReviewPublisher(pending_review_store, middleware_session, settings)
-    application.state.pending_review_publisher = pending_review_publisher
+    ingestion_review_consumer = None
+    deletion_review_executor = None
+    deletion_review_publisher = None
+    deletion_review_cleanup = None
+    ingestion_review_cleanup = IngestionReviewCleanupService(ingestion_review_store, settings)
+    application.state.ingestion_review_cleanup_service = ingestion_review_cleanup
+    ingestion_review_publisher = IngestionReviewPublisher(ingestion_review_store, middleware_session, settings)
+    application.state.ingestion_review_publisher = ingestion_review_publisher
     neo4j: Neo4jClient | None = None
     try:
         neo4j = Neo4jClient(settings)
@@ -229,9 +242,16 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         )
         await contract_ingestion_service.initialize()
         application.state.contract_metadata_store = contract_metadata_store
-        from app.service.pending_review_query import PendingReviewQueryService
-        application.state.pending_review_query_service = PendingReviewQueryService(
-            pending_review_store, contract_metadata_store, settings)
+        deletion_review_service = DeletionReviewService(deletion_review_store, contract_metadata_store,
+            lock_documents=contract_ingestion_service.lock_documents)
+        application.state.deletion_review_service = deletion_review_service
+        await deletion_review_service.reconcile_flags()
+        from app.service.ingestion_review_query import IngestionReviewQueryService
+        application.state.ingestion_review_query_service = IngestionReviewQueryService(
+            ingestion_review_store, contract_metadata_store, settings)
+        from app.service.deletion_review_query import DeletionReviewQueryService
+        application.state.deletion_review_query_service = DeletionReviewQueryService(
+            deletion_review_store, contract_metadata_store, contract_file_store, settings)
         application.state.contract_ingestion_service = contract_ingestion_service
         application.state.contract_relation_service = ContractRelationService(
             graph_store=contract_graph_store, metadata_store=contract_metadata_store,
@@ -256,7 +276,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
             ),
             pdf_preparation_service=pdf_preparation_service,
             ingestion_service=contract_ingestion_service,
-            pending_review_service=pending_review_service,
+            ingestion_review_service=ingestion_review_service,
             run_ttl_seconds=settings.contract_extraction_run_ttl_seconds,
             deduplication_review_ttl_seconds=(
                 settings.contract_deduplication_review_ttl_seconds
@@ -276,19 +296,37 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         )
         await communication_archive_service.start()
         await middleware_session.start()
-        await pending_review_publisher.start()
-        pending_review_consumer = PendingReviewConsumer(pending_review_store, middleware_session,
+        await ingestion_review_publisher.start()
+        ingestion_review_consumer = IngestionReviewConsumer(ingestion_review_store, middleware_session,
             contract_ingestion_service, settings)
-        application.state.pending_review_consumer = pending_review_consumer
-        await pending_review_consumer.start()
-        await pending_review_cleanup.start()
+        application.state.ingestion_review_consumer = ingestion_review_consumer
+        await ingestion_review_consumer.start()
+        await ingestion_review_cleanup.start()
+        deletion_review_publisher = DeletionReviewPublisher(deletion_review_store, middleware_session,
+            contract_metadata_store, contract_file_store, settings, lock_documents=contract_ingestion_service.lock_documents)
+        application.state.deletion_review_publisher = deletion_review_publisher
+        await deletion_review_publisher.start()
+        deletion_review_executor = DeletionReviewExecutor(deletion_review_store, contract_ingestion_service, settings,
+            review_service=deletion_review_service)
+        application.state.deletion_review_executor = deletion_review_executor
+        await deletion_review_executor.start()
+        deletion_review_cleanup = DeletionReviewCleanupService(deletion_review_store, deletion_review_service, settings)
+        application.state.deletion_review_cleanup_service = deletion_review_cleanup
+        await deletion_review_cleanup.start()
         yield
     finally:
         try:
-            await pending_review_cleanup.close()
+            # 删除扫描必须先结束当前文档操作，再关闭正式库的外部连接。
+            if deletion_review_publisher is not None:
+                await deletion_review_publisher.close()
+            if deletion_review_cleanup is not None:
+                await deletion_review_cleanup.close()
+            if deletion_review_executor is not None:
+                await deletion_review_executor.close()
+            await ingestion_review_cleanup.close()
             # 先停止审核入库，避免后台任务使用已关闭的 ES / Neo4j。
-            if pending_review_consumer is not None:
-                await pending_review_consumer.close()
+            if ingestion_review_consumer is not None:
+                await ingestion_review_consumer.close()
             # 先停止归档模型作业，再冻结事件生产，最后备份原轨迹及工作区。
             await communication_archive_service.close()
             await communication_event_service.close()
@@ -302,7 +340,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
             finally:
                 try:
                     try:
-                        await pending_review_publisher.close()
+                        await ingestion_review_publisher.close()
                     finally:
                         await middleware_session.close()
                 finally:

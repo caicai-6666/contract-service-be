@@ -321,16 +321,27 @@ class Settings(BaseModel):
     field_definition_dir: Path = Path("data/definition/field")
     retrieval_view_guide_dir: Path = Path("data/definition/retrieval-view")
     reviewer_user_file: Path = Path("data/user/users.yaml")
-    pending_review_retention_seconds: float = Field(default=604800, gt=0, allow_inf_nan=False)
-    pending_review_cleanup_interval_seconds: float = Field(default=3600, gt=0, allow_inf_nan=False)
-    pending_review_cleanup_batch_size: int = Field(default=100, gt=0)
-    pending_review_result_poll_interval_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
-    pending_review_result_batch_size: int = Field(default=10, gt=0)
-    pending_review_scan_interval_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
-    pending_review_publish_retry_seconds: float = Field(default=60, gt=0, allow_inf_nan=False)
-    pending_review_publish_timeout_seconds: float = Field(default=120, gt=0, allow_inf_nan=False)
-    pending_review_publish_batch_size: int = Field(default=10, gt=0)
-    pending_review_directory: Path = Path("data/pending-review")
+    ingestion_review_retention_seconds: float = Field(default=604800, gt=0, allow_inf_nan=False)
+    ingestion_review_cleanup_interval_seconds: float = Field(default=3600, gt=0, allow_inf_nan=False)
+    ingestion_review_cleanup_batch_size: int = Field(default=100, gt=0)
+    ingestion_review_result_poll_interval_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
+    ingestion_review_result_batch_size: int = Field(default=10, gt=0)
+    ingestion_review_scan_interval_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
+    ingestion_review_publish_retry_seconds: float = Field(default=60, gt=0, allow_inf_nan=False)
+    ingestion_review_publish_timeout_seconds: float = Field(default=120, gt=0, allow_inf_nan=False)
+    ingestion_review_publish_batch_size: int = Field(default=10, gt=0)
+    ingestion_review_directory: Path = Path("data/ingestion-review")
+    deletion_review_directory: Path = Path("data/deletion-review")
+    deletion_review_publish_scan_interval_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
+    deletion_review_publish_retry_seconds: float = Field(default=60, gt=0, allow_inf_nan=False)
+    deletion_review_publish_timeout_seconds: float = Field(default=120, gt=0, allow_inf_nan=False)
+    deletion_review_publish_batch_size: int = Field(default=10, gt=0)
+    deletion_review_scan_interval_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
+    deletion_review_retry_seconds: float = Field(default=60, gt=0, allow_inf_nan=False)
+    deletion_review_batch_size: int = Field(default=10, gt=0)
+    deletion_review_retention_seconds: float = Field(default=604800, gt=0, allow_inf_nan=False)
+    deletion_review_cleanup_interval_seconds: float = Field(default=3600, gt=0, allow_inf_nan=False)
+    deletion_review_cleanup_batch_size: int = Field(default=100, gt=0)
     contract_metadata_database_file: Path = Path(
         "data/abstract/contracts.db"
     )
@@ -405,11 +416,18 @@ class Settings(BaseModel):
         return _PROJECT_ROOT / self.reviewer_user_file
 
     @property
-    def pending_review_path(self) -> Path:
+    def ingestion_review_path(self) -> Path:
         """待审区与正式合同目录分离，相对路径按项目根目录解析。"""
-        if self.pending_review_directory.is_absolute():
-            return self.pending_review_directory
-        return _PROJECT_ROOT / self.pending_review_directory
+        if self.ingestion_review_directory.is_absolute():
+            return self.ingestion_review_directory
+        return _PROJECT_ROOT / self.ingestion_review_directory
+
+    @property
+    def deletion_review_path(self) -> Path:
+        """删除临时区独立于正式合同及入库待审区，相对路径按项目根目录解析。"""
+        if self.deletion_review_directory.is_absolute():
+            return self.deletion_review_directory
+        return _PROJECT_ROOT / self.deletion_review_directory
 
     @property
     def contract_metadata_database_path(self) -> Path:
@@ -515,16 +533,27 @@ def get_settings() -> Settings:
             "REVIEWER_USER_FILE",
             "data/user/users.yaml",
         ),
-        pending_review_retention_seconds=_env("PENDING_REVIEW_RETENTION_SECONDS", "604800"),
-        pending_review_cleanup_interval_seconds=_env("PENDING_REVIEW_CLEANUP_INTERVAL_SECONDS", "3600"),
-        pending_review_cleanup_batch_size=_env("PENDING_REVIEW_CLEANUP_BATCH_SIZE", "100"),
-        pending_review_result_poll_interval_seconds=_env("PENDING_REVIEW_RESULT_POLL_INTERVAL_SECONDS", "30"),
-        pending_review_result_batch_size=_env("PENDING_REVIEW_RESULT_BATCH_SIZE", "10"),
-        pending_review_scan_interval_seconds=_env("PENDING_REVIEW_SCAN_INTERVAL_SECONDS", "30"),
-        pending_review_publish_retry_seconds=_env("PENDING_REVIEW_PUBLISH_RETRY_SECONDS", "60"),
-        pending_review_publish_timeout_seconds=_env("PENDING_REVIEW_PUBLISH_TIMEOUT_SECONDS", "120"),
-        pending_review_publish_batch_size=_env("PENDING_REVIEW_PUBLISH_BATCH_SIZE", "10"),
-        pending_review_directory=_env("PENDING_REVIEW_DIRECTORY", "data/pending-review"),
+        ingestion_review_retention_seconds=_env("INGESTION_REVIEW_RETENTION_SECONDS", "604800"),
+        ingestion_review_cleanup_interval_seconds=_env("INGESTION_REVIEW_CLEANUP_INTERVAL_SECONDS", "3600"),
+        ingestion_review_cleanup_batch_size=_env("INGESTION_REVIEW_CLEANUP_BATCH_SIZE", "100"),
+        ingestion_review_result_poll_interval_seconds=_env("INGESTION_REVIEW_RESULT_POLL_INTERVAL_SECONDS", "30"),
+        ingestion_review_result_batch_size=_env("INGESTION_REVIEW_RESULT_BATCH_SIZE", "10"),
+        ingestion_review_scan_interval_seconds=_env("INGESTION_REVIEW_SCAN_INTERVAL_SECONDS", "30"),
+        ingestion_review_publish_retry_seconds=_env("INGESTION_REVIEW_PUBLISH_RETRY_SECONDS", "60"),
+        ingestion_review_publish_timeout_seconds=_env("INGESTION_REVIEW_PUBLISH_TIMEOUT_SECONDS", "120"),
+        ingestion_review_publish_batch_size=_env("INGESTION_REVIEW_PUBLISH_BATCH_SIZE", "10"),
+        ingestion_review_directory=_env("INGESTION_REVIEW_DIRECTORY", "data/ingestion-review"),
+        deletion_review_directory=_env("DELETION_REVIEW_DIRECTORY", "data/deletion-review"),
+        deletion_review_publish_scan_interval_seconds=_env("DELETION_REVIEW_PUBLISH_SCAN_INTERVAL_SECONDS", "30"),
+        deletion_review_publish_retry_seconds=_env("DELETION_REVIEW_PUBLISH_RETRY_SECONDS", "60"),
+        deletion_review_publish_timeout_seconds=_env("DELETION_REVIEW_PUBLISH_TIMEOUT_SECONDS", "120"),
+        deletion_review_publish_batch_size=_env("DELETION_REVIEW_PUBLISH_BATCH_SIZE", "10"),
+        deletion_review_scan_interval_seconds=_env("DELETION_REVIEW_SCAN_INTERVAL_SECONDS", "30"),
+        deletion_review_retry_seconds=_env("DELETION_REVIEW_RETRY_SECONDS", "60"),
+        deletion_review_batch_size=_env("DELETION_REVIEW_BATCH_SIZE", "10"),
+        deletion_review_retention_seconds=_env("DELETION_REVIEW_RETENTION_SECONDS", "604800"),
+        deletion_review_cleanup_interval_seconds=_env("DELETION_REVIEW_CLEANUP_INTERVAL_SECONDS", "3600"),
+        deletion_review_cleanup_batch_size=_env("DELETION_REVIEW_CLEANUP_BATCH_SIZE", "100"),
         contract_metadata_database_file=_env(
             "CONTRACT_METADATA_DATABASE_FILE",
             "data/abstract/contracts.db",

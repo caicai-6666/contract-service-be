@@ -101,7 +101,8 @@
 - 系统只支持固定 Core 提取，不包含候选字段生成、归并、统计或治理流程。
 - Core 只能来自启动期通过严格校验的固定字段目录；运行时不得创建目录外字段。
 - 合同提取任务的原始 PDF 只在创建请求期间存在；任务长期只保存页面 PNG 与元数据，Base64 和整份处理版 PDF 均按需生成、不写回任务。communication 附件注册时只暂存内存，只有已准入附件随终态备份写入 upload；运行时终态释放输入，已准入字节在历史层保留至记忆归档成功。已备份的会话轨迹可跨进程重启读取；实时 SSE 和尚未备份轨迹、附件不可保证恢复。
-- 前端确认接口只提交不可变待审申请，外部审核备注与入库员 note 分开保存；审核通过才正式入库。已提供[待审查询 API](api/pending-review.md)，包含清理配置、保留中的申请列表和临时 PDF；暂未实现已提交申请修改或重审。
+- 前端确认接口只提交不可变待审申请，外部审核备注与入库员 note 分开保存；审核通过才正式入库。已提供[待审查询 API](api/ingestion-review.md)，包含保留中的申请列表、详情中的清理时间和临时 PDF；暂未实现已提交申请修改或重审。
+- [删除临时区](architecture/data/deletion-review.md)已提供独立 SQLite、精简合同快照存入及审核结果记录；[HTTP 删除入口](api/contract.md#删除正式合同)保存删除申请并置 can_delete=false，拒绝后恢复标志；[后台执行器](capability/application/deletion-review-executor.md)定时删除已批准合同并保存结果、重试失败；[删除审核查询](api/deletion-review.md)按当前用户是删除提交人或合同上传人返回相关申请 ID 和详情；[定时清理](capability/application/deletion-review-cleanup.md)按本地完成时间保留后清除审核数据并保存最小幂等凭据。[中间件删除申请发布](capability/application/deletion-review-publisher.md)已接入，审核反馈拉取与 ack 尚待中间件协议。
 - 当前注册表不跨进程共享，开发热更新会清空任务；合同处理服务必须使用单 worker。
 - 免登校验确认审核人身份，结合三级操作权限和合同任务所有权隔离；免登码缓存和任务注册表均不跨进程共享，重启即清空。
 - 系统不替代合同审阅、法律意见或合同效力判断。

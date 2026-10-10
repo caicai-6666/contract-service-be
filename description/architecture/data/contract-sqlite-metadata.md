@@ -19,7 +19,7 @@ SQLite 是文件选择和文件管理的权威目录。普通业务只读取 `re
 | Elasticsearch | 完整分类、Core、Clause、向量和入库审计。 |
 | Neo4j | 合同 ID 节点及后续人工维护的关联边，见[合同关联图存储契约](contract-graph.md)。 |
 
-[已入库合同元数据接口](../../api/contract.md#获取所有已入库合同元数据)复用 `list_ready()`，向所有已登录上传人提供共享正式目录，只投影七个公开字段，不暴露内部入库状态与尝试标识。
+[已入库合同元数据接口](../../api/contract.md#获取所有已入库合同元数据)复用 `list_ready()`，向所有已登录上传人提供共享正式目录，只投影八个公开字段，不暴露内部入库状态与尝试标识。
 
 `document_id` 是处理版 PDF 字节的 64 位小写 SHA-256，同时作为 SQLite 主键、`data/contract/<document_id>.pdf` 文件名和 Elasticsearch `_id`。
 
@@ -44,6 +44,7 @@ SQLite 使用 `contracts`、`contract_category_metadata`、`contract_category_as
 | `uploader` | `TEXT` | 本平台提交待审申请的上传人，取自快照 submitted_by；不写外部审核员。 |
 | `ingested_at` | `TEXT` | 带时区的 ISO 8601 入库时间。 |
 | `status` | `TEXT` | `ingesting`、`ready` 或 `deleting`。 |
+| `can_delete` | `INTEGER` | 非空，默认 `1`，仅允许 `0/1`；表示是否允许发起删除申请，对外返回布尔值。详见[删除申请标志](#删除申请标志)。 |
 | `passport` | `TEXT` | 外部审核通过后的跨平台关联标识；同一通行证可对应多份合同，不唯一。历史合同不自动填充。拒绝不创建正式合同。 |
 | `ingestion_id` | `TEXT` | 单次入库尝试标识，防止旧尝试覆盖新状态。 |
 
@@ -140,13 +141,13 @@ SQLite 事务不会跨越文件 I/O 或 ES 网络请求。它只原子登记一�
 
 ## 独立待审区
 
-`data/pending-review/reviews.db` 和 `files/` 用于持久化独立待审快照，不进入正式合同目录。已实现初始化、快照存入/读取、消息 ID 绑定及查询；前端确认接口已改为提交待审申请，正式元数据只在外部批准后由消费者写入。字段和一致性边界见[合同待审快照存储](pending-review.md)。
+`data/ingestion-review/reviews.db` 和 `files/` 用于持久化独立待审快照，不进入正式合同目录。已实现初始化、快照存入/读取、消息 ID 绑定及查询；前端确认接口已改为提交待审申请，正式元数据只在外部批准后由消费者写入。字段和一致性边界见[合同待审快照存储](ingestion-review.md)。
 
 ---
 
 ## 外部审核身份
 
-正式入库可接收 passport，由审核反馈消费者传入并与元数据同事务保存。已绑定身份不能清空或更换；同一 passport 不能绑定两份合同。相同 document_id 与 passport 的 ready 记录在反馈重试时直接复用，不覆盖正式入库时间。既有直接入库调用兼容 passport=None；已有非空身份不允许被直接入库覆盖清空。passport 不加入 ES 文档，本次也不修改对外元数据接口投影。流程见[审核反馈拉取与批准入库](../../capability/application/pending-review-consumer.md)。
+正式入库可接收 passport，由审核反馈消费者传入并与元数据同事务保存。已绑定身份不能清空或更换；同一 passport 不能绑定两份合同。相同 document_id 与 passport 的 ready 记录在反馈重试时直接复用，不覆盖正式入库时间。既有直接入库调用兼容 passport=None；已有非空身份不允许被直接入库覆盖清空。passport 不加入 ES 文档，本次也不修改对外元数据接口投影。流程见[审核反馈拉取与批准入库](../../capability/application/ingestion-review-consumer.md)。
 
 
 ## 通行证精确读取
@@ -161,3 +162,13 @@ SQLite 事务不会跨越文件 I/O 或 ES 网络请求。它只原子登记一�
 新正式入库只保存 `uploader`（待审快照的 `submitted_by`），不保存外部审核员或审核备注。外部审核身份仍留在待审记录的 `reviewed_by`，由待审详情 `review.reviewer` 展示。SQLite 启动时将旧 `reviewer` 列重命名为 `uploader`，不额外保留人员列；新 ES 文档只写 `ingestion.uploader`，启动同步补齐该 keyword mapping。旧 ES 字段无法原地删除，历史文档读取与恢复核验暂兼容 ingestion.reviewer，不向新文档回写它。
 
 旧列值迁移时原样保留。历史若曾保存外部审核员，仅字段重命名无法恢复真实上传人，不能将兼容值视为已核实上传身份；本次不猜测或批量改写历史人员数据。前端正式合同元数据和查重候选应改读 `uploader`。
+
+---
+
+## 删除申请标志
+
+`contracts.can_delete` 表示是否允许发起删除申请，SQLite 使用 `INTEGER NOT NULL DEFAULT 1 CHECK (can_delete IN (0, 1))` 保存，对外映射为布尔值。新合同及旧库升级后的历史合同默认 `true`；初始化幂等，已保存的 `false` 不会因重启或入库重放被重置。
+
+此标志独立于 `status`，不改变 ready 合同的查看、检索与列表可见性。合同列表接口返回 `can_delete`。[删除接口](../../api/contract.md#删除正式合同)已改为提交审核：保存申请后置 false，等待审核期间禁止全平台重复申请；收到拒绝结果后恢复 true。批准后的实际删除由后台执行器处理。
+
+[删除临时区](deletion-review.md)保存独立身份快照和审核结果。`set_can_delete(document_id, ingestion_id, can_delete)` 只修改指定 ready 入库实例的标志，值必须为布尔值；申请服务与入库/删除共用文档锁。先保存申请、再修改标志，启动和定时扫描根据每份合同的最新申请补齐状态；快照入库时间与 passport 不匹配时不影响新入库合同，旧拒绝结果不覆盖新申请。

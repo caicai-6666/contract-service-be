@@ -9,8 +9,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
 from fastapi.responses import FileResponse, StreamingResponse
 
-from app.router.pending_review import QueryService
-from app.infrastructure.pending_review_store import PendingReviewFileError
+from app.router.ingestion_review import QueryService
+from app.infrastructure.ingestion_review_store import IngestionReviewFileError
 
 from app.router.contract import ContractExtractionServiceDependency
 from app.router.communication import HistoryDependency
@@ -172,7 +172,7 @@ async def read_pending_pdf(submission_id: UUID, service: QueryService):
         content = await service.read_pdf(submission_id)
     except LookupError:
         raise HTTPException(404, '待入库申请不存在或已清理') from None
-    except PendingReviewFileError as exc:
+    except IngestionReviewFileError as exc:
         if isinstance(exc.__cause__, FileNotFoundError):
             raise HTTPException(404, '待入库申请文件不存在或已清理') from None
         raise HTTPException(409, '待入库文件校验失败，暂时无法预览') from None

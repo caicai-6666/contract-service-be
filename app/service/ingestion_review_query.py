@@ -2,28 +2,23 @@
 import asyncio
 from datetime import datetime, UTC, timedelta
 
-from app.schema.pending_review import PendingReviewCleanupPolicy, PendingReviewDetailResponse, PendingReviewListResponse
+from app.schema.ingestion_review import IngestionReviewDetailResponse, IngestionReviewListResponse
 
 
-class PendingReviewQueryService:
+class IngestionReviewQueryService:
     def __init__(self, store, metadata_store, settings):
         self._store = store
         self._metadata = metadata_store
-        self._retention = settings.pending_review_retention_seconds
-        self._interval = settings.pending_review_cleanup_interval_seconds
-
-    def cleanup_policy(self):
-        return PendingReviewCleanupPolicy(retention_seconds=self._retention,
-            cleanup_interval_seconds=self._interval, server_time=datetime.now(UTC))
+        self._retention = settings.ingestion_review_retention_seconds
 
     async def list_records(self):
         ids = await asyncio.to_thread(self._store.list_ids)
-        return PendingReviewListResponse(submission_ids=list(ids))
+        return IngestionReviewListResponse(submission_ids=list(ids))
 
     async def detail(self, submission_id):
         def read():
             row = self._store.get_basic(submission_id)
-            detail = PendingReviewDetailResponse(
+            detail = IngestionReviewDetailResponse(
                 **{key: row[key] for key in ('submission_id','run_id','document_id','file_name','summary',
                     'page_count','submitted_by','note','created_at','updated_at')},
                 delivery={'status':row['delivery_status'],'message_id':row['message_id']},

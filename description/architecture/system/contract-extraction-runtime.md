@@ -211,7 +211,7 @@ Core 与 Clause 的精确前端对象、字段含义和状态负载见[合同 AP
 
 用户取消是独立于 TTL 的即时终止路径。服务在聚合锁内标记取消并从注册表移除任务，使并发的继续或重试操作不能在取消后重新调度节点；随后取消该运行的后台协程和查重到期任务。已经连接的订阅者先收到 `run.cancelled`，其 `overall_status` 为 `cancelled`，然后连接结束。取消不保留可恢复墓碑，之后所有按 `run_id` 的操作均返回不存在。
 
-待审提交采用类似的终态释放协议：先保存独立待审 SQLite 与 PDF，再在聚合锁内标记 `submitted`，向现有订阅者发布 `run.submitted`，随后移除注册表并关闭 SSE。保存失败不改变终态，允许同内容重试；申请成功后即使运行已经释放，仍可通过原提交接口恢复同一回执。后续正式入库由审核反馈消费者推进，不依赖内存运行。普通合同目录仍只读取正式 SQLite 的 ready 记录。详见[待审快照](../data/pending-review.md)与[正式合同元数据](../data/contract-sqlite-metadata.md)。
+待审提交采用类似的终态释放协议：先保存独立待审 SQLite 与 PDF，再在聚合锁内标记 `submitted`，向现有订阅者发布 `run.submitted`，随后移除注册表并关闭 SSE。保存失败不改变终态，允许同内容重试；申请成功后即使运行已经释放，仍可通过原提交接口恢复同一回执。后续正式入库由审核反馈消费者推进，不依赖内存运行。普通合同目录仍只读取正式 SQLite 的 ready 记录。详见[待审快照](../data/ingestion-review.md)与[正式合同元数据](../data/contract-sqlite-metadata.md)。
 
 TTL、清理周期、事件缓冲、SSE 心跳和分支尝试次数均由环境变量控制，具体配置项及默认值见[后端应用的合同处理内存配置](../../capability/application/backend-application.md#合同处理内存配置)。
 

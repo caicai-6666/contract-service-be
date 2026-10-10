@@ -19,7 +19,8 @@
 | 进行代码开发或功能扩展 | 先阅读项目根目录的 [`AGENTS.md`](../AGENTS.md)，再阅读[项目说明](project.md) |
 | 查找服务入口、全局约定或业务接口 | [API 参考](api/readme.md) |
 | 对接 Core 表单定义、未入库运行恢复、合同上传、查重暂停/继续、SSE 进度、Core/Clause 查询、失败阶段重试或正式入库 | [合同 API](api/contract.md) |
-| 查询待审核申请、审核结果及清理剩余时间 | [待入库申请 API](api/pending-review.md) |
+| 查询待审核申请、审核结果及清理剩余时间 | [待入库申请 API](api/ingestion-review.md) |
+| 查看本人提交或上传合同的删除审核结果 | [删除审核 API](api/deletion-review.md) |
 | 了解最终审核值校验、PDF 保存和正式 ES 写入 | [复核后合同正式入库](capability/application/contract-ingestion.md) |
 | 修改内存任务、查重暂停 TTL、阶段状态、增量草稿或重试机制 | [合同提取应用运行时](architecture/system/contract-extraction-runtime.md) |
 | 设计或实现复核后合同的 Elasticsearch 入库 | [合同 Elasticsearch 文档结构](architecture/data/contract-elasticsearch-document.md) |
@@ -139,10 +140,14 @@ description/
 
 - [Communication SQLite 存储](architecture/data/communication-sqlite.md)：定义会话、任务/摘要和独立工作区三表，以及摘要恢复边界与密钥归属。
 - [合同 SQLite 元数据结构](architecture/data/contract-sqlite-metadata.md)：定义文件管理目录、入库状态及 SQLite、PDF、ES 三处一致性边界。
-- [合同待审快照存储](architecture/data/pending-review.md)：独立待审 SQLite、PDF、备注、消息关联及幂等存入服务。
-- [已完成待审申请清理](capability/application/pending-review-cleanup.md)：按完成时间保留、快照与 PDF 删除、最小幂等凭据及重投恢复。
-- [审核反馈拉取与批准入库](capability/application/pending-review-consumer.md)：反馈轮询、passport、外部审核备注、幂等入库与 ack 恢复。
-- [待审请求后台发布](capability/application/pending-review-publisher.md)：后台扫描、令牌复用、文件上传及不确定投递处理。
+- [合同入库审核存储](architecture/data/ingestion-review.md)：独立待审 SQLite、PDF、备注、消息关联及幂等存入服务。
+- [合同删除审核存储](architecture/data/deletion-review.md)：独立删除待审 SQLite、合同与操作人快照、消息关联和审核结果存储。
+- [删除审核申请后台发布](capability/application/deletion-review-publisher.md)：原合同 PDF 上传、人员与通行证映射、去重回执及不确定发送重试。
+- [已批准删除申请后台执行](capability/application/deletion-review-executor.md)：定时扫描已批准申请、清理正式合同及关联内容、失败重试与重启恢复。
+- [已完成删除审核申请清理](capability/application/deletion-review-cleanup.md)：按本地处理完成时间保留、审核行清理、最小幂等凭据及反馈重放。
+- [已完成待审申请清理](capability/application/ingestion-review-cleanup.md)：按完成时间保留、快照与 PDF 删除、最小幂等凭据及重投恢复。
+- [审核反馈拉取与批准入库](capability/application/ingestion-review-consumer.md)：反馈轮询、passport、外部审核备注、幂等入库与 ack 恢复。
+- [待审请求后台发布](capability/application/ingestion-review-publisher.md)：后台扫描、令牌复用、文件上传、去重回执及不确定投递重试。
 - [合同关联图存储契约](architecture/data/contract-graph.md)：定义合同节点、不可修改的无向关系边、创建人和创建时间，以及删除重建规则。
 - [合同 Elasticsearch 文档结构](architecture/data/contract-elasticsearch-document.md)：定义复核后合同的正式索引结构、启动创建及 Core mapping 增量同步边界。
 - [模型提取对象定义结构](architecture/data/field-definition.md)：定义单值或多值扁平对象的 YAML 结构、稳定索引代码、分词策略、基本类型及禁止嵌套约束。
