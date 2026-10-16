@@ -332,6 +332,8 @@ class Settings(BaseModel):
     ingestion_review_publish_batch_size: int = Field(default=10, gt=0)
     ingestion_review_directory: Path = Path("data/ingestion-review")
     deletion_review_directory: Path = Path("data/deletion-review")
+    deletion_review_result_poll_interval_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
+    deletion_review_result_batch_size: int = Field(default=10, gt=0)
     deletion_review_publish_scan_interval_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
     deletion_review_publish_retry_seconds: float = Field(default=60, gt=0, allow_inf_nan=False)
     deletion_review_publish_timeout_seconds: float = Field(default=120, gt=0, allow_inf_nan=False)
@@ -544,6 +546,8 @@ def get_settings() -> Settings:
         ingestion_review_publish_batch_size=_env("INGESTION_REVIEW_PUBLISH_BATCH_SIZE", "10"),
         ingestion_review_directory=_env("INGESTION_REVIEW_DIRECTORY", "data/ingestion-review"),
         deletion_review_directory=_env("DELETION_REVIEW_DIRECTORY", "data/deletion-review"),
+        deletion_review_result_poll_interval_seconds=_env("DELETION_REVIEW_RESULT_POLL_INTERVAL_SECONDS", "30"),
+        deletion_review_result_batch_size=_env("DELETION_REVIEW_RESULT_BATCH_SIZE", "10"),
         deletion_review_publish_scan_interval_seconds=_env("DELETION_REVIEW_PUBLISH_SCAN_INTERVAL_SECONDS", "30"),
         deletion_review_publish_retry_seconds=_env("DELETION_REVIEW_PUBLISH_RETRY_SECONDS", "60"),
         deletion_review_publish_timeout_seconds=_env("DELETION_REVIEW_PUBLISH_TIMEOUT_SECONDS", "120"),

@@ -6,6 +6,8 @@
 
 ## 从哪里开始
 
+通行证数组、旧库迁移与跨链路约束见[合同通行证集合](architecture/data/passport.md)。
+
 | 当前目标 | 建议阅读 |
 | --- | --- |
 | 首次了解项目、准备依赖或启动服务 | [仓库 README](../README.md) |
@@ -143,8 +145,9 @@ description/
 - [合同 SQLite 元数据结构](architecture/data/contract-sqlite-metadata.md)：定义文件管理目录、入库状态及 SQLite、PDF、ES 三处一致性边界。
 - [合同入库审核存储](architecture/data/ingestion-review.md)：独立待审 SQLite、PDF、备注、消息关联及幂等存入服务。
 - [合同删除审核存储](architecture/data/deletion-review.md)：独立删除待审 SQLite、合同与操作人快照、消息关联和审核结果存储。
-- [删除审核申请后台发布](capability/application/deletion-review-publisher.md)：原合同 PDF 上传、人员与通行证映射、去重回执及不确定发送重试。
+- [删除审核申请后台发布](capability/application/deletion-review-publisher.md)：无附件的业务字段发布、人员与通行证映射、去重回执及不确定发送重试。
 - [已批准删除申请后台执行](capability/application/deletion-review-executor.md)：定时扫描已批准申请、清理正式合同及关联内容、失败重试与重启恢复。
+- [删除审核反馈消费与资源清理](capability/application/deletion-review-consumer.md)：删除结果 pull、批准删除或拒绝恢复、处理完成后 ack 及重复反馈恢复。
 - [已完成删除审核申请清理](capability/application/deletion-review-cleanup.md)：按本地处理完成时间保留、审核行清理、最小幂等凭据及反馈重放。
 - [已完成待审申请清理](capability/application/ingestion-review-cleanup.md)：按完成时间保留、快照与 PDF 删除、最小幂等凭据及重投恢复。
 - [审核反馈拉取与批准入库](capability/application/ingestion-review-consumer.md)：反馈轮询、passport、外部审核备注、幂等入库与 ack 恢复。

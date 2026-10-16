@@ -324,6 +324,7 @@ def get_contract_documents(
             file_uri=metadata.file_uri,
             uploader=metadata.uploader,
             can_delete=metadata.can_delete,
+            passport=metadata.passport,
             ingested_at=metadata.ingested_at,
         )
         for metadata in store.list_ready()

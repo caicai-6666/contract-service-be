@@ -39,7 +39,9 @@
 
 确认入库不等于立即落入正式数据库。发现重复合同会阻断流程；存在相似候选时需要用户确认；没有超过阈值的候选时自动继续。
 
-删除申请先保存申请人备注并将合同 `can_delete` 置为 `false`，原合同仍可查看和检索。后台送审已实现，已批准申请的正式删除及拒绝后的标志恢复也已实现；**删除审核反馈从中间件拉取与 ack 尚未接入**，目前不能视为完整的自动审批闭环。
+删除申请先保存申请人备注并将合同 `can_delete` 置为 `false`，原合同仍可查看和检索。后台送审、删除审核反馈拉取与 ack 已接入；批准后完成正式资源删除再确认消息，拒绝后恢复可申请状态再确认，失败保留状态定时重试。
+
+实际删除成功后，同一 PDF 重新入库可立即再次申请删除，生成新的申请 ID，不必等待旧审核记录清理。旧记录及备注按保留期保存，旧审批反馈重放不会误删新入库的合同；待审、删除中或删除失败的申请仍禁止重复提交。
 
 ---
 
@@ -55,7 +57,7 @@
 | SQLite / sqlite-vec / Lindera | 元数据、审核与会话存储，以及向量距离计算和中文 FTS5/BM25 检索。Lindera 是额外的原生动态库。 |
 | Elasticsearch / SmartCN | 完整合同 Core、条款、检索问题及融合向量的存储和检索。 |
 | Neo4j | 合同节点及带描述、创建人、创建时间的无向关联。 |
-| 消息中间件 | 平台登录与心跳、入库/删除申请发布，以及入库审核反馈拉取与确认。 |
+| 消息中间件 | 平台登录与心跳、入库/删除申请发布，以及入库/删除审核反馈拉取与确认。 |
 | DeepSeek / 博查 | 分别提供外部专家与网页搜索能力，使用独立凭证。 |
 
 MLLM、Embedding、消息中间件及外部 API 不由本仓库启动。Compose 提供前后端、ES 和 Neo4j 的编排。
@@ -173,7 +175,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 20000 --workers 1
 
 ## 配置与接口
 
-`.env.example` 是本地配置入口，Compose 部署使用 deploy 自己的 `.env.example`。修改环境变量、用户文件或业务定义后需重启；Compose 环境变量变化需重新创建容器，单纯 restart 不会更新环境。
+`.env.example` 是本地配置入口，Compose 部署使用 deploy 自己的 `.env.example`。修改环境变量、用户文件或业务定义后需重启；Compose 环境变量变化需重新创建容器，单纯 restart 不会更新环境。更新示例文件不会自动合并已有私有 `.env`，升级时应补齐新增键并保留实际地址、凭证和自定义值。审核配置通过 Compose 的 `backend.env_file` 注入，审核目录固定在持久数据卷内。
 
 | 配置组 | 主要用途 |
 | --- | --- |
@@ -183,6 +185,8 @@ uvicorn app.main:app --host 127.0.0.1 --port 20000 --workers 1
 | `INGESTION_REVIEW_*` / `DELETION_REVIEW_*` | 两个审核区的位置、后台扫描、发送重试、处理及清理策略。 |
 | `COMMUNICATION_*` | 会话存储与工具结果池、分页、文件缓存和开发追踪。 |
 | `DEEPSEEK_*` / `BOCHA_*` | 外部专家和网页搜索连接。 |
+
+删除审核反馈使用 `DELETION_REVIEW_RESULT_POLL_INTERVAL_SECONDS=30` 和 `DELETION_REVIEW_RESULT_BATCH_SIZE=10`，默认每轮等待30秒、最多处理10条。入库及删除结果分别通过中间件 `/middleware-service/api/ingestion-results/` 和 `/middleware-service/api/deletion-results/` 下的 pull/ack 接口消费；`MIDDLEWARE_REQUEST_TIMEOUT_SECONDS` 控制登录、心跳和结果请求，送审超时使用各自的 `PUBLISH_TIMEOUT_SECONDS`。审核记录保留期不控制再次申请资格。
 
 所有业务接口位于 `/contract/api`。除健康检查和登录外均需 `Authorization: Bearer <login_code>`；通过用户密钥登录取得免登码，不使用中间件平台令牌访问本平台业务 API。
 
@@ -201,9 +205,9 @@ uvicorn app.main:app --host 127.0.0.1 --port 20000 --workers 1
 
 ## 数据与运行边界
 
-SQLite 保存正式目录、摘要、上传人、passport、注意事项、审核记录及会话状态；ES 保存结构化合同内容和检索向量；Neo4j 保存合同关联。PDF 与数据库共同组成业务数据，备份及迁移需同步覆盖，不能只复制单个数据库文件。
+SQLite 保存正式目录、摘要、上传人、完整 passport 数组、注意事项、审核记录及会话状态；ES 保存结构化合同内容和检索向量；Neo4j 保存合同关联。PDF 与数据库共同组成业务数据，备份及迁移需同步覆盖，不能只复制单个数据库文件。
 
-入库审核保存完整快照与临时 PDF；删除审核仅引用正式 PDF。审核记录默认在本地处理完成后保留 7 天，未完成的申请不按提交时间清理。发布结果不确定时按原 source_id 延迟重试；权限、参数或本地数据错误进入 `blocked`，不会自动重试，也不表示审核拒绝。
+入库审核保存完整快照与临时 PDF；删除审核仅引用正式 PDF，送审只提交业务字段，不读取或上传文件。审核记录默认在本地处理完成后保留 7 天，未完成的申请不按提交时间清理。发布结果不确定时按原 source_id 延迟重试；权限、参数或本地数据错误进入 `blocked`，不会自动重试，也不表示审核拒绝。
 
 运行时还需遵守以下边界：
 
@@ -224,7 +228,8 @@ SQLite 保存正式目录、摘要、上传人、passport、注意事项、审�
 - [合同提取工作流](description/architecture/workflow/contract-extraction/readme.md)
 - [合同沟通智能体](description/architecture/workflow/contract-communication/readme.md)
 - [合同候选检索](description/architecture/workflow/contract-communication/contract-retrieval.md)
+- [通行证集合与旧库迁移](description/architecture/data/passport.md)
 - [正式合同元数据](description/architecture/data/contract-sqlite-metadata.md)
 - [中间件平台会话](description/capability/infrastructure/middleware-session.md)
 - [入库审核发布](description/capability/application/ingestion-review-publisher.md)与[反馈处理](description/capability/application/ingestion-review-consumer.md)
-- [删除审核发布](description/capability/application/deletion-review-publisher.md)与[正式删除执行](description/capability/application/deletion-review-executor.md)
+- [删除审核发布](description/capability/application/deletion-review-publisher.md)、[反馈消费](description/capability/application/deletion-review-consumer.md)与[正式删除执行](description/capability/application/deletion-review-executor.md)

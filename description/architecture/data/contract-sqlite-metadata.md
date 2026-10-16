@@ -45,7 +45,7 @@ SQLite 使用 `contracts`、`contract_category_metadata`、`contract_category_as
 | `ingested_at` | `TEXT` | 带时区的 ISO 8601 入库时间。 |
 | `status` | `TEXT` | `ingesting`、`ready` 或 `deleting`。 |
 | `can_delete` | `INTEGER` | 非空，默认 `1`，仅允许 `0/1`；表示是否允许发起删除申请，对外返回布尔值。详见[删除申请标志](#删除申请标志)。 |
-| `passport` | `TEXT` | 外部审核通过后的跨平台关联标识；同一通行证可对应多份合同，不唯一。历史合同不自动填充。拒绝不创建正式合同。 |
+| `passport` | `TEXT` | JSON 数组文本，保存全部跨平台通行证；一份合同可有多个值，同一值可关联多份合同。历史未绑定为 NULL，拒绝不创建正式合同。 |
 | `ingestion_id` | `TEXT` | 单次入库尝试标识，防止旧尝试覆盖新状态。 |
 
 `category` 使用“多类别 code 以 ` / ` 连接，未映射时保存类型描述”的投影规则，前端可通过类别列表接口将 code 映射为中文名称。类别筛选必须使用关联表，不对该文本做模糊匹配。完整分类场景仍只保存在 Elasticsearch。`contract_time` 不从文件名推断；入库边界仅接受完整且合法的年月日，并将 `YYYY-M-D`、`YYYY/M/D`、`YYYY.M.D` 或中文年月日统一为 `YYYY-MM-DD`。SQLite 与 Elasticsearch 写入同一标准值。
@@ -147,12 +147,12 @@ SQLite 事务不会跨越文件 I/O 或 ES 网络请求。它只原子登记一�
 
 ## 外部审核身份
 
-正式入库可接收 passport，由审核反馈消费者传入并与元数据同事务保存。已绑定身份不能清空或更换；同一 passport 不能绑定两份合同。相同 document_id 与 passport 的 ready 记录在反馈重试时直接复用，不覆盖正式入库时间。既有直接入库调用兼容 passport=None；已有非空身份不允许被直接入库覆盖清空。passport 不加入 ES 文档，本次也不修改对外元数据接口投影。流程见[审核反馈拉取与批准入库](../../capability/application/ingestion-review-consumer.md)。
+正式入库接收完整 passport 数组，由审核反馈消费者传入并与元数据同事务保存；同一通行证可关联多份合同。已绑定数组不能被更换、截断或清空；同一 document_id 与完整数组的 ready 记录在反馈重试时直接复用，不覆盖入库时间。历史调用兼容单字符串或 passport=None；passport 不加入 ES 文档。格式、迁移及历史回执兼容见[通行证集合契约](passport.md)，流程见[审核反馈拉取与批准入库](../../capability/application/ingestion-review-consumer.md)。
 
 
 ## 通行证精确读取
 
-`SQLiteContractMetadataStore.list_ids_by_passport(passport)` 利用 `contracts_passport` 普通索引，参数化精确匹配全部 ready 合同 ID，区分大小写，按入库时间倒序、ID 升序返回元组；无匹配返回空元组。空值及首尾空白拒绝查询。通行证不是合同唯一键；初始化会自动将旧同名唯一索引替换为普通索引，保留历史数据与单合同 passport 不可覆盖约束。Agent Core 已接入[按通行证获取合同](../workflow/contract-communication/contract-metadata-tool.md#按通行证获取合同)，不读取待审快照或外部平台。
+`SQLiteContractMetadataStore.list_ids_by_passport(passport)` 使用参数化 json_each 成员匹配，返回全部 ready 合同 ID，区分大小写且不裁剪输入，按入库时间倒序、ID 升序返回元组；无匹配返回空元组，空白查询被拒绝。同一合同的重复通行证不导致重复返回；查询任意一个已绑定通行证均可命中合同。初始化移除旧同名唯一索引，集合存储格式升级见[通行证集合契约](passport.md)。Agent Core 已接入[按通行证获取合同](../workflow/contract-communication/contract-metadata-tool.md#按通行证获取合同)，不读取待审快照或外部平台。
 
 
 ---

@@ -68,7 +68,7 @@ PDF 预览已迁移至[资源文件 API](resource.md#读取待审-pdf)：`GET /c
 | created_at / updated_at | 保存待审申请时间、待审记录最近更新时间，不是正式入库时间 |
 | delivery | status 为 pending / publishing / published / uncertain / blocked；message_id 为原送审消息 ID |
 | review | status 为 pending_send / pending_review / approved / rejected；note 为审核平台备注，reviewer 和 reviewed_at 来自审核反馈 |
-| review.passport | 批准时非空，同一值可关联多份合同；拒绝为空字符串；尚无反馈为 null |
+| review.passport | 字符串数组：批准时至少一项，保存全部通行证；拒绝为 []；尚无反馈为 null。单合同可关联多项，同一项也可关联多份合同 |
 | ingestion | status 为 pending / ingesting / succeeded / failed；ingested_at 从正式合同元数据读取，未成功或正式记录已不存在时为 null |
 | cleanup | review_processed_at 为本地审核结果处理完成时间；eligible_at 为允许清理时刻，不保证该秒完成删除 |
 | pdf | 始终返回相对待审 files 目录的文件名，以及需认证访问的资源接口 URL；不暴露服务器绝对路径 |

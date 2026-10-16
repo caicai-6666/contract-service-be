@@ -29,6 +29,7 @@ from app.agent.contract_extraction.subgraph.field_extraction.definition import (
     FieldPropertyDefinition,
     FieldValueType,
 )
+from app.core.passport import normalize_passports
 from app.core.contract_date import normalize_contract_date
 from app.core.config import EmbeddingSettings
 from app.service.contract_summary_embedding import embed_contract_summary
@@ -248,9 +249,11 @@ class ContractIngestionService:
         retrieval_questions: tuple[str, ...],
         question_fusion_vector: tuple[float, ...],
         page_fusion_vector: tuple[float, ...],
-        passport: str | None = None,
+        passport: tuple[str, ...] | list[str] | str | None = None,
     ) -> ContractIngestionResult:
         """形成最终文档；任一持久化步骤失败时不伪造成功结果。"""
+        if passport is not None:
+            passport = normalize_passports(passport)
         normalized_file_name = self._validate_file_name(file_name)
         # 即使绕过 HTTP 调用服务，也不能将空摘要写入正式元数据。
         if not isinstance(summary, str) or not summary.strip():
@@ -354,7 +357,7 @@ class ContractIngestionService:
         )
         async with document_lock:
             if passport is not None:
-                if not passport or passport != passport.strip():
+                if not passport:
                     raise ContractReviewValidationError('批准入库需要有效 passport')
                 existing = await asyncio.to_thread(self._metadata_store.get, document_id)
                 if existing is not None:
@@ -381,7 +384,7 @@ class ContractIngestionService:
 
     async def delete_document(self, document_id: str, *, reviewer: str,
                               expected_ingested_at: datetime | None = None,
-                              expected_passport: str | None = None) -> None:
+                              expected_passport: tuple[str, ...] | list[str] | str | None = None) -> None:
         """与同文档入库串行，先登记删除意图，再清理 Neo4j、ES、PDF 和 SQLite。"""
         if re.fullmatch(r"[0-9a-f]{64}", document_id) is None:
             raise ValueError("document_id 必须是 64 位小写 SHA-256")
@@ -395,7 +398,7 @@ class ContractIngestionService:
                 raise ContractDocumentNotFoundError(document_id)
             # 审核批准的是申请时的合同；相同 PDF 删除后再入库也不能沿用旧批准。
             if expected_ingested_at is not None and (
-                metadata.ingested_at != expected_ingested_at or metadata.passport != expected_passport
+                metadata.ingested_at != expected_ingested_at or metadata.passport != (normalize_passports(expected_passport) if expected_passport is not None else None)
             ):
                 raise ContractDocumentConflictError('正式合同身份与删除审核快照不一致，拒绝删除')
             if metadata.status not in (ContractMetadataStatus.READY, ContractMetadataStatus.DELETING):

@@ -13,6 +13,7 @@ from uuid import UUID
 
 import pymupdf
 
+from app.infrastructure.passport_storage import encode_passports, decode_passports, migrate_passport_storage
 from app.schema.ingestion_review import IngestionReviewRecord, IngestionReviewSnapshot, ProcessedReviewReceipt
 
 
@@ -133,6 +134,7 @@ class SQLiteIngestionReviewStore:
             c.execute('CREATE UNIQUE INDEX IF NOT EXISTS ingestion_reviews_feedback ON ingestion_reviews(review_message_id)')
             # 多份送审合同可共用通行证；幂等仍由申请与反馈消息标识保证。
             c.execute('DROP INDEX IF EXISTS ingestion_reviews_passport')
+            migrate_passport_storage(c, 'ingestion_reviews')
             c.execute('CREATE UNIQUE INDEX IF NOT EXISTS ingestion_reviews_message ON ingestion_reviews(message_id)')
             # 路径改为相对 files 目录；只迁移与申请身份严格匹配的旧值，不移动 PDF。
             c.execute("""UPDATE ingestion_reviews SET pdf_relative_path=submission_id || '.pdf'
@@ -150,8 +152,9 @@ class SQLiteIngestionReviewStore:
             note=row['note'], message_id=row['message_id'], delivery_status=row['delivery_status'],
             publish_attempts=row['publish_attempts'], next_publish_at=row['next_publish_at'],
             last_publish_error=row['last_publish_error'],
+            passport=decode_passports(row['passport']),
             **{key: row[key] for key in ('review_message_id', 'review_offset', 'review_note',
-                'reviewed_by', 'reviewed_at', 'passport', 'review_processed_at', 'review_acked_at', 'last_review_error')},
+                'reviewed_by', 'reviewed_at', 'review_processed_at', 'review_acked_at', 'last_review_error')},
             snapshot=IngestionReviewSnapshot.model_validate_json(row['snapshot_json']),
             pdf_relative_path=row['pdf_relative_path'], review_status=row['review_status'],
             ingestion_status=row['ingestion_status'], created_at=row['created_at'], updated_at=row['updated_at'])
@@ -249,7 +252,7 @@ class SQLiteIngestionReviewStore:
                 FROM ingestion_reviews WHERE submission_id=?""", (str(UUID(str(submission_id))),)).fetchone()
             if row is None:
                 raise LookupError('待审申请不存在')
-            return dict(row)
+            return dict(row) | {'passport': decode_passports(row['passport'])}
 
     def read_pdf(self, submission_id: UUID) -> bytes:
         record = self.get(submission_id)
@@ -366,6 +369,13 @@ class SQLiteIngestionReviewStore:
         delivery = MiddlewareReviewDelivery.model_validate(delivery)
         message = delivery.message
         payload = message.model_dump_json()
+        payload_hashes = {hashlib.sha256(payload.encode()).hexdigest()}
+        # 旧清理凭据只保留标量版哈希，无法回填正文；仅兼容完全等价的单值或空值。
+        if len(message.passport) <= 1:
+            old_payload = message.model_dump(mode='json')
+            old_payload['passport'] = message.passport[0] if message.passport else ''
+            old_json = json.dumps(old_payload, ensure_ascii=False, separators=(',', ':'))
+            payload_hashes.add(hashlib.sha256(old_json.encode()).hexdigest())
         now = datetime.now(UTC).isoformat()
         with self._connection() as c:
             c.execute('BEGIN IMMEDIATE')
@@ -373,7 +383,7 @@ class SQLiteIngestionReviewStore:
                 (message.request_id, message.message_id)).fetchone()
             if receipt is not None:
                 if (receipt['request_id'] != message.request_id or receipt['review_message_id'] != message.message_id
-                        or receipt['review_payload_sha256'] != hashlib.sha256(payload.encode()).hexdigest()):
+                        or receipt['review_payload_sha256'] not in payload_hashes):
                     raise IngestionReviewConflictError('已清理申请收到冲突反馈，不能确认消息')
                 return ProcessedReviewReceipt(submission_id=receipt['submission_id'],
                     review_message_id=receipt['review_message_id'], review_processed_at=receipt['review_processed_at'])
@@ -381,7 +391,10 @@ class SQLiteIngestionReviewStore:
             if row is None:
                 raise LookupError('审核反馈未匹配到本地入库请求，不确认消息')
             if row['review_message_id'] is not None:
-                if row['review_message_id'] != message.message_id or row['review_payload_json'] != payload:
+                saved_message = MiddlewareReviewDelivery.model_validate({
+                    'offset': delivery.offset, 'message': json.loads(row['review_payload_json']),
+                }).message
+                if row['review_message_id'] != message.message_id or saved_message.model_dump_json() != payload:
                     raise IngestionReviewConflictError('同一申请收到冲突的审核反馈')
                 # 同一反馈可能因重投位于不同 offset；每次只确认当前 pull 的位置。
                 c.execute('UPDATE ingestion_reviews SET review_offset=? WHERE submission_id=?',
@@ -392,7 +405,7 @@ class SQLiteIngestionReviewStore:
                         review_payload_json=?,review_note=?,reviewed_by=?,reviewed_at=?,passport=?,
                         review_status=?,delivery_status='published',next_publish_at=NULL,updated_at=? WHERE submission_id=?""",
                         (message.message_id,delivery.offset,payload,message.note,message.reviewer,
-                         message.created_at.isoformat(),message.passport,
+                         message.created_at.isoformat(),encode_passports(message.passport),
                          'approved' if message.passport else 'rejected',now,row['submission_id']))
                 except sqlite3.IntegrityError as exc:
                     raise IngestionReviewConflictError('反馈标识已绑定其他申请') from exc

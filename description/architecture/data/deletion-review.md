@@ -28,7 +28,7 @@ data/deletion-review/
 | --- | --- | --- |
 | `submission_id` | `TEXT` | 删除申请 UUID 主键；调用方生成并保留，用于本地幂等重试。 |
 | `document_id` | `TEXT` | 正式合同的 64 位 SHA-256；也是后续送审所用的本平台数据身份。 |
-| `passport` | `TEXT NULL` | 原正式合同的跨平台通行证；历史缺失值保持 NULL，不猜测。 |
+| `passport` | `TEXT NULL` | JSON 数组文本，冻结原正式合同的全部跨平台通行证；历史缺失值保持 NULL，不猜测。格式与迁移见[通行证集合契约](passport.md)。 |
 | `file_name` | `TEXT` | 申请时的合同名称；对应中间件资料名称 name。 |
 | `summary` | `TEXT NULL` | 申请时的合同摘要；对应 abstract；历史缺失值保留 NULL。 |
 | `uploader` | `TEXT` | 原合同上传人，即合同入库员；来自正式元数据。 |
@@ -59,7 +59,7 @@ data/deletion-review/
 
 [后台执行器](../../capability/application/deletion-review-executor.md)领取已批准且有反馈消息 ID 的申请；只有 `deletion_status=succeeded` 表示正式删除完成。初始化为旧表补齐执行字段，默认 pending，不改变已有审核结论。
 
-同一 document_id 的未拒绝申请建立部分唯一索引，阻止两条并发有效申请。拒绝后允许新 UUID 保存新申请，原拒绝记录在保留期内可查询；同一 passport 可以关联多份合同，不能作为删除对象唯一键。[定时清理](../../capability/application/deletion-review-cleanup.md)在处理完成且保留期届满后移除审核行，释放 document_id 的申请唯一性；批准记录在保留期内仍占用该唯一性。
+同一 document_id 仅对 `review_status != rejected AND deletion_status != succeeded` 的申请建立部分唯一索引，阻止两条并发未结束申请。拒绝或实际删除成功后即退出互斥范围；同一文件重新入库后可立即创建新的申请 UUID，不必等待历史审核记录清理。旧成功记录及其备注仍按[保留期](../../capability/application/deletion-review-cleanup.md)保存，不能重新领取执行，也不参与新合同的 can_delete 协调；待审、正在删除和删除失败的申请仍阻止重复提交。同一 passport 可以关联多份合同，不能作为删除对象唯一键。初始化在补齐执行字段后原子替换旧部分唯一索引，不删除历史记录，重复初始化保留同一 document_id 的多轮已完成申请。
 
 `processed_deletion_review_receipts` 保存清理后的最小幂等凭据：submission_id 主键、request_id 唯一、review_message_id 唯一、review_payload_sha256、review_processed_at、cleaned_at，均为非空 TEXT。时间为 UTC ISO 8601；不保留合同 ID、PDF 引用、passport、人员或备注，不参与对外查询，暂不自动过期。反馈规范化为 UTC 后计算内容哈希，重放必须匹配请求 ID、反馈 ID 和哈希。
 
@@ -70,7 +70,7 @@ data/deletion-review/
 - `app/schema/deletion_review.py`：不可变 `DeletionReviewSnapshot`、完整 `DeletionReviewRecord`、内部 `DeletionReviewFeedback` 及审核状态枚举。
 - `app/infrastructure/deletion_review_store.py`：`SQLiteDeletionReviewStore`，负责初始化、幂等保存、查询、消息绑定和审核结果保存。
 - `app/service/deletion_review.py`：`DeletionReviewService`，阻塞数据库操作在线程中执行，从正式元数据构造精简快照。
-- `app/service/deletion_review_publisher.py`：定时发送申请与正式 PDF，保存回执并定时重试不确定发送。
+- `app/service/deletion_review_publisher.py`：定时发送申请业务字段，不上传正式 PDF，保存回执并定时重试不确定发送。
 - `app/service/deletion_review_executor.py`：已批准申请的定时扫描、正式删除及失败重试。
 - `app/service/deletion_review_cleanup.py`：清理完成且保留期届满的审核行，保留最小幂等回执，不操作正式文件。
 - `app/service/deletion_review_query.py` 与 `app/router/deletion_review.py`：按当前用户是删除提交人或合同上传人查询申请 ID 和详情，HTTP 契约见[删除审核 API](../../api/deletion-review.md)。
@@ -105,11 +105,11 @@ data/deletion-review/
 
 正式表 `contracts.can_delete` 是面向全平台的删除申请标志，详情见[删除申请标志](contract-sqlite-metadata.md#删除申请标志)。`submit()` 与正式入库/删除共享文档锁，先持久化申请，再置 false；低层 `save()` 仅保存快照，不单独切换标志。部分唯一索引在跨库写入间隔仍阻止重复有效申请。
 
-删除申请 HTTP 接口、标志切换及拒绝恢复已接入；接口改为202返回申请ID，见[提交删除审核](../../api/contract.md#删除正式合同)。审批通过后的实际删除由后台执行器完成，完成后的审核数据由定时清理服务按保留期清除。[中间件发布](../../capability/application/deletion-review-publisher.md)已接入；删除审核结果拉取与 ack 尚未接入。
+删除申请 HTTP 接口、标志切换及拒绝恢复已接入；接口改为202返回申请ID，见[提交删除审核](../../api/contract.md#删除正式合同)。审批通过后的实际删除由后台执行器完成，完成后的审核数据由定时清理服务按保留期清除。[中间件发布](../../capability/application/deletion-review-publisher.md)已接入；[删除审核结果消费者](../../capability/application/deletion-review-consumer.md)已接入 pull/ack，实际删除或拒绝恢复完成后才确认。
 
 正式库与审核库是两个独立数据库，不承诺跨库原子提交。申请是持久化恢复依据：启动及每轮后台扫描调用 `reconcile_flags()`，待审/批准保持 false，拒绝恢复 true。每份合同最新申请决定当前标志，尚未完成的旧拒绝也单独补齐处理完成时间；按冻结入库时间和 passport 核对原身份，再以当前 ingestion_id 更新。旧反馈不能修改后来新申请或重新入库合同的标志。快照已保存、标志写入失败时不撤销申请，同提交人且备注未变的待发送请求可以修复后返回原 ID；更换备注或其他重复申请拒绝。请求取消时等待线程内写入完成再释放文档锁。
 
-中间件删除请求已按 multipart 契约发布，审核反馈协议尚未提供；`DeletionReviewFeedback` 是内部存储模型，并非对外 HTTP 契约。待正式协议明确后再做字段转换。
+中间件删除请求已按仅文本的 URL 编码表单契约发布，不提交 file/file_extension，反馈通过 `/middleware-service/api/deletion-results/pull` 拉取，外部 approved/reviewer/note/created_at 转换为内部 `DeletionReviewFeedback`；反馈 request_id 关联本地发布 message_id，反馈自身 message_id 用于幂等和 ack。
 
 ---
 

@@ -62,6 +62,7 @@ GET /contract/api/contract/documents
     "file_uri": "/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pdf",
     "uploader": "上传人甲",
     "can_delete": true,
+    "passport": ["PASS-001", "PASS-002"],
     "ingested_at": "2026-09-07T06:00:00Z"
   }
 ]
@@ -77,8 +78,9 @@ GET /contract/api/contract/documents
 | `uploader` | string | 本平台提交待审申请的上传人，取自 submitted_by，不是外部审核员。 |
 | `ingested_at` | string | 带时区的 ISO 8601 入库时间。 |
 | `can_delete` | boolean | 是否允许发起删除申请；提交申请后 false，审核拒绝后恢复 true。与 ready 状态及合同查看、检索可见性独立。 |
+| `passport` | string[] 或 null | 合同关联的完整通行证数组，保留原值、顺序和重复项；历史未绑定时为 `null`，不省略字段。 |
 
-响应每项仅包含以上八个必有字段，不返回入库状态、尝试标识、分类理由或完整 Core/Clause。接口复用 `SQLiteContractMetadataStore.list_ready()`，同步查询在线程池中执行，不访问 Elasticsearch 或读取 PDF。当前不提供筛选与分页。
+响应每项仅包含以上九个必有字段，不返回入库状态、尝试标识、分类理由或完整 Core/Clause。`passport` 采用[通行证集合契约](../architecture/data/passport.md)，不只返回第一项或将多个值拼接为字符串。接口复用 `SQLiteContractMetadataStore.list_ready()`，同步查询在线程池中执行，不访问 Elasticsearch 或读取 PDF。当前不提供筛选与分页。
 
 ```bash
 curl --header 'Authorization: Bearer <login_code>' \
@@ -127,7 +129,7 @@ curl --header 'Authorization: Bearer <login_code>' \
 | --- | --- |
 | `401` | 未登录或免登码无效。 |
 | `404` | 正式 SQLite 不存在该合同或已删除。 |
-| `409` | 合同尚未就绪、正在实际删除、can_delete=false，或已有未拒绝的删除申请。 |
+| `409` | 合同尚未就绪、正在实际删除、can_delete=false，或已有未拒绝且尚未删除成功的申请。 |
 | `422` | 文档 ID 格式错误、缺少请求体或 note、note 不是字符串或超过 10000 字符，或请求体包含额外字段。 |
 | `503` | 本地申请或标志写入失败；申请可能已保存，请先查询申请列表。 |
 
@@ -144,7 +146,9 @@ curl --request DELETE --header 'Authorization: Bearer replace-with-login-code' \
 
 正式库和审核库是两个独立 SQLite，不提供跨库原子提交。先保存申请作为恢复依据；若后续标志更新失败，部分唯一索引仍阻止重复申请，启动及后台扫描补齐标志。在“同一提交人、备注未变、待发送申请、原合同身份匹配、标志仍为true”的恢复场景，可用同一合同 ID 和原 note 重试并返回原申请 ID，不新增申请；更换备注返回 `409`。请求中断时等待当前跨库写入结束再释放文档锁。
 
-审核拒绝后恢复原合同的 can_delete=true，允许新申请；旧反馈重放不会解锁更新的申请。审核批准后由[后台执行器](../capability/application/deletion-review-executor.md)完成正式清理并保存结果。本接口不直接发送中间件消息，保存后的申请由[后台发布服务](../capability/application/deletion-review-publisher.md)上传原合同 PDF 并送审；审核结果拉取与 ack 仍待中间件协议。
+实际删除成功后，同一文件重新入库可立即再次提交删除申请，创建新的 submission_id，不受旧审核记录保留期影响；仅收到批准但尚未删除完成时仍不允许重复申请。
+
+审核拒绝后恢复原合同的 can_delete=true，允许新申请；旧反馈重放不会解锁更新的申请。审核批准后由[后台执行器](../capability/application/deletion-review-executor.md)完成正式清理并保存结果。本接口不直接发送中间件消息，保存后的申请由[后台发布服务](../capability/application/deletion-review-publisher.md)提交业务字段送审，不上传 PDF；[审核结果消费者](../capability/application/deletion-review-consumer.md)拉取反馈，实际删除或拒绝恢复完成后才 ack。
 
 ---
 

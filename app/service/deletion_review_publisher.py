@@ -1,20 +1,18 @@
 """定时发布删除审核申请；保留不确定回执，依托中间件去重延迟重试。"""
 import asyncio
-import hashlib
 import logging
 
 from pydantic import ValidationError
 
-from app.infrastructure.contract_file_store import ContractFileNotFoundError, InvalidContractFileAddressError
 from app.infrastructure.middleware import MiddlewareClient, MiddlewareDeletionPublishFields, MiddlewarePublishOutcome
 
 logger = logging.getLogger(__name__)
 
 
 class DeletionReviewPublisher:
-    def __init__(self, store, session, metadata_store, file_store, settings, *, lock_documents, client=None):
+    def __init__(self, store, session, metadata_store, settings, *, lock_documents, client=None):
         self._store, self._session = store, session
-        self._metadata, self._files = metadata_store, file_store
+        self._metadata = metadata_store
         self._settings, self._lock_documents, self._client = settings, lock_documents, client
         self._task = None
         self._closed = False
@@ -65,7 +63,7 @@ class DeletionReviewPublisher:
             if self._closed:
                 return
             for sid in tuple(self._receipts):
-                # 单条回执落盘失败不阻塞其他合同；原记录保持 publishing，绝不重复上传。
+                # 单条回执落盘失败不阻塞其他合同；原记录保持 publishing，绝不重复发布。
                 try:
                     await self._flush_receipt(sid)
                 except Exception as exc:
@@ -98,44 +96,36 @@ class DeletionReviewPublisher:
                         logger.warning('删除送审取消状态未保存，重启后恢复重试：submission_id=%s', sid)
                     raise
 
-    async def _prepare_pdf(self, record):
+    async def _validate_contract(self, record):
         def read():
             metadata = self._metadata.get(record.document_id)
-            # 不上传同哈希后来重新入库的版本，也不在本地锁定失败时先发布外部申请。
+            # 不为同哈希后来重新入库的版本送审，也不在本地锁定失败时发布申请。
             if metadata is None or (metadata.ingested_at != record.contract_ingested_at
                     or metadata.passport != record.passport or metadata.file_uri != record.file_uri
                     or metadata.status != 'ready' or metadata.can_delete):
                 raise ValueError('原合同身份或删除锁定状态不匹配')
-            data = self._files.resolve(record.file_uri).read_bytes()
-            if hashlib.sha256(data).hexdigest() != record.document_id:
-                raise ValueError('合同文件哈希不匹配')
-            return data
         async with self._lock_documents(record.document_id):
-            task = asyncio.create_task(asyncio.to_thread(read))
-            try:
-                return await asyncio.shield(task)
-            except asyncio.CancelledError:
-                await asyncio.gather(task, return_exceptions=True)
-                raise
+            # 删除申请不再依赖 PDF 内容；只在线程内核对冻结元数据，完成后释放锁。
+            await self._write(read)
 
     async def _publish(self, record, token):
         try:
             fields = MiddlewareDeletionPublishFields(source_id=record.document_id, passport=record.passport,
                 name=record.file_name, abstract=record.summary, uploader=record.uploader,
                 applicant=record.requested_by, note=record.note)
-            data = await self._prepare_pdf(record)
-        except (ValidationError, ContractFileNotFoundError, InvalidContractFileAddressError, OSError, ValueError):
+            await self._validate_contract(record)
+        except (ValidationError, ValueError):
             return MiddlewarePublishOutcome(state='blocked', error_code='invalid_local_submission')
         except asyncio.CancelledError:
             raise
         except Exception:
-            # 尚未开始 HTTP 上传，本地存储暂时故障可安全重试。
+            # 尚未开始 HTTP 发布，本地存储暂时故障可安全重试。
             return MiddlewarePublishOutcome(state='retry', error_code='local_read_unavailable')
         try:
             if self._client is None:
                 self._client = MiddlewareClient(str(self._settings.middleware_base_url),
                     timeout_seconds=self._settings.deletion_review_publish_timeout_seconds)
-            return await self._client.publish_deletion(token=token, fields=fields, pdf_bytes=data,
+            return await self._client.publish_deletion(token=token, fields=fields,
                 timeout_seconds=self._settings.deletion_review_publish_timeout_seconds)
         except asyncio.CancelledError:
             raise

@@ -61,7 +61,7 @@ data/ingestion-review/
 | `review_message_id` / `review_offset` | 反馈消息 ID（唯一）与当前交付位置；不是原发布消息 ID。 |
 | `review_payload_json` | 首次接收的完整反馈，用于检查重投内容一致性。 |
 | `review_note` / `reviewed_by` / `reviewed_at` | 审核平台的备注、审核员与带时区时间，独立于入库员信息。 |
-| `passport` | 批准时为跨平台关联标识；拒绝为空字符串；尚无反馈为 NULL。允许多份合同申请使用同一 passport；初始化移除旧 ingestion_reviews_passport 唯一索引。 |
+| `passport` | JSON 数组文本，批准时保存全部跨平台通行证；拒绝为空数组；尚无反馈为 NULL。单合同允许多个通行证，多合同也可共用通行证；格式与迁移见[通行证集合契约](passport.md)。初始化移除旧 ingestion_reviews_passport 唯一索引。 |
 | `review_processed_at` / `review_acked_at` | 本地业务处理完成时间与本地确认收到 ack 成功的时间，后者不代替远端进度。 |
 | `last_review_error` | 最近正式入库失败的异常类型，不保存响应正文。 |
 | `note` | 入库员备注，独立 TEXT 列，默认空字符串，最多 10000 字符；仅用于审核沟通，不写入合同快照或正式数据库。 |

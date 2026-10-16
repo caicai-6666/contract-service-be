@@ -6,6 +6,7 @@ from uuid import UUID
 import math
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from app.core.passport import Passports
 from app.service.contract_extraction.model import (
     ClauseDraftData, ContractClassificationView, CoreDraftData,
 )
@@ -70,7 +71,7 @@ class IngestionReviewRecord(BaseModel):
     review_note: str | None = Field(default=None, description="审核平台给出的备注，与入库员 note 分开保存。")
     reviewed_by: str | None = None
     reviewed_at: datetime | None = None
-    passport: str | None = None
+    passport: Passports | None = None
     review_processed_at: datetime | None = None
     review_acked_at: datetime | None = None
     last_review_error: str | None = None
@@ -107,7 +108,7 @@ class IngestionReviewFeedbackView(BaseModel):
     note: str | None
     reviewer: str | None
     reviewed_at: datetime | None
-    passport: str | None
+    passport: Passports | None = Field(description='审核返回的完整通行证数组；空数组表示未签发，未收到反馈时为 null。')
 
 
 class IngestionReviewIngestionView(BaseModel):

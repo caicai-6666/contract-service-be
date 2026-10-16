@@ -2,6 +2,7 @@
 
 from uuid import UUID
 from app.schema.ingestion_review import ReviewStatus, ReviewIngestionStatus
+from app.core.passport import Passports
 
 from datetime import date, datetime
 from typing import Annotated, Literal
@@ -36,6 +37,7 @@ class ContractMetadataResponse(ContractSchemaModel):
     uploader: str = Field(description="在本平台提交待审核申请的上传人名称，来自 submitted_by，不是外部审核员。")
     ingested_at: datetime = Field(description="带时区的 ISO 8601 入库时间。")
     can_delete: bool = Field(description="是否允许发起删除申请；等待删除审核时为 false。")
+    passport: Passports | None = Field(description="合同关联的完整通行证数组，保留原值、顺序和重复项；历史未绑定时为 null。")
 
 
 class ContractSummaryResponse(ContractSchemaModel):

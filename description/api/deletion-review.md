@@ -71,7 +71,7 @@ curl 'http://127.0.0.1:20000/contract/api/deletion-reviews/list' \
 {
   "submission_id": "12345678-1234-4234-8234-123456789abc",
   "document_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  "passport": "passport-1",
+  "passport": ["passport-1", "passport-2"],
   "file_name": "设备采购合同",
   "summary": "约定设备采购和交付验收。",
   "uploader": "Amy",
@@ -100,7 +100,7 @@ curl 'http://127.0.0.1:20000/contract/api/deletion-reviews/list' \
 
 | 字段或分区 | 契约 |
 | --- | --- |
-| 合同基本信息 | document_id、passport、名称、摘要、上传人、原入库时间来自申请时的快照；历史摘要或通行证可为 null。 |
+| 合同基本信息 | document_id、passport、名称、摘要、上传人、原入库时间来自申请时的快照；passport 为完整字符串数组；历史摘要或通行证可为 null。 |
 | requested_by / note | 删除提交人及其备注，与外部审核人和审核备注分别保存。 |
 | created_at / updated_at | 申请创建时间、送审回执/审核/删除执行的最近更新时间。 |
 | delivery | status 为 pending / publishing / published / uncertain / blocked；只有 published 表示已确认送审，不表示审核通过；uncertain 表示结果未确认，后台按相同 source_id 定时重试；合法409重复回执关联原消息并转为 published。 |
@@ -141,3 +141,5 @@ curl 'http://127.0.0.1:20000/contract/api/deletion-reviews/detail/12345678-1234-
 `app/router/deletion_review.py` 负责接口与认证身份注入，`DeletionReviewQueryService` 负责只读投影。SQLite 在参数化查询中执行人员 OR 筛选，列表与详情共用范围；后台删除状态见[删除审核存储](../architecture/data/deletion-review.md)和[批准删除执行器](../capability/application/deletion-review-executor.md)。
 
 启动时将查询服务注入 `app.state.deletion_review_query_service`，复用正式元数据、本地 PDF 存储与保留配置，不依赖 ES、Neo4j 或模型请求。`tests/test_deletion_review_query.py` 覆盖人员角色与去重、详情范围、认证、空列表、各阶段状态、双方备注、PDF 缺失与重新入库、查询错误隔离和读取不修改记录；`tests/test_deletion_review_cleanup.py` 验证详情倒计时、清理后404和已移除的清理策略接口，完整生命周期见[删除审核清理服务](../capability/application/deletion-review-cleanup.md)。
+
+审核状态由[删除反馈消费者](../capability/application/deletion-review-consumer.md)自动更新；批准结论不等于删除完成，应结合 `deletion.status` 和本地处理完成时间判断。

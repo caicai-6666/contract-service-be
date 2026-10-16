@@ -10,6 +10,7 @@ import time
 import math
 from uuid import UUID
 
+from app.infrastructure.passport_storage import encode_passports, decode_passports, migrate_passport_storage
 from app.schema.deletion_review import (
     DeletionReviewFeedback, DeletionReviewRecord, DeletionReviewSnapshot,
     ProcessedDeletionReviewReceipt,
@@ -54,8 +55,6 @@ CREATE TABLE IF NOT EXISTS deletion_reviews (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS deletion_reviews_active_document
-    ON deletion_reviews(document_id) WHERE review_status != 'rejected';
 CREATE INDEX IF NOT EXISTS deletion_reviews_status_created
     ON deletion_reviews(review_status, created_at, submission_id);
 CREATE INDEX IF NOT EXISTS deletion_reviews_document
@@ -122,9 +121,16 @@ class SQLiteDeletionReviewStore:
             for name, definition in additions.items():
                 if name not in columns:
                     connection.execute(f'ALTER TABLE deletion_reviews ADD COLUMN {name} {definition}')
+            # 成功删除的历史申请只用于审核留存，不再占用同哈希文件下一次入库的申请资格。
+            # 必须在补齐执行字段后重建，兼容尚无 deletion_status 的旧表，并原子替换旧索引。
+            connection.execute('DROP INDEX IF EXISTS deletion_reviews_active_document')
+            connection.execute("""CREATE UNIQUE INDEX deletion_reviews_active_document
+                ON deletion_reviews(document_id)
+                WHERE review_status != 'rejected' AND deletion_status != 'succeeded'""")
             # 已绑定的旧回执意味着已确认送审，升级后不能再次发送。
             if 'delivery_status' not in columns:
                 connection.execute("UPDATE deletion_reviews SET delivery_status='published' WHERE message_id IS NOT NULL")
+            migrate_passport_storage(connection, 'deletion_reviews')
             connection.execute('CREATE INDEX IF NOT EXISTS deletion_reviews_delivery ON deletion_reviews(delivery_status,next_publish_at,created_at)')
             connection.execute('CREATE INDEX IF NOT EXISTS deletion_reviews_execution ON deletion_reviews(review_status,deletion_status,next_deletion_at,created_at)')
             connection.execute('CREATE INDEX IF NOT EXISTS deletion_reviews_cleanup ON deletion_reviews(review_processed_at,review_status,deletion_status)')
@@ -138,7 +144,7 @@ class SQLiteDeletionReviewStore:
     def _record(row):
         if row is None:
             raise LookupError('删除待审申请不存在')
-        return DeletionReviewRecord.model_validate(dict(row))
+        return DeletionReviewRecord.model_validate(dict(row) | {'passport': decode_passports(row['passport'])})
 
     @staticmethod
     def _message_id(value):
@@ -190,12 +196,13 @@ class SQLiteDeletionReviewStore:
                 return saved
             fields = (*DeletionReviewSnapshot.model_fields, 'submission_id', 'note', 'created_at', 'updated_at')
             data = record.model_dump(mode='json')
+            data['passport'] = encode_passports(record.passport)
             try:
                 connection.execute(
                     f"INSERT INTO deletion_reviews ({','.join(fields)}) VALUES ({','.join('?' for _ in fields)})",
                     tuple(data[key] for key in fields))
             except sqlite3.IntegrityError as exc:
-                raise DeletionReviewConflictError('该合同已存在未拒绝的删除申请') from exc
+                raise DeletionReviewConflictError('该合同已存在尚未结束的删除申请') from exc
             return self._record(connection.execute('SELECT * FROM deletion_reviews WHERE submission_id=?', (sid,)).fetchone())
 
     def get(self, submission_id: UUID):

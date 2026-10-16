@@ -149,7 +149,7 @@ MLLM 默认使用 `262144` token 上下文。视觉预算从上下文中扣除 `
 
 `ingestion_review_cleanup_service` 在审核消费者启动后开始运行，默认按处理完成时间保留 7 天、每小时清理一轮。应用退出时先停止清理并等待当前删除事务，再关闭消费者及存储依赖。配置与重投恢复见[已完成待审申请定时清理](ingestion-review-cleanup.md)。
 
-`deletion_review_publisher` 在正式合同及中间件会话服务就绪后启动，定时将待发送删除申请与原 PDF 提交中间件，201成功或409重复回执保存后进入待审核，不确定结果按原 source_id 定时重试；启动时恢复旧挂起及中断记录。退出时在存储和会话关闭前停止发布；配置及不确定发送边界见[删除审核申请后台发布](deletion-review-publisher.md)。
+`deletion_review_publisher` 在正式合同及中间件会话服务就绪后启动，定时将待发送删除申请的业务字段提交中间件，不读取或上传 PDF，201成功或409重复回执保存后进入待审核，不确定结果按原 source_id 定时重试；启动时恢复旧挂起及中断记录。退出时在存储和会话关闭前停止发布；配置及不确定发送边界见[删除审核申请后台发布](deletion-review-publisher.md)。
 
 正式入库服务就绪后还启动 `deletion_review_executor`，定时执行删除审核明确批准的正式合同删除；失败记录并延迟重试。应用退出时先停止该执行器并等待当前删除结束，再释放正式存储依赖。配置、清理范围和恢复边界见[已批准删除申请后台执行](deletion-review-executor.md)。
 
@@ -158,3 +158,5 @@ MLLM 默认使用 `262144` token 上下文。视觉预算从上下文中扣除 `
 `deletion_review_cleanup_service` 在正式删除执行器启动后启动，按批准删除完成或拒绝标志协调完成的本地时间计龄，默认保留7天、每小时清理一轮。关闭时先停止清理并等待当前事务，再停止执行器及释放正式存储依赖。清理只删除审核行并保存最小幂等凭据，不删除引用的正式PDF，配置见[删除审核定时清理](deletion-review-cleanup.md)。
 
 `deletion_review_query_service` 同时装配为只读服务，复用删除审核库、正式元数据和文件存储；路由以登录用户名称限定删除提交人或合同上传人，返回 ID 列表与分区详情，见[删除审核 API](../../api/deletion-review.md)。
+
+删除执行器就绪后启动 `DeletionReviewConsumer`，保存为 `app.state.deletion_review_consumer`，从 `/middleware-service/api/deletion-results/pull` 拉取反馈。批准后复用执行器完成资源删除、拒绝后恢复标志，确认本地处理完成才 ack；关闭时优先停止消费者，再关闭执行器和依赖。配置与恢复规则见[删除审核反馈消费](deletion-review-consumer.md)。

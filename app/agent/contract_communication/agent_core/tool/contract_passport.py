@@ -22,14 +22,14 @@ logger = logging.getLogger(__name__)
 class GetContractByPassportArguments(BaseModel):
     """当你已获得通行证，需要查看它关联的合同列表时，使用这个工具。一张通行证可能关联多份合同；按完整值精确匹配，返回名称、完整合同 ID、摘要、上传人及日期，按入库时间从新到旧展示。首次省略页码读取第1页，后续省略读取下一页；显式传1刷新列表，指定其他页可跳页。结果驻留当前会话，被驱逐后会重新查询。通行证与合同 ID 不同，不能互相替代。可用返回的合同 ID 继续查看原文、注意事项和关联。"""
     model_config = ConfigDict(extra='forbid', frozen=True)
-    passport: str = Field(min_length=1, description='用户或可信工具结果提供的完整通行证；保留大小写，不得缩写、猜测补全或用合同 ID、名称、送审消息 ID 替代。不能留空或带首尾空白。翻页仍传同一个通行证。')
+    passport: str = Field(min_length=1, description='用户或可信工具结果提供的完整通行证；保留大小写，不得缩写、猜测补全或用合同 ID、名称、送审消息 ID 替代。不能仅为空白；按提供的原值查询，不裁剪空白。翻页仍传同一个通行证。')
     page: int | None = Field(default=None, strict=True, description='从1开始的列表页码；省略或null时首次读取第1页，后续读取下一页。显式传1刷新列表，指定其他页跳页。末页不循环，非法页不改变游标；缓存被驱逐后重新查询，省略页码从第1页开始。这里是合同列表页，不是PDF页码。')
 
     @field_validator('passport')
     @classmethod
     def validate_passport(cls, value):
-        if value != value.strip():
-            raise ValueError('请原样提供完整通行证，不要带首尾空白')
+        if not value.strip():
+            raise ValueError('请提供非空白的完整通行证，并保留原值')
         return value
 
 
@@ -45,7 +45,7 @@ def render_contract_passport(*, passport, page, total_pages, total, rows):
              f'第 {page} / {total_pages} 页 · 共 {total} 份合同', '按入库时间从新到旧排列']
     for index, document_id, metadata in rows:
         lines += ['', '---', '', f'## {index}. 合同']
-        if metadata is None or metadata.status is not ContractMetadataStatus.READY or metadata.passport != passport:
+        if metadata is None or metadata.status is not ContractMetadataStatus.READY or passport not in (metadata.passport or ()):
             lines += [f'合同 ID：{document_id}', '该合同已不可用或不再属于本通行证，请指定第1页刷新列表。']
         else:
             lines += [render_contract_metadata(metadata).replace('# 合同基本信息\n', '', 1).replace('## 合同摘要', '### 合同摘要')]

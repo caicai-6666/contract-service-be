@@ -47,6 +47,9 @@ class DeletionReviewService:
             and record.passport == metadata.passport)
 
     def _sync_flag(self, record):
+        # 已实际删除的旧实例不再参与标志协调，保留的审核行不能锁定后来重新入库的合同。
+        if record.deletion_status == 'succeeded':
+            return
         latest = self._store.get_latest_for_document(record.document_id)
         if latest is None:
             return
@@ -94,7 +97,8 @@ class DeletionReviewService:
             if metadata.status is not ContractMetadataStatus.READY:
                 raise ContractMetadataStateError('合同尚未就绪或正在删除，不能申请删除')
             latest = self._store.get_latest_for_document(document_id)
-            if latest is not None and latest.review_status != 'rejected':
+            if (latest is not None and latest.review_status != 'rejected'
+                    and latest.deletion_status != 'succeeded'):
                 # 只恢复同一提交人且备注未变的请求，防止重试替换已冻结的申请。
                 if (latest.review_status == 'pending_send' and latest.requested_by == requested_by
                         and latest.note == note

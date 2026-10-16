@@ -48,6 +48,7 @@ from app.service.deletion_review import DeletionReviewService
 from app.service.deletion_review_executor import DeletionReviewExecutor
 from app.service.deletion_review_cleanup import DeletionReviewCleanupService
 from app.service.deletion_review_publisher import DeletionReviewPublisher
+from app.service.deletion_review_consumer import DeletionReviewConsumer
 from app.service.auth import AuthService, LoginCodeCache
 from app.service.communication_workflow import CommunicationWorkflowService
 from app.service.communication_file_tools import CommunicationFileTools
@@ -174,6 +175,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     deletion_review_executor = None
     deletion_review_publisher = None
     deletion_review_cleanup = None
+    deletion_review_consumer = None
     ingestion_review_cleanup = IngestionReviewCleanupService(ingestion_review_store, settings)
     application.state.ingestion_review_cleanup_service = ingestion_review_cleanup
     ingestion_review_publisher = IngestionReviewPublisher(ingestion_review_store, middleware_session, settings)
@@ -303,13 +305,17 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         await ingestion_review_consumer.start()
         await ingestion_review_cleanup.start()
         deletion_review_publisher = DeletionReviewPublisher(deletion_review_store, middleware_session,
-            contract_metadata_store, contract_file_store, settings, lock_documents=contract_ingestion_service.lock_documents)
+            contract_metadata_store, settings, lock_documents=contract_ingestion_service.lock_documents)
         application.state.deletion_review_publisher = deletion_review_publisher
         await deletion_review_publisher.start()
         deletion_review_executor = DeletionReviewExecutor(deletion_review_store, contract_ingestion_service, settings,
             review_service=deletion_review_service)
         application.state.deletion_review_executor = deletion_review_executor
         await deletion_review_executor.start()
+        deletion_review_consumer = DeletionReviewConsumer(deletion_review_service, middleware_session,
+            deletion_review_executor, settings)
+        application.state.deletion_review_consumer = deletion_review_consumer
+        await deletion_review_consumer.start()
         deletion_review_cleanup = DeletionReviewCleanupService(deletion_review_store, deletion_review_service, settings)
         application.state.deletion_review_cleanup_service = deletion_review_cleanup
         await deletion_review_cleanup.start()
@@ -317,6 +323,8 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     finally:
         try:
             # 删除扫描必须先结束当前文档操作，再关闭正式库的外部连接。
+            if deletion_review_consumer is not None:
+                await deletion_review_consumer.close()
             if deletion_review_publisher is not None:
                 await deletion_review_publisher.close()
             if deletion_review_cleanup is not None:

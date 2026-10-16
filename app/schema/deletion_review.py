@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
+from app.core.passport import Passports
 
 NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 MessageId = Annotated[str, StringConstraints(min_length=1, max_length=128)]
@@ -28,20 +29,13 @@ class DeletionReviewSnapshot(BaseModel):
     """申请时冻结的合同身份；仅引用正式 PDF，不复制合同正文和向量。"""
     model_config = ConfigDict(extra='forbid', frozen=True)
     document_id: str = Field(pattern=r'^[0-9a-f]{64}$')
-    passport: str | None = None
+    passport: Passports | None = None
     file_name: NonEmptyText
     summary: NonEmptyText | None = None
     uploader: NonEmptyText
     requested_by: NonEmptyText = Field(description='本平台发起删除申请的登录用户。')
     file_uri: str = Field(description='正式合同 PDF 的根相对地址，不是删除临时区文件地址。')
     contract_ingested_at: datetime
-
-    @field_validator('passport')
-    @classmethod
-    def valid_passport(cls, value):
-        if value is not None and (not value or value != value.strip()):
-            raise ValueError('通行证必须为非空且无首尾空白的标识，历史缺失值使用 null')
-        return value
 
     @field_validator('contract_ingested_at')
     @classmethod
@@ -58,7 +52,7 @@ class DeletionReviewSnapshot(BaseModel):
 
 
 class DeletionReviewFeedback(BaseModel):
-    """内部审核结果存储契约；由后续中间件适配器明确转换，不猜测结果。"""
+    """内部审核结果存储契约；由中间件适配器明确转换，不猜测结果。"""
     model_config = ConfigDict(extra='forbid', frozen=True)
     review_message_id: MessageId
     approved: bool = Field(strict=True)
@@ -164,7 +158,7 @@ class DeletionReviewDetailResponse(BaseModel):
     """删除申请的稳定只读投影；审核结论与实际删除结果分开呈现。"""
     submission_id: UUID
     document_id: str
-    passport: str | None
+    passport: Passports | None = Field(description='冻结的完整通行证数组，历史未绑定时为 null。')
     file_name: str
     summary: str | None
     uploader: str

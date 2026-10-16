@@ -6,6 +6,8 @@ import sqlite3
 import math
 import struct
 from contextlib import closing
+from app.core.passport import normalize_passports
+from app.infrastructure.passport_storage import encode_passports, decode_passports, migrate_passport_storage
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -63,8 +65,12 @@ class ContractMetadata:
     ingestion_id: str
     category_assignments: tuple[ContractCategoryAssignment, ...] = ()
     summary: str | None = None
-    passport: str | None = None
+    passport: tuple[str, ...] | None = None
     can_delete: bool = True
+
+    def __post_init__(self):
+        if self.passport is not None:
+            object.__setattr__(self, 'passport', normalize_passports(self.passport))
 
     @property
     def category_codes(self) -> tuple[str, ...]:
@@ -151,6 +157,7 @@ class SQLiteContractMetadataStore:
             if index is not None and index['unique']:
                 connection.execute('DROP INDEX contracts_passport')
             connection.execute('CREATE INDEX IF NOT EXISTS contracts_passport ON contracts(passport) WHERE passport IS NOT NULL')
+            migrate_passport_storage(connection, 'contracts')
             for prefix in ('summary',):
                 for suffix, kind in (('', 'BLOB'), ('_model', 'TEXT'), ('_version', 'TEXT'), ('_dimensions', 'INTEGER')):
                     name = prefix + '_embedding' + suffix
@@ -323,9 +330,9 @@ class SQLiteContractMetadataStore:
             current = connection.execute("SELECT status, passport FROM contracts WHERE document_id=?", (metadata.document_id,)).fetchone()
             if current is not None and current["status"] == "deleting":
                 raise ContractMetadataStateError("合同正在删除，请先完成删除再重新入库")
-            if metadata.passport is not None and (not metadata.passport or metadata.passport != metadata.passport.strip()):
-                raise ValueError("正式合同 passport 必须为非空且无首尾空白的标识")
-            if current is not None and current['passport'] is not None and current['passport'] != metadata.passport:
+            if metadata.passport is not None and not metadata.passport:
+                raise ValueError("正式合同 passport 至少需要一个通行证")
+            if current is not None and current['passport'] is not None and decode_passports(current['passport']) != metadata.passport:
                 raise ContractMetadataStateError("已有合同 passport 不允许被覆盖或清空")
             # 重放入库只更新内容，不覆盖已有删除申请标志。
             connection.execute(
@@ -365,7 +372,7 @@ class SQLiteContractMetadataStore:
                     metadata.status.value,
                     metadata.ingestion_id,
                     metadata.summary,
-                    metadata.passport,
+                    encode_passports(metadata.passport),
                     int(metadata.can_delete),
                 ),
             )
@@ -672,11 +679,12 @@ class SQLiteContractMetadataStore:
 
     def list_ids_by_passport(self, passport: str) -> tuple[str, ...]:
         """精确查询 ready 合同身份；按入库时间倒序、ID 升序建立稳定分页快照。"""
-        if not isinstance(passport, str) or not passport or passport != passport.strip():
-            raise ValueError("passport 必须为非空且无首尾空白的完整标识")
+        if not isinstance(passport, str) or not passport.strip():
+            raise ValueError("passport 必须为非空白的完整标识")
         with closing(self._connect()) as connection:
             rows = connection.execute(
-                "SELECT document_id FROM contracts WHERE passport = ? AND status = ? "
+                "SELECT document_id FROM contracts c WHERE EXISTS "
+                "(SELECT 1 FROM json_each(c.passport) p WHERE p.value = ?) AND status = ? "
                 "ORDER BY ingested_at DESC, document_id ASC",
                 (passport, ContractMetadataStatus.READY.value),
             ).fetchall()
@@ -753,7 +761,7 @@ class SQLiteContractMetadataStore:
             document_id=row["document_id"],
             file_name=row["file_name"],
             summary=row["summary"],
-            passport=row["passport"],
+            passport=decode_passports(row["passport"]),
             can_delete=bool(row["can_delete"]),
             category=row["category"],
             contract_time=row["contract_time"],
