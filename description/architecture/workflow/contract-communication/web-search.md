@@ -2,7 +2,7 @@
 
 > **状态：** `search_web`、`view_web_search_results`、会话 LRU 结果池及主循环接入已实现。首次打开网页的 `web_page` 子图已实现 HTTP 拉取、Trafilatura 正文提取及模型精炼；`open_web_page`、会话正文缓存、分页和主循环接入均已实现。
 
-`search_web` 通过工具文件中的 WebSearchService 直接异步调用博查 Web Search，不使用搜索子图或模型意图路由。企业 Agent Search 已按官方下架信息移除。
+`search_web` 通过工具文件中的 WebSearchService 直接异步调用 DeepSeek Search API，不使用模型生成或意图路由。专家工具使用 Responses API，两条路径用途不同，共用 DeepSeek 连接身份。
 
 本模块让主助手先搜索候选网页，再自行选择来源读取正文。搜索摘要只能帮助选择来源，不能等同于已经读取网页。历史实验见[网页搜索与提取归档报告](../../../../experiment/web-search-extraction/REPORT.md)，工具接入遵循[主助手工具执行](tool-execution.md)，展示与资源生命周期遵循[页面内容折叠与资源建模](page-content-management.md)。
 
@@ -12,13 +12,13 @@
 
 | 工具 | 参数 | 职责与成功返回 |
 | --- | --- | --- |
-| `search_web` | `query` | 直接调用博查搜索服务，建立网页结果集，有结果时仅返回 `result_id`、`count`；无结果给出统一提示，不自动展示第一页。 |
+| `search_web` | `query` | 直接调用 DeepSeek Search 服务，建立网页结果集，有结果时仅返回 `result_id`、`count`；无结果给出统一提示，不自动展示第一页。 |
 | `view_web_search_results` | `result_id`、可选 `page` | 查看搜索结果集指定页；省略页码时查看下一页。 |
 | `open_web_page` | `source_id`、`focus`（首次必填）、可选 `page` | 首次拉取、提取并缓存网页正文；再次调用读取缓存并翻页。 |
 
 只暴露这三个工具。网页正文的首次打开和后续翻页由同一个 `open_web_page` 承担。
 
-`query` 使用完整简洁的自然语言需求，组合检索对象、关键条件以及必要的时间、地域，避免寒暄、冗长背景和输出格式指令。例如“上海 企业采购合同 电子签章 效力”。`result_id` 必须使用工具返回的完整结果集标识。网页候选由程序分配稳定的 `source_id`，展示标题、URL 和搜索摘要；`source_id` 不使用随翻页变化的行号，打开时必须原样传入。页码从 1 开始。
+`query` 为1至128字符的简短检索词，组合检索对象、关键条件以及必要的时间、地域，避免寒暄、冗长背景和输出格式指令。复杂需求拆为多次搜索，不能静默截断。支持 site:、引号、after:、before: 等搜索语法。例如“上海 企业采购合同 电子签章 效力”。`result_id` 必须使用工具返回的完整结果集标识。网页候选由程序分配稳定的 `source_id`，展示标题、URL 和搜索摘要；`source_id` 不使用随翻页变化的行号，打开时必须原样传入。页码从 1 开始。
 
 搜索成功但没有结果时，返回“未找到符合条件的网页”等提示，不生成结果集 ID。服务异常、网络失败或超时应反馈对应错误，不伪装成零结果。
 
@@ -95,7 +95,7 @@ HTTP 成功、提取文本非空，都不代表获取了有效正文。页面带
 
 ## 依赖与后续验证
 
-已安装依赖见[后端应用依赖](../../../capability/application/backend-application.md)。博查 HTTP 请求异步执行，共享搜索并发上限；取消会传递至 HTTP 请求并释放额度。Trafilatura 提取继续在线程中执行。
+已安装依赖见[后端应用依赖](../../../capability/application/backend-application.md)。DeepSeek Search HTTP 请求异步执行，共享搜索并发上限；取消会传递至 HTTP 请求并释放额度。Trafilatura 提取继续在线程中执行。
 
 验证范围及后续验收边界：
 
@@ -122,16 +122,13 @@ HTTP 成功、提取文本非空，都不代表获取了有效正文。页面带
 | `COMMUNICATION_WEB_SEARCH_PAGE_SIZE` | 5 | 每页候选条数 |
 | `COMMUNICATION_WEB_SEARCH_MAX_CONCURRENT_REQUESTS` | 2 | 应用装配的搜索服务并发上限 |
 
-以上配置均为正整数。搜索不创建持久化记录，进程重启后结果集失效。搜索完成后重新检查会话授权，迟到结果不能复活已释放的会话池。博查条数与超时使用 BOCHA_WEB_SEARCH_COUNT、BOCHA_TIMEOUT_SECONDS。
+以上配置均为正整数。搜索不创建持久化记录，进程重启后结果集失效。搜索完成后重新检查会话授权，迟到结果不能复活已释放的会话池。DeepSeek 搜索条数与超时使用 DEEPSEEK_SEARCH_COUNT、DEEPSEEK_SEARCH_TIMEOUT_SECONDS。
 
 离线验证：`python -m unittest discover -s tests -p test_web_search.py -q`。
 
 
 
-博查候选服务的独立验证位于 [博查搜索实验](../../../../experiment/bocha-search/README.md)。`.env` / `.env.example` 增加 `BOCHA_API_KEY`、`BOCHA_BASE_URL`、`BOCHA_TIMEOUT_SECONDS`、`BOCHA_TRUST_ENV`、`BOCHA_EXPERIMENT_MAX_RESULTS`；其中 BOCHA_EXPERIMENT_MAX_RESULTS 仅实验使用，其余现已由生产搜索复用；复用 httpx，无新增 SDK。默认启用搜索摘要、每次 5 条，不下载目标网页；保留原始请求/响应、耗时、片段和摘要，并区分 HTTP 错误、业务错误与合法零结果。网站名称仅作为查询意图，不能当成硬过滤。2026-09-24 首轮 9 个真实请求均成功，但企业人员查询存在主体错配、负例返回其他企业，该历史实验本身不代表生产质量验收；具体证据与边界见实验 output 各运行目录的 analysis.md。
-
-
-AI Search 实验入口为 `experiment/bocha-search/ai_run.py`，复用博查实验密钥，按现行文档请求 `https://api.bocha.cn/v1/ai-search`。2026-09-24 的 8 次非流式请求均成功返回来源，天气触发 `weather_china_v2`，但两次 `answer=true` 的答案字符串均为空。实际网页参考源可在一个消息中包含 `value` 列表，非文本 `content` 需要二次 JSON 解码；卡片可能以 Markdown 摘要承载字段值，不假设字段平铺。结果、来源质量及同域名 Web Search 对照分别记录于实验 output，尚未接入生产。
+旧博查验证保留为[历史实验](../../../../experiment/bocha-search/README.md)，不作为当前搜索运行入口。生产已移除 BochaSettings、Settings.bocha 和 BOCHA_* 配置，不回退旧供应商。历史产物不修改，不能作为 DeepSeek 的召回质量结论。
 
 ---
 
@@ -230,22 +227,24 @@ Trafilatura 在线程中输出 Markdown，保留链接和表格、排除评论�
 
 ---
 
-## 博查直接调用与配置
+## DeepSeek Search 直接调用与配置
 
-搜索所需的 SearchEntry、WebSearchResult、请求、解析和失败映射统一定义在 `tool/web_search.py`。WebSearchService.search 获取并发额度后直接请求并返回 WebSearchResult；已删除原 subgraph/web_search 包、StateGraph 调度、状态字典和尾节点。网页正文精炼的 web_page 子图不受影响。
+依据 [DeepSeek Search API](https://api-docs.deepseek.com/api/search/) 和[搜索指南](https://api-docs.deepseek.com/guides/search/)，请求 `POST DEEPSEEK_BASE_URL/v1/tools/search`，Bearer 使用 DEEPSEEK_API_KEY。BASE_URL 已以 /v1 结尾时不重复拼接版本号。
 
-请求：`POST BOCHA_BASE_URL/v1/web-search`，固定 summary=true、freshness=noLimit，query 直接取已校验的工具输入，count 使用配置。
+请求体包含 query、count 和固定 need_content=false。搜索只返回网页候选及摘要，不发起专家回答生成；正文仍由 open_web_page 按原有流程读取。query 限制1至128字符，count 为1至50，ori_question 和 localization 不提供，因为工具没有独立的原始问题或地域 IP 输入。
 
 | 环境变量 | 默认值 | 用途 |
 | --- | --- | --- |
-| BOCHA_API_KEY | 空 | Bearer 密钥；缺失时不发请求 |
-| BOCHA_BASE_URL | https://api.bochaai.com | HTTPS 服务根地址 |
-| BOCHA_TIMEOUT_SECONDS | 45 | 整个请求截止时间，(0,300] 秒 |
-| BOCHA_TRUST_ENV | false | 是否使用环境代理 |
-| BOCHA_WEB_SEARCH_COUNT | 10 | 搜索条数，1～50 |
+| DEEPSEEK_API_KEY | 空 | 与专家 Responses 共用的 Bearer 密钥，缺失时不发请求。 |
+| DEEPSEEK_BASE_URL | https://api.deepseek.com | DeepSeek 服务地址。 |
+| DEEPSEEK_SEARCH_TIMEOUT_SECONDS | 45 | 搜索请求总截止时间，(0,300] 秒。 |
+| DEEPSEEK_SEARCH_TRUST_ENV | false | 搜索是否使用环境代理。 |
+| DEEPSEEK_SEARCH_COUNT | 10 | 每次候选条数，1至50。 |
 
-使用 Settings.bocha 和 httpx，不新增依赖。兼容直接搜索对象与 code/data 信封，解析 webPages.value；摘要优先使用非空 summary，再回退 snippet。标题、HTTP(S) URL 或字段类型错误时返回内部格式错误，明确空数组则为成功零条。不自动重试、不跟随重定向，不改排。真实 HTTP 失败和业务状态失败统一映射到内部错误码，工具层对模型返回简洁失败提示；细节留在私有审计。
+使用 Settings.deepseek 与 httpx，不新增依赖。响应读取 results 数组，title/url 分别作为标题和来源；优先使用非空 summary，回退 snippet，忽略正文 content。保留供应商排序，rank 依次从1编号；供应商 rerank_score 不当作跨查询可比较的置信度。合法空数组为成功零结果，不生成结果集 ID；缺少数组、字段类型异常、非法 URL、HTTP 错误或网络异常均返回失败，不能冒充零召回。
 
-`test_web_search_service.py` 覆盖请求与顺序、摘要回退、空结果、缺少密钥、鉴权/权限/限流/供应商错误、非法响应、网络异常及取消。`test_web_search.py` 覆盖注册调用、缓存、分页、会话释放及取消后的额度释放。历史子图实验保留归档，不能作为当前结构的运行入口。
+保留 result_id/count、独立会话 LRU、翻页、foldable 页面引用、网页打开和 online-search 动态状态契约。不自动重试，不跟随重定向；完整供应商诊断留在私有审计，主助手仍收到统一错误反馈。
 
-扩展主循环回归：连同 test_communication_file_tools 共 47 项通过，其中搜索→分页→正文注入与任务落盘折叠使用当前服务契约模拟；不发起真实搜索请求。
+`test_web_search_service.py` 覆盖请求路径/参数/鉴权、排序及摘要回退、合法零结果、未配置密钥、供应商错误、非法响应、取消及128字符边界；`test_web_search.py` 与 `test_communication_file_tools.py` 覆盖注册、缓存、分页和主循环联动。专家 Responses 的路径和多轮原生输出回传另由 test_deepseek_client、test_external_expert_pool 验证。
+
+真实接口单次验证见[DeepSeek Search 实验](../../../../experiment/deepseek-search/README.md)：HTTP 200、3条候选成功解析，约681毫秒；只说明此次接口与适配器可用，不等于广泛召回质量验收。

@@ -1,23 +1,23 @@
 # 合同入库审核 API
 
-路由前缀为 `/contract/api/ingestion-reviews`，原 `/contract/api/pending-reviews` 前缀已移除。用于查看仍保留在待审区的申请、审核结果和临时 PDF。它与正式合同列表、内存提取任务列表分别管理；审核通过、审核拒绝的记录在清理之前都会出现在这里。
+路由前缀为 `/knowledge-accumulation/contract/api/ingestion-reviews`，原 `/knowledge-accumulation/contract/api/pending-reviews` 前缀已移除。用于查看仍保留在待审区的申请、审核结果和临时 PDF。它与正式合同列表、内存提取任务列表分别管理；审核通过、审核拒绝的记录在清理之前都会出现在这里。
 
 ## 接口目录
 
 | 接口 | 方法 | 完整路径 |
 | --- | --- | --- |
-| [获取待入库申请 ID 列表](#获取待入库申请-id-列表) | GET | `/contract/api/ingestion-reviews/list` |
-| [获取待入库申请详情](#获取待入库申请详情) | GET | `/contract/api/ingestion-reviews/detail/{submission_id}` |
+| [获取待入库申请 ID 列表](#获取待入库申请-id-列表) | GET | `/knowledge-accumulation/contract/api/ingestion-reviews/list` |
+| [获取待入库申请详情](#获取待入库申请详情) | GET | `/knowledge-accumulation/contract/api/ingestion-reviews/detail/{submission_id}` |
 
-PDF 预览已迁移至[资源文件 API](resource.md#读取待审-pdf)：`GET /contract/api/resource/pending-review-pdf/{submission_id}`，原待审路由下的 PDF 接口已移除。
+PDF 预览已迁移至[资源文件 API](resource.md#读取待审-pdf)：`GET /knowledge-accumulation/contract/api/resource/pending-review-pdf/{submission_id}`，原待审路由下的 PDF 接口已移除。
 
-所有接口使用 `Authorization: Bearer <免登码>`，未登录或令牌过期返回 401。系统用户权限统一，已登录用户可以查看全部仍保留的申请；不按提交人过滤。成功响应带 `Cache-Control: no-store`，文件路径不接受客户端自由指定。
+所有接口使用 `Authorization: Bearer <用户访问令牌>`，未登录或令牌过期返回 401。系统用户权限统一，已登录用户可以查看全部仍保留的申请；不按提交人过滤。成功响应带 `Cache-Control: no-store`，文件路径不接受客户端自由指定。
 
 ---
 
 ## 获取待入库申请 ID 列表
 
-`GET /contract/api/ingestion-reviews/list`，无参数、无分页。只返回所有尚未清理的申请 ID；不创建临时查询结果集，`submission_id` 就是用于查询详情的 ID。
+`GET /knowledge-accumulation/contract/api/ingestion-reviews/list`，无参数、无分页。只返回所有尚未清理的申请 ID；不创建临时查询结果集，`submission_id` 就是用于查询详情的 ID。
 
 ```json
 {
@@ -31,7 +31,7 @@ PDF 预览已迁移至[资源文件 API](resource.md#读取待审-pdf)：`GET /c
 
 ## 获取待入库申请详情
 
-`GET /contract/api/ingestion-reviews/detail/{submission_id}`，路径参数为列表返回的申请 UUID，不是合同 ID、通行证或中间件消息 ID。
+`GET /knowledge-accumulation/contract/api/ingestion-reviews/detail/{submission_id}`，路径参数为列表返回的申请 UUID，不是合同 ID、通行证或中间件消息 ID。
 
 详情采用稳定分区，各阶段尚未产生的值返回 null，不省略分区。下面为刚提交、尚未送审的示例：
 
@@ -41,6 +41,7 @@ PDF 预览已迁移至[资源文件 API](resource.md#读取待审-pdf)：`GET /c
   "run_id": "提取任务标识",
   "document_id": "完整合同内容哈希",
   "file_name": "设备采购合同",
+  "file_level": null,
   "summary": "设备采购与交付约定。",
   "page_count": 3,
   "submitted_by": "Amy",
@@ -50,13 +51,13 @@ PDF 预览已迁移至[资源文件 API](resource.md#读取待审-pdf)：`GET /c
   "delivery": {"status": "pending", "message_id": null},
   "review": {
     "status": "pending_send", "note": null, "reviewer": null,
-    "reviewed_at": null, "passport": null
+    "reviewed_at": null, "passport": null, "file_level": null
   },
   "ingestion": {"status": "pending", "ingested_at": null},
   "cleanup": {"review_processed_at": null, "eligible_at": null},
   "pdf": {
     "relative_path": "12345678-1234-4234-8234-123456789abc.pdf",
-    "url": "/contract/api/resource/pending-review-pdf/12345678-1234-4234-8234-123456789abc"
+    "url": "/knowledge-accumulation/contract/api/resource/pending-review-pdf/12345678-1234-4234-8234-123456789abc"
   },
   "server_time": "2026-10-09T08:00:01Z"
 }
@@ -65,10 +66,12 @@ PDF 预览已迁移至[资源文件 API](resource.md#读取待审-pdf)：`GET /c
 | 分区或字段 | 契约 |
 | --- | --- |
 | 顶层基本信息 | 申请/任务/合同 ID、冻结的名称/摘要/页数、提交人和入库员 note；note 可以为空字符串 |
+| file_level | integer 或 null；本次审核给出的文件等级，与 review.file_level 同源且一致。尚无反馈或历史反馈缺失时为 null，不从当前正式合同反推历史等级 |
 | created_at / updated_at | 保存待审申请时间、待审记录最近更新时间，不是正式入库时间 |
 | delivery | status 为 pending / publishing / published / uncertain / blocked；message_id 为原送审消息 ID |
 | review | status 为 pending_send / pending_review / approved / rejected；note 为审核平台备注，reviewer 和 reviewed_at 来自审核反馈 |
 | review.passport | 字符串数组：批准时至少一项，保存全部通行证；拒绝为 []；尚无反馈为 null。单合同可关联多项，同一项也可关联多份合同 |
+| review.file_level | 与顶层 file_level 相同，保留原有审核分区字段供兼容；批准和拒绝均保存，未反馈或历史未知时为 null，不补默认等级 |
 | ingestion | status 为 pending / ingesting / succeeded / failed；ingested_at 从正式合同元数据读取，未成功或正式记录已不存在时为 null |
 | cleanup | review_processed_at 为本地审核结果处理完成时间；eligible_at 为允许清理时刻，不保证该秒完成删除 |
 | pdf | 始终返回相对待审 files 目录的文件名，以及需认证访问的资源接口 URL；不暴露服务器绝对路径 |

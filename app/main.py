@@ -5,6 +5,7 @@ from fastapi import FastAPI
 
 from app import __version__
 from app.bootstrap import lifespan
+from app.core.routing import APPLICATION_PREFIX, API_PREFIX
 from app.router import router
 
 
@@ -14,8 +15,13 @@ def create_app() -> FastAPI:
         title="Contract Processor API",
         version=__version__,
         lifespan=lifespan,
+        # 文档和业务接口共用应用前缀，避免多平台部署时根路径冲突。
+        docs_url=f'{APPLICATION_PREFIX}/docs',
+        redoc_url=f'{APPLICATION_PREFIX}/redoc',
+        openapi_url=f'{APPLICATION_PREFIX}/openapi.json',
+        swagger_ui_oauth2_redirect_url=f'{APPLICATION_PREFIX}/docs/oauth2-redirect',
     )
-    application.include_router(router, prefix="/contract/api")
+    application.include_router(router, prefix=API_PREFIX)
     return application
 
 

@@ -185,29 +185,8 @@ class MLLMSettings(BaseModel):
         )
 
 
-class BochaSettings(BaseModel):
-    """博查普搜连接参数；密钥不出现在配置日志中。"""
-    model_config = ConfigDict(frozen=True)
-    api_key: SecretStr = SecretStr('')
-    base_url: str = 'https://api.bochaai.com'
-    timeout_seconds: float = Field(default=45, gt=0, le=300, allow_inf_nan=False)
-    trust_env: bool = False
-    web_search_count: int = Field(default=10, ge=1, le=50)
-
-
-    @field_validator('base_url')
-    @classmethod
-    def validate_base_url(cls, value: str) -> str:
-        from urllib.parse import urlsplit
-        parts = urlsplit(value)
-        if (parts.scheme != 'https' or not parts.hostname or parts.username or parts.password
-                or parts.query or parts.fragment or parts.path not in ('', '/')):
-            raise ValueError('博查地址必须为不含凭据、路径和查询参数的 HTTPS 服务地址')
-        return value.rstrip('/')
-
-
 class DeepSeekSettings(BaseModel):
-    """外部专家 Responses 连接及生成配置；由宿主显式创建客户端。"""
+    """专家 Responses 和独立网页搜索共用身份，分别配置生成及搜索预算。"""
 
     model_config = ConfigDict(frozen=True)
 
@@ -218,6 +197,9 @@ class DeepSeekSettings(BaseModel):
     timeout_seconds: int = Field(default=300, gt=0)
     max_concurrent_requests: int = Field(default=3, gt=0)
     max_completion_tokens: int = Field(default=8192, gt=0)
+    search_timeout_seconds: float = Field(default=45, gt=0, le=300, allow_inf_nan=False)
+    search_count: int = Field(default=10, ge=1, le=50)
+    search_trust_env: bool = False
 
 
 class EmbeddingSettings(BaseModel):
@@ -320,7 +302,6 @@ class Settings(BaseModel):
     )
     field_definition_dir: Path = Path("data/definition/field")
     retrieval_view_guide_dir: Path = Path("data/definition/retrieval-view")
-    reviewer_user_file: Path = Path("data/user/users.yaml")
     ingestion_review_retention_seconds: float = Field(default=604800, gt=0, allow_inf_nan=False)
     ingestion_review_cleanup_interval_seconds: float = Field(default=3600, gt=0, allow_inf_nan=False)
     ingestion_review_cleanup_batch_size: int = Field(default=100, gt=0)
@@ -334,6 +315,8 @@ class Settings(BaseModel):
     deletion_review_directory: Path = Path("data/deletion-review")
     deletion_review_result_poll_interval_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
     deletion_review_result_batch_size: int = Field(default=10, gt=0)
+    file_permission_adjustment_poll_interval_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
+    file_permission_adjustment_batch_size: int = Field(default=10, gt=0)
     deletion_review_publish_scan_interval_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
     deletion_review_publish_retry_seconds: float = Field(default=60, gt=0, allow_inf_nan=False)
     deletion_review_publish_timeout_seconds: float = Field(default=120, gt=0, allow_inf_nan=False)
@@ -347,7 +330,6 @@ class Settings(BaseModel):
     contract_metadata_database_file: Path = Path(
         "data/abstract/contracts.db"
     )
-    auth_login_code_ttl_seconds: int = Field(default=3600, gt=0)
     retrieval_view_max_questions: int = Field(default=8, gt=0)
     contract_extraction_run_ttl_seconds: int = Field(default=3600, gt=0)
     contract_deduplication_review_ttl_seconds: int = Field(
@@ -378,7 +360,6 @@ class Settings(BaseModel):
     elasticsearch_number_of_replicas: int = Field(default=0, ge=0)
     mllm: MLLMSettings = MLLMSettings()
     embedding: EmbeddingSettings = EmbeddingSettings()
-    bocha: BochaSettings = BochaSettings()
     deepseek: DeepSeekSettings = DeepSeekSettings()
     pdf_deduplication: PDFDeduplicationSettings = PDFDeduplicationSettings()
 
@@ -409,13 +390,6 @@ class Settings(BaseModel):
         if self.retrieval_view_guide_dir.is_absolute():
             return self.retrieval_view_guide_dir
         return _PROJECT_ROOT / self.retrieval_view_guide_dir
-
-    @property
-    def reviewer_user_path(self) -> Path:
-        """将相对审核用户文件固定解析到项目根目录。"""
-        if self.reviewer_user_file.is_absolute():
-            return self.reviewer_user_file
-        return _PROJECT_ROOT / self.reviewer_user_file
 
     @property
     def ingestion_review_path(self) -> Path:
@@ -531,10 +505,6 @@ def get_settings() -> Settings:
             "RETRIEVAL_VIEW_GUIDE_DIR",
             "data/definition/retrieval-view",
         ),
-        reviewer_user_file=_env(
-            "REVIEWER_USER_FILE",
-            "data/user/users.yaml",
-        ),
         ingestion_review_retention_seconds=_env("INGESTION_REVIEW_RETENTION_SECONDS", "604800"),
         ingestion_review_cleanup_interval_seconds=_env("INGESTION_REVIEW_CLEANUP_INTERVAL_SECONDS", "3600"),
         ingestion_review_cleanup_batch_size=_env("INGESTION_REVIEW_CLEANUP_BATCH_SIZE", "100"),
@@ -548,6 +518,8 @@ def get_settings() -> Settings:
         deletion_review_directory=_env("DELETION_REVIEW_DIRECTORY", "data/deletion-review"),
         deletion_review_result_poll_interval_seconds=_env("DELETION_REVIEW_RESULT_POLL_INTERVAL_SECONDS", "30"),
         deletion_review_result_batch_size=_env("DELETION_REVIEW_RESULT_BATCH_SIZE", "10"),
+        file_permission_adjustment_poll_interval_seconds=_env("FILE_PERMISSION_ADJUSTMENT_POLL_INTERVAL_SECONDS", "30"),
+        file_permission_adjustment_batch_size=_env("FILE_PERMISSION_ADJUSTMENT_BATCH_SIZE", "10"),
         deletion_review_publish_scan_interval_seconds=_env("DELETION_REVIEW_PUBLISH_SCAN_INTERVAL_SECONDS", "30"),
         deletion_review_publish_retry_seconds=_env("DELETION_REVIEW_PUBLISH_RETRY_SECONDS", "60"),
         deletion_review_publish_timeout_seconds=_env("DELETION_REVIEW_PUBLISH_TIMEOUT_SECONDS", "120"),
@@ -561,10 +533,6 @@ def get_settings() -> Settings:
         contract_metadata_database_file=_env(
             "CONTRACT_METADATA_DATABASE_FILE",
             "data/abstract/contracts.db",
-        ),
-        auth_login_code_ttl_seconds=_env(
-            "AUTH_LOGIN_CODE_TTL_SECONDS",
-            "3600",
         ),
         retrieval_view_max_questions=_env(
             "RETRIEVAL_VIEW_MAX_QUESTIONS",
@@ -610,13 +578,6 @@ def get_settings() -> Settings:
         elasticsearch_vector_dimensions=_env("ELASTICSEARCH_VECTOR_DIMENSIONS", "4096"),
         elasticsearch_number_of_shards=_env("ELASTICSEARCH_NUMBER_OF_SHARDS", "1"),
         elasticsearch_number_of_replicas=_env("ELASTICSEARCH_NUMBER_OF_REPLICAS", "0"),
-        bocha=BochaSettings(
-            api_key=_env("BOCHA_API_KEY", ""),
-            base_url=_env("BOCHA_BASE_URL", "https://api.bochaai.com"),
-            timeout_seconds=_env("BOCHA_TIMEOUT_SECONDS", "45"),
-            trust_env=_env("BOCHA_TRUST_ENV", "false"),
-            web_search_count=_env("BOCHA_WEB_SEARCH_COUNT", "10"),
-        ),
         deepseek=DeepSeekSettings(
             base_url=_env("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
             api_key=_optional_env("DEEPSEEK_API_KEY"),
@@ -625,6 +586,9 @@ def get_settings() -> Settings:
             timeout_seconds=_env("DEEPSEEK_TIMEOUT_SECONDS", "300"),
             max_concurrent_requests=_env("DEEPSEEK_MAX_CONCURRENT_REQUESTS", "3"),
             max_completion_tokens=_env("DEEPSEEK_MAX_COMPLETION_TOKENS", "8192"),
+            search_timeout_seconds=_env("DEEPSEEK_SEARCH_TIMEOUT_SECONDS", "45"),
+            search_count=_env("DEEPSEEK_SEARCH_COUNT", "10"),
+            search_trust_env=_env("DEEPSEEK_SEARCH_TRUST_ENV", "false"),
         ),
         mllm=MLLMSettings(
             progress_reminder_interval_seconds=_env("VLLM_MLLM_PROGRESS_REMINDER_INTERVAL_SECONDS", "60"),

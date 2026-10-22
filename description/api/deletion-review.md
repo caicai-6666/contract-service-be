@@ -1,25 +1,25 @@
 # 合同删除审核 API
 
-查询删除审核区保存的申请和结果，路由前缀为 `/contract/api/deletion-reviews`。采用与入库审核一致的“申请 ID 列表、按 ID 查询详情”方式，无分页；已完成申请在配置的保留期之后自动清理。
+查询删除审核区保存的申请和结果，路由前缀为 `/knowledge-accumulation/contract/api/deletion-reviews`。采用与入库审核一致的“申请 ID 列表、按 ID 查询详情”方式，无分页；已完成申请在配置的保留期之后自动清理。
 
-提交入口为[合同删除审核申请](contract.md#删除正式合同)：`DELETE /contract/api/contract/documents/{document_id}`，202响应返回本页使用的 submission_id。
+提交入口为[合同删除审核申请](contract.md#删除正式合同)：`DELETE /knowledge-accumulation/contract/api/contract/documents/{document_id}`，202响应返回本页使用的 submission_id。
 
 ## 接口目录
 
 | 接口 | 方法 | 完整路径 |
 | --- | --- | --- |
-| [获取删除申请 ID 列表](#获取删除申请-id-列表) | `GET` | `/contract/api/deletion-reviews/list` |
-| [获取删除申请详情](#获取删除申请详情) | `GET` | `/contract/api/deletion-reviews/detail/{submission_id}` |
+| [获取删除申请 ID 列表](#获取删除申请-id-列表) | `GET` | `/knowledge-accumulation/contract/api/deletion-reviews/list` |
+| [获取删除申请详情](#获取删除申请详情) | `GET` | `/knowledge-accumulation/contract/api/deletion-reviews/detail/{submission_id}` |
 
-人员条件由服务端登录身份决定：`requested_by = 当前登录用户 OR uploader = 当前登录用户`。两个角色都匹配时仅返回一次；外部审核人不是查询范围的判定依据。使用申请时冻结的人员信息，正式合同删除后仍可读取审核结果。
+人员条件由服务端登录身份决定：`requested_by_userid = 当前用户 userid OR uploader_userid = 当前用户 userid`。两个角色都匹配时仅返回一次；外部审核人不是查询范围的判定依据。使用申请时冻结的稳定用户 ID，正式合同删除后仍可读取审核结果。
 
 ---
 
 ## 获取删除申请 ID 列表
 
-`GET /contract/api/deletion-reviews/list`，返回当前用户作为删除提交人或原合同上传人所涉及的全部保留申请 ID。
+`GET /knowledge-accumulation/contract/api/deletion-reviews/list`，返回当前用户作为删除提交人或原合同上传人所涉及的全部保留申请 ID。
 
-**认证方式：** `Authorization: Bearer <免登码>`，服务端读取用户名称作为筛选值。
+**认证方式：** `Authorization: Bearer <用户访问令牌>`，服务端读取用户名称作为筛选值。
 
 **请求参数：** 无 path、query 参数，无请求体。人员名称不由客户端提交；无分页。
 
@@ -35,14 +35,14 @@
 
 | 状态码 | 含义 |
 | --- | --- |
-| 401 | 免登码缺失、无效或过期。 |
+| 401 | 用户访问令牌缺失、无效或过期。 |
 | 503 | 数据库读取失败；不伪装为空列表。 |
 
-**请求示例：** 将免登码替换为登录接口返回值。
+**请求示例：** 将用户访问令牌替换为登录接口返回值。
 
 ```bash
-curl 'http://127.0.0.1:20000/contract/api/deletion-reviews/list' \
-  -H 'Authorization: Bearer replace-with-login-code'
+curl 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/deletion-reviews/list' \
+  -H 'Authorization: Bearer replace-with-user-access-token'
 ```
 
 **行为与边界：** 按创建时间倒序、同一时间按申请 ID 升序排列。空结果为 `{"submission_ids": []}`；包括待发送、待审核、批准、拒绝以及实际删除成功或失败的保留申请。列表只读取 ID，不创建查询缓存，不触发送审或删除。
@@ -51,9 +51,9 @@ curl 'http://127.0.0.1:20000/contract/api/deletion-reviews/list' \
 
 ## 获取删除申请详情
 
-`GET /contract/api/deletion-reviews/detail/{submission_id}`，返回指定申请的冻结合同信息、双方备注、审核结果和实际删除状态。
+`GET /knowledge-accumulation/contract/api/deletion-reviews/detail/{submission_id}`，返回指定申请的冻结合同信息、双方备注、审核结果和实际删除状态。
 
-**认证方式：** `Authorization: Bearer <免登码>`。与列表使用相同的人员 OR 条件；不允许通过猜测 UUID 查看无关申请。
+**认证方式：** `Authorization: Bearer <用户访问令牌>`。与列表使用相同的人员 OR 条件；不允许通过猜测 UUID 查看无关申请。
 
 **请求参数：**
 
@@ -73,6 +73,7 @@ curl 'http://127.0.0.1:20000/contract/api/deletion-reviews/list' \
   "document_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "passport": ["passport-1", "passport-2"],
   "file_name": "设备采购合同",
+  "file_level": 2,
   "summary": "约定设备采购和交付验收。",
   "uploader": "Amy",
   "requested_by": "Bob",
@@ -101,29 +102,30 @@ curl 'http://127.0.0.1:20000/contract/api/deletion-reviews/list' \
 | 字段或分区 | 契约 |
 | --- | --- |
 | 合同基本信息 | document_id、passport、名称、摘要、上传人、原入库时间来自申请时的快照；passport 为完整字符串数组；历史摘要或通行证可为 null。 |
+| file_level | integer 或 null；发起删除申请时从正式合同元数据冻结的文件等级，所有审核及执行状态均返回。合同删除后仍保留，后来同文件重新入库的等级不会覆盖旧历史；历史未记录时为 null。 |
 | requested_by / note | 删除提交人及其备注，与外部审核人和审核备注分别保存。 |
 | created_at / updated_at | 申请创建时间、送审回执/审核/删除执行的最近更新时间。 |
 | delivery | status 为 pending / publishing / published / uncertain / blocked；只有 published 表示已确认送审，不表示审核通过；uncertain 表示结果未确认，后台按相同 source_id 定时重试；合法409重复回执关联原消息并转为 published。 |
 | review | status 为 pending_send / pending_review / approved / rejected；note、reviewer、reviewed_at 来自外部审核结果，未产生时为 null。 |
 | deletion | status 为 pending / deleting / succeeded / failed；只有 succeeded 表示实际删除已完成，completed_at 在此时非空。 |
 | cleanup | review_processed_at 为本地审核处理完成时间：批准时正式删除完成，拒绝时标志协调完成；eligible_at 为该时间加保留期，未完成为 null。 |
-| pdf | file_uri 始终保留原地址；原合同身份仍匹配且 PDF 存在时，url 为 `/contract/api/resource/contract?file_uri=...`，需登录；删除完成、文件缺失或原身份不匹配时为 null。 |
+| pdf | file_uri 始终保留原地址；原合同身份仍匹配且 PDF 存在时，url 为 `/knowledge-accumulation/contract/api/resource/contract?file_uri=...`，需登录；删除完成、文件缺失或原身份不匹配时为 null。 |
 | server_time | 当前服务器时间，带时区的 ISO 8601。 |
 
 **错误响应：**
 
 | 状态码 | 含义 |
 | --- | --- |
-| 401 | 免登码缺失、无效或过期。 |
+| 401 | 用户访问令牌缺失、无效或过期。 |
 | 404 | 申请不存在、已清理，或当前用户既非删除提交人也非合同上传人；统一响应，不区分原因。 |
 | 422 | submission_id 不是合法 UUID。 |
 | 503 | 详情或所依赖的正式存储暂时无法读取。 |
 
-**请求示例：** 将免登码和申请 UUID 替换为实际值。
+**请求示例：** 将用户访问令牌和申请 UUID 替换为实际值。
 
 ```bash
-curl 'http://127.0.0.1:20000/contract/api/deletion-reviews/detail/12345678-1234-4234-8234-123456789abc' \
-  -H 'Authorization: Bearer replace-with-login-code'
+curl 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/deletion-reviews/detail/12345678-1234-4234-8234-123456789abc' \
+  -H 'Authorization: Bearer replace-with-user-access-token'
 ```
 
 前端直接使用详情的 `cleanup.eligible_at` 与 `server_time` 校正后的当前服务器时间计算 `max(0, eligible_at - 当前服务器时间)`。`eligible_at` 为 null 时不显示倒计时，无需额外查询清理配置。截止时刻表示允许清理，扫描批次或失败重试可能使实际清理更晚；倒计时为0但记录仍存在是合法情况。

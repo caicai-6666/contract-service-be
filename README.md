@@ -58,7 +58,7 @@
 | Elasticsearch / SmartCN | 完整合同 Core、条款、检索问题及融合向量的存储和检索。 |
 | Neo4j | 合同节点及带描述、创建人、创建时间的无向关联。 |
 | 消息中间件 | 平台登录与心跳、入库/删除申请发布，以及入库/删除审核反馈拉取与确认。 |
-| DeepSeek / 博查 | 分别提供外部专家与网页搜索能力，使用独立凭证。 |
+| DeepSeek | Responses 提供外部专家多轮求助，Search API 提供网页搜索，共用凭据并分别配置预算。 |
 
 MLLM、Embedding、消息中间件及外部 API 不由本仓库启动。Compose 提供前后端、ES 和 Neo4j 的编排。
 
@@ -76,14 +76,12 @@ app/
   router/                    HTTP/SSE 路由
   schema/                    请求、响应及数据契约
   core/                      配置与基础规则
-  user/                      用户配置与认证
   tool/                      PDF 等通用技术工具
 config/                      Lindera 分词配置与编译依赖锁
 data/
   definition/                合同类别、Core 字段与检索问题指南
   tool-tag/                  模型工具协议说明
   template/                  模型部署侧 Jinja 模板
-  user/                      用户 YAML 配置
   contract/                  正式合同 PDF
   abstract/                  正式合同 SQLite
   ingestion-review/          入库审核数据库、快照与临时 PDF
@@ -95,6 +93,8 @@ Dockerfile                   后端镜像及 Lindera 编译
 ```
 
 运行数据库、合同 PDF 和本地输出不进入版本控制。`tests/`、`experiment/`、`scripts/` 是本机辅助目录，被 Git 忽略，克隆仓库不会获得这些内容；部署构建不依赖它们。
+
+Git 采用白名单，只允许部署必需的应用源码、依赖与构建配置、业务定义和模型协议/模板、正式描述文档及必要目录占位。新增交付资源需要显式放行，运行数据继续忽略；完整分类与检查方式见[版本控制与运行资源](description/capability/infrastructure/repository-files.md)。
 
 ---
 
@@ -116,7 +116,6 @@ Dockerfile                   后端镜像及 Lindera 编译
 ```bash
 cd ../contract-service-deploy
 test -f .env || cp .env.example .env
-test -f user.yaml || cp user.yaml.example user.yaml
 ```
 
 编辑 deploy 的 `.env`，设置同级源码路径：
@@ -126,13 +125,15 @@ BACKEND_SOURCE=../contract-service-be
 FRONTEND_SOURCE=../contract-service-fe
 ```
 
-同时填写模型服务地址、中间件平台编码与 secret，并替换 `user.yaml` 中的示例密钥。宿主机服务可使用容器可达的 `host.docker.internal` 地址；容器内的 `127.0.0.1` 指向容器自身。中间件需支持当前的 source_id 去重及审核反馈契约。
+同时填写模型服务地址、中间件平台编码与 secret。宿主机服务可使用容器可达的 `host.docker.internal` 地址；容器内的 `127.0.0.1` 指向容器自身。中间件需支持当前的 source_id 去重及审核反馈契约。
+
+后端还会消费中间件文件等级调整，先原子更新元数据和变更历史，再 ack；目标文件不存在时记录跳过并确认。轮询配置见[文件等级调整](description/capability/application/file-permission-adjustments.md)。
 
 ```bash
 docker compose config --quiet
 docker compose up -d --build
 docker compose ps
-curl --fail http://127.0.0.1:17080/contract/api/health
+curl --fail http://127.0.0.1:17080/knowledge-accumulation/contract/api/health
 ```
 
 默认前端为 `http://127.0.0.1:17080/contract/`，后端宿主机端口为 `17000`；两者可在 deploy 配置中调整。镜像自动编译 Linux Lindera 扩展，宿主机无需安装 Rust。详见 deploy 的 README 和[后端镜像说明](description/capability/infrastructure/docker-deployment.md)。
@@ -153,9 +154,9 @@ test -f .env || cp .env.example .env
 启动前需要完成以下配置：
 
 1. 按 `.env.example` 填写本机可达的 ES、Neo4j、MLLM 与 Embedding 地址；宿主机不能直接使用 Compose 服务名 `elasticsearch` 或 `neo4j`。
-2. 配置 `REVIEWER_USER_FILE` 对应的用户 YAML，包含 `users` 列表及每人的 `name`、`secret_key`；所有用户拥有统一操作权限。
+2. 用户在统一登录平台登录；中间件需存在有效用户登录，并在本平台管理员列表中配置该 userid。本项目不再加载本地用户 YAML。
 3. 准备与当前操作系统和 CPU 架构匹配的 Lindera Jieba 动态库，设置 `SQLITE_LINDERA_EXTENSION_PATH` 与 `LINDERA_CONFIG_PATH`。仅执行 pip 安装不能完成这一步，Linux 容器的动态库也不能直接用于 macOS。构建依据见 [SQLite 中文检索依赖](description/capability/infrastructure/sqlite-fts.md)与根目录 Dockerfile。
-4. 按需填写中间件、DeepSeek 与博查凭证。中间件配置留空时不登录，审核申请可以本地保存，但不会完成外部送审。
+4. 填写中间件地址、平台编码和凭证；未就绪时受保护接口返回503。专家及网页搜索按需填写 DeepSeek 凭据。
 
 启动开发服务：
 
@@ -169,13 +170,15 @@ python -m app.main
 uvicorn app.main:app --host 127.0.0.1 --port 20000 --workers 1
 ```
 
-健康检查为 `http://127.0.0.1:20000/contract/api/health`，Swagger UI 为 `/docs`，OpenAPI JSON 为 `/openapi.json`。健康检查不探测模型和中间件是否可用；完整验证需执行真实提取、问答及送审请求。
+健康检查为 `http://127.0.0.1:20000/knowledge-accumulation/contract/api/health`，Swagger UI 为 `/knowledge-accumulation/docs`，OpenAPI JSON 为 `/knowledge-accumulation/openapi.json`。健康检查不探测模型和中间件是否可用；完整验证需执行真实提取、问答及送审请求。
 
 ---
 
 ## 配置与接口
 
-`.env.example` 是本地配置入口，Compose 部署使用 deploy 自己的 `.env.example`。修改环境变量、用户文件或业务定义后需重启；Compose 环境变量变化需重新创建容器，单纯 restart 不会更新环境。更新示例文件不会自动合并已有私有 `.env`，升级时应补齐新增键并保留实际地址、凭证和自定义值。审核配置通过 Compose 的 `backend.env_file` 注入，审核目录固定在持久数据卷内。
+主分支已移除 `REVIEWER_USER_FILE`、`AUTH_LOGIN_CODE_TTL_SECONDS` 和用户 YAML 挂载。会话、附件和提取任务按稳定 userid 隔离，用户名仅为展示快照；旧密钥归属记录保留但不自动映射给同名用户，升级前请阅读[迁移边界](description/architecture/data/user-identity.md#历史数据迁移)。
+
+`.env.example` 是本地配置入口，Compose 部署使用 deploy 自己的 `.env.example`。修改环境变量或业务定义后需重启；Compose 环境变量变化需重新创建容器，单纯 restart 不会更新环境。更新示例文件不会自动合并已有私有 `.env`，升级时应补齐新增键并保留实际地址、凭证和自定义值。审核配置通过 Compose 的 `backend.env_file` 注入，审核目录固定在持久数据卷内。
 
 | 配置组 | 主要用途 |
 | --- | --- |
@@ -184,22 +187,24 @@ uvicorn app.main:app --host 127.0.0.1 --port 20000 --workers 1
 | `MIDDLEWARE_*` | 中间件地址、平台身份、登录重试和请求超时。 |
 | `INGESTION_REVIEW_*` / `DELETION_REVIEW_*` | 两个审核区的位置、后台扫描、发送重试、处理及清理策略。 |
 | `COMMUNICATION_*` | 会话存储与工具结果池、分页、文件缓存和开发追踪。 |
-| `DEEPSEEK_*` / `BOCHA_*` | 外部专家和网页搜索连接。 |
+| `DEEPSEEK_*` | 外部专家 Responses 和独立 Search 共用连接身份；搜索使用 `DEEPSEEK_SEARCH_*` 配置。 |
 
 删除审核反馈使用 `DELETION_REVIEW_RESULT_POLL_INTERVAL_SECONDS=30` 和 `DELETION_REVIEW_RESULT_BATCH_SIZE=10`，默认每轮等待30秒、最多处理10条。入库及删除结果分别通过中间件 `/middleware-service/api/ingestion-results/` 和 `/middleware-service/api/deletion-results/` 下的 pull/ack 接口消费；`MIDDLEWARE_REQUEST_TIMEOUT_SECONDS` 控制登录、心跳和结果请求，送审超时使用各自的 `PUBLISH_TIMEOUT_SECONDS`。审核记录保留期不控制再次申请资格。
 
-所有业务接口位于 `/contract/api`。除健康检查和登录外均需 `Authorization: Bearer <login_code>`；通过用户密钥登录取得免登码，不使用中间件平台令牌访问本平台业务 API。
+所有业务接口位于 `/knowledge-accumulation/contract/api`。除健康检查外均需 `Authorization: Bearer <用户 access_token>`；独立验证依赖检查中间件登录有效且 userid 属于本平台管理员。未登录返回401，无访问资格返回403，认证服务不可用返回503。`GET /auth/me` 查询当前身份；旧 `POST /auth/login` 已移除。平台令牌只由后端内部维护，不作为用户凭据。
+
+前端 API 基础地址及反向代理应同步采用 `/knowledge-accumulation/contract/api`，转发时保留完整前缀；旧无应用前缀地址不再挂载。PDF 的 `file_uri` 仍是资源标识，由带新前缀的资源接口读取。
 
 | 接口文档 | 内容 |
 | --- | --- |
-| [登录](description/api/auth.md) | 用户密钥登录与免登码。 |
+| [登录](description/api/auth.md) | 统一用户 token、当前身份及平台管理员访问验证。 |
 | [合同](description/api/contract.md) | 合同库、提取、SSE、确认入库、删除申请、注意事项与关联。 |
 | [会话问答](description/api/communication.md) | 会话与任务创建、事件流、快照、取消及历史恢复。 |
 | [入库审核](description/api/ingestion-review.md) | 保留中的申请 ID、状态、双方备注、PDF 和清理时间。 |
 | [删除审核](description/api/deletion-review.md) | 本人申请或本人上传合同的删除审核与实际删除状态。 |
 | [资源读取](description/api/resource.md) | 正式、待审、提取中及会话附件 PDF。 |
 
-入库确认和删除申请均要求提交申请人 `note`。当前入库审核查询允许所有已登录用户访问；删除审核查询按删除申请人或原合同上传人过滤。会话、附件和提取任务仍执行所有者隔离。
+入库确认和删除申请均要求提交申请人 `note`。当前入库审核查询允许本平台所有已通过认证与访问验证的用户访问；删除审核查询按删除申请人或原合同上传人过滤。会话、附件和提取任务仍执行所有者隔离。
 
 ---
 
@@ -224,6 +229,8 @@ SQLite 保存正式目录、摘要、上传人、完整 passport 数组、注意
 开发前阅读 [AGENTS.md](AGENTS.md)及[项目说明](description/project.md)。代码、提示词、接口与文档应同步维护；具体规则见[文档风格](description/documentation.md)、[提示词规范](description/standard/prompt-engineering.md)和[多轮 Agent 上下文规范](description/standard/agent-context-management.md)。
 
 深入实现可从以下专题进入：
+
+- [用户身份、所有权与历史迁移](description/architecture/data/user-identity.md)
 
 - [合同提取工作流](description/architecture/workflow/contract-extraction/readme.md)
 - [合同沟通智能体](description/architecture/workflow/contract-communication/readme.md)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.core.file_level import validate_file_level
+
 from app.agent.contract_extraction.subgraph.field_extraction.constraints import constraint_violation
 
 import asyncio
@@ -250,8 +252,11 @@ class ContractIngestionService:
         question_fusion_vector: tuple[float, ...],
         page_fusion_vector: tuple[float, ...],
         passport: tuple[str, ...] | list[str] | str | None = None,
+        uploader_userid: str | None = None,
+        file_level: int | None = None,
     ) -> ContractIngestionResult:
         """形成最终文档；任一持久化步骤失败时不伪造成功结果。"""
+        validate_file_level(file_level)
         if passport is not None:
             passport = normalize_passports(passport)
         normalized_file_name = self._validate_file_name(file_name)
@@ -337,6 +342,8 @@ class ContractIngestionService:
         )
         ingestion_id = str(uuid4())
         metadata = ContractMetadata(
+            uploader_userid=uploader_userid,
+            file_level=file_level,
             passport=passport,
             summary=normalized_summary,
             document_id=document_id,
@@ -363,6 +370,11 @@ class ContractIngestionService:
                 if existing is not None:
                     if existing.passport != passport or existing.status == ContractMetadataStatus.DELETING:
                         raise ContractDocumentConflictError('合同已存在且跨平台身份不同，或正在删除')
+                    if existing.file_level != file_level:
+                        original_level = await asyncio.to_thread(self._metadata_store.original_ingestion_file_level,
+                            document_id, existing.ingestion_id)
+                        if original_level != file_level:
+                            raise ContractDocumentConflictError('合同已存在且审核文件等级不一致')
                     if existing.status == ContractMetadataStatus.READY:
                         # 正式库已完成、本地待审回执尚未写入的重投窗口：不再生成向量或覆盖审计时间。
                         return ContractIngestionResult(document_id=existing.document_id,

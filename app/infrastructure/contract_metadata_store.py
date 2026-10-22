@@ -5,8 +5,11 @@ from __future__ import annotations
 import sqlite3
 import math
 import struct
+import hashlib
+import json
 from contextlib import closing
 from app.core.passport import normalize_passports
+from app.core.file_level import validate_file_level, encode_file_level, decode_file_level
 from app.infrastructure.passport_storage import encode_passports, decode_passports, migrate_passport_storage
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -15,6 +18,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from app.core.contract_date import normalize_contract_date
+from app.schema.file_permission import FileLevelChangeHistory
 
 
 class ContractMetadataStatus(StrEnum):
@@ -67,8 +71,11 @@ class ContractMetadata:
     summary: str | None = None
     passport: tuple[str, ...] | None = None
     can_delete: bool = True
+    uploader_userid: str | None = None
+    file_level: int | None = None
 
     def __post_init__(self):
+        validate_file_level(self.file_level)
         if self.passport is not None:
             object.__setattr__(self, 'passport', normalize_passports(self.passport))
 
@@ -157,6 +164,32 @@ class SQLiteContractMetadataStore:
             if index is not None and index['unique']:
                 connection.execute('DROP INDEX contracts_passport')
             connection.execute('CREATE INDEX IF NOT EXISTS contracts_passport ON contracts(passport) WHERE passport IS NOT NULL')
+            if 'uploader_userid' not in columns:
+                connection.execute('ALTER TABLE contracts ADD COLUMN uploader_userid TEXT')
+            if 'file_level' not in columns:
+                connection.execute('ALTER TABLE contracts ADD COLUMN file_level TEXT')
+            # 审计与消费幂等凭据独立保留，不能随合同删除级联清空。
+            connection.execute('''CREATE TABLE IF NOT EXISTS contract_file_level_history (
+                history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id TEXT NOT NULL UNIQUE,
+                target_platform_code TEXT NOT NULL,
+                document_id TEXT NOT NULL CHECK(length(document_id)=64),
+                ingestion_id TEXT,
+                previous_level TEXT,
+                new_level TEXT NOT NULL,
+                reviewer TEXT NOT NULL,
+                note TEXT NOT NULL CHECK(length(note)<=10000),
+                status TEXT NOT NULL CHECK(status IN ('applied','skipped_missing')),
+                created_at TEXT NOT NULL,
+                processed_at TEXT NOT NULL,
+                acknowledged_at TEXT,
+                last_delivery_offset INTEGER NOT NULL CHECK(last_delivery_offset>=0),
+                payload_sha256 TEXT NOT NULL,
+                CHECK ((status='applied' AND ingestion_id IS NOT NULL)
+                    OR (status='skipped_missing' AND ingestion_id IS NULL AND previous_level IS NULL))
+            )''')
+            connection.execute('CREATE INDEX IF NOT EXISTS contract_file_level_history_document '
+                               'ON contract_file_level_history(document_id,history_id)')
             migrate_passport_storage(connection, 'contracts')
             for prefix in ('summary',):
                 for suffix, kind in (('', 'BLOB'), ('_model', 'TEXT'), ('_version', 'TEXT'), ('_dimensions', 'INTEGER')):
@@ -347,19 +380,21 @@ class SQLiteContractMetadataStore:
                     ingested_at,
                     status,
                     ingestion_id,
-                    summary, passport, can_delete
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    summary, passport, can_delete, uploader_userid, file_level
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(document_id) DO UPDATE SET
                     file_name = excluded.file_name,
                     category = excluded.category,
                     contract_time = excluded.contract_time,
                     file_uri = excluded.file_uri,
                     uploader = excluded.uploader,
+                    uploader_userid = excluded.uploader_userid,
                     ingested_at = excluded.ingested_at,
                     status = excluded.status,
                     ingestion_id = excluded.ingestion_id,
                     summary = excluded.summary,
-                    passport = excluded.passport
+                    passport = excluded.passport,
+                    file_level = excluded.file_level
                 """,
                 (
                     metadata.document_id,
@@ -374,6 +409,8 @@ class SQLiteContractMetadataStore:
                     metadata.summary,
                     encode_passports(metadata.passport),
                     int(metadata.can_delete),
+                    metadata.uploader_userid,
+                    encode_file_level(metadata.file_level),
                 ),
             )
             # 和本次名称、摘要处于同一事务；无编码的新写入清除旧向量，避免内容错配。
@@ -438,6 +475,89 @@ class SQLiteContractMetadataStore:
         result = ContractTextEmbedding(struct.unpack(f'<{dimensions}f', blob),row['model'],row['version'])
         result.to_blob()
         return result
+
+    @staticmethod
+    def _file_level_history(row):
+        data = dict(row)
+        data.pop('payload_sha256')
+        data['previous_level'] = decode_file_level(data['previous_level'])
+        data['new_level'] = decode_file_level(data['new_level'])
+        return FileLevelChangeHistory.model_validate(data)
+
+    def apply_file_permission_adjustment(self, delivery, *, platform_code: str) -> FileLevelChangeHistory:
+        """更新当前等级与历史同事务提交；缺失文件也记录已跳过，作为重投确认依据。"""
+        from app.infrastructure.middleware import MiddlewareFilePermissionDelivery
+        delivery = MiddlewareFilePermissionDelivery.model_validate(delivery)
+        message = delivery.message
+        if message.target_platform_code != platform_code:
+            raise ValueError('文件等级调整目标平台不匹配')
+        payload = json.dumps(message.model_dump(mode='json'), ensure_ascii=False,
+                             sort_keys=True, separators=(',', ':'))
+        digest = hashlib.sha256(payload.encode()).hexdigest()
+        with self._transaction() as connection:
+            old = connection.execute('SELECT * FROM contract_file_level_history WHERE message_id=?',
+                                     (message.message_id,)).fetchone()
+            if old is not None:
+                if old['payload_sha256'] != digest:
+                    raise ContractMetadataStateError('同一等级调整消息收到冲突内容')
+                # 重投只能更新观察到的位置，不能回滚后来消息已设置的等级。
+                connection.execute('UPDATE contract_file_level_history SET last_delivery_offset=? WHERE message_id=?',
+                                   (delivery.offset, message.message_id))
+            else:
+                current = connection.execute('SELECT file_level,ingestion_id,status FROM contracts WHERE document_id=?',
+                                             (message.source_id,)).fetchone()
+                if current is not None and current['status'] != 'ready':
+                    raise ContractMetadataStateError('目标合同仍在入库或删除，稍后重试等级调整')
+                status = 'applied' if current is not None else 'skipped_missing'
+                if current is not None:
+                    connection.execute('UPDATE contracts SET file_level=? WHERE document_id=?',
+                                       (encode_file_level(message.file_level), message.source_id))
+                connection.execute('''INSERT INTO contract_file_level_history
+                    (message_id,target_platform_code,document_id,ingestion_id,previous_level,new_level,
+                     reviewer,note,status,created_at,processed_at,last_delivery_offset,payload_sha256)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    (message.message_id, message.target_platform_code, message.source_id,
+                     current['ingestion_id'] if current is not None else None,
+                     current['file_level'] if current is not None else None, encode_file_level(message.file_level),
+                     message.reviewer, message.note, status, message.created_at.isoformat(),
+                     datetime.now(UTC).isoformat(), delivery.offset, digest))
+            row = connection.execute('SELECT * FROM contract_file_level_history WHERE message_id=?',
+                                     (message.message_id,)).fetchone()
+            return self._file_level_history(row)
+
+    def acknowledge_file_permission_adjustment(self, message_id: str) -> None:
+        """只有远端 ack 确认成功后调用；本地完成记录始终先于远端确认。"""
+        with self._transaction() as connection:
+            cursor = connection.execute('''UPDATE contract_file_level_history
+                SET acknowledged_at=COALESCE(acknowledged_at,?) WHERE message_id=?''',
+                (datetime.now(UTC).isoformat(), message_id))
+            if cursor.rowcount != 1:
+                raise ContractMetadataStateError('等级调整尚未在本地处理，不能记录确认')
+
+    def list_file_level_history(self, document_id: str | None = None) -> tuple[FileLevelChangeHistory, ...]:
+        """默认读取全部历史；内部调用仍可按文档定位，不依赖合同当前是否存在。"""
+        with closing(self._connect()) as connection:
+            query = 'SELECT * FROM contract_file_level_history'
+            parameters = ()
+            if document_id is not None:
+                query += ' WHERE document_id=?'
+                parameters = (document_id,)
+            rows = connection.execute(query+' ORDER BY history_id DESC', parameters).fetchall()
+            return tuple(self._file_level_history(row) for row in rows)
+
+    def original_ingestion_file_level(self, document_id: str, ingestion_id: str) -> int | None:
+        """回执重试核对最初入库等级，不把后续合法调整误认为审核冲突。"""
+        with closing(self._connect()) as connection:
+            row = connection.execute('''SELECT previous_level FROM contract_file_level_history
+                WHERE document_id=? AND ingestion_id=? AND status='applied' ORDER BY history_id LIMIT 1''',
+                (document_id, ingestion_id)).fetchone()
+            if row is not None:
+                return decode_file_level(row['previous_level'])
+            current = connection.execute('SELECT file_level FROM contracts WHERE document_id=? AND ingestion_id=?',
+                                         (document_id, ingestion_id)).fetchone()
+            if current is None:
+                raise ContractMetadataStateError('合同入库实例已变化')
+            return decode_file_level(current['file_level'])
 
     def mark_ready(
         self,
@@ -767,6 +887,8 @@ class SQLiteContractMetadataStore:
             contract_time=row["contract_time"],
             file_uri=row["file_uri"],
             uploader=row["uploader"],
+            uploader_userid=row["uploader_userid"],
+            file_level=decode_file_level(row["file_level"]),
             ingested_at=datetime.fromisoformat(row["ingested_at"]),
             status=ContractMetadataStatus(row["status"]),
             ingestion_id=row["ingestion_id"],
@@ -957,6 +1079,10 @@ class SQLiteContractMetadataStore:
                     if_not_exists=False,
                 )
             )
+            # 重建历史状态表时，也保留已存在的统一用户身份与审核等级。
+            for name in ('uploader_userid', 'file_level'):
+                if name in columns:
+                    connection.execute(f'ALTER TABLE contracts_migrated ADD COLUMN {name} TEXT')
             connection.execute(
                 """
                 INSERT INTO contracts_migrated (
@@ -988,6 +1114,11 @@ class SQLiteContractMetadataStore:
                 connection.execute('UPDATE contracts_migrated SET can_delete = (SELECT can_delete FROM contracts WHERE contracts.document_id = contracts_migrated.document_id)')
             if 'passport' in columns:
                 connection.execute('UPDATE contracts_migrated SET passport = (SELECT passport FROM contracts WHERE contracts.document_id = contracts_migrated.document_id)')
+            for name in ('uploader_userid', 'file_level'):
+                if name in columns:
+                    connection.execute(f'UPDATE contracts_migrated SET {name} = '
+                                       f'(SELECT {name} FROM contracts WHERE '
+                                       'contracts.document_id = contracts_migrated.document_id)')
             if 'summary' in columns:
                 # 兼容已有摘要的旧状态表，重建时不能静默丢弃该字段。
                 connection.execute('''UPDATE contracts_migrated SET summary = (

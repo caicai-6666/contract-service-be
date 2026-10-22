@@ -58,7 +58,7 @@ system = build_external_expert_system_prompt(request.system_prompt)
 
 `DEEPSEEK_REASONING_EFFORT` 仅接受 `none`、`low`、`high`、`max`，非法值在配置加载时拒绝。Responses 请求传入 `reasoning={"effort": 配置值}`；none 关闭思考，其余开启，不额外发送 Chat Completions 专用的 thinking 字段。修改后重启生效；本次未调整输出 token 预算。参数依据 [DeepSeek 思考模式文档](https://api-docs.deepseek.com/guides/thinking_mode/)。
 
-地址和模型名依据 [DeepSeek 官方 API 文档](https://api-docs.deepseek.com/api/create-chat-completion/)；模型可替换。超时、并发及输出预算为项目初始选择，不表示厂商推荐值；客户端发送请求时使用这些限制。配置独立于本地 vLLM，不复用其工具模板或专用采样参数。修改环境配置后需重启以刷新缓存。复用已安装的 OpenAI SDK，每轮显式提供内置 web_search，专家按问题需要执行搜索；不强制每轮搜索，也不将工具可用视为事实已核实。
+地址和模型名依据 [DeepSeek Responses 官方文档](https://api-docs.deepseek.com/guides/responses_api/)；模型可替换，内置 web_search 当前仅 deepseek-v4-pro 支持。超时、并发及输出预算为项目初始选择，不表示厂商推荐值；客户端发送请求时使用这些限制。配置独立于本地 vLLM，不复用其工具模板或专用采样参数。修改环境配置后需重启以刷新缓存。复用已安装的 OpenAI SDK，每轮显式提供内置 web_search，专家按问题需要执行搜索；不强制每轮搜索，也不将工具可用视为事实已核实。
 
 ---
 
@@ -69,9 +69,11 @@ system = build_external_expert_system_prompt(request.system_prompt)
 
 ---
 
+专家与独立网页搜索共用 `DEEPSEEK_API_KEY` 和 `DEEPSEEK_BASE_URL`；专家生成预算与独立 Search 的 `DEEPSEEK_SEARCH_*` 超时/条数分开配置。搜索工具的缓存、分页和返回契约见[网页工具](web-search.md)。
+
 ## 异步客户端
 
-`app/infrastructure/deepseek.py` 提供 `DeepSeekClient`，通过 `AsyncOpenAI.responses.create` 异步调用。客户端不保存消息历史、不拼接专家提示词；调用方每次传入完整 `input_items`，包含文字消息以及先前成功响应中的 message、reasoning、web_search_call 项目。每轮固定注入 `tools=[{"type": "web_search"}]`，无需模型传工具开关；不提供 previous_response_id 或依赖服务端保存历史。图片、客户端函数工具及空白输入不在本客户端范围。
+`app/infrastructure/deepseek.py` 提供 `DeepSeekClient`，通过 `AsyncOpenAI.responses.create` 异步调用 `/responses`，不走 Chat Completions。DeepSeek Responses 为无状态接口，官方不支持 previous_response_id 或服务端 conversation 续接。客户端不保存消息历史、不拼接专家提示词；调用方每次传入完整 `input_items`，包含文字消息以及先前成功响应中的 message、reasoning、web_search_call 项目。每轮固定注入 `tools=[{"type": "web_search"}]`，无需模型传工具开关；不提供 previous_response_id 或依赖服务端保存历史。图片、客户端函数工具及空白输入不在本客户端范围。
 
 ```python
 from app.core.config import get_settings

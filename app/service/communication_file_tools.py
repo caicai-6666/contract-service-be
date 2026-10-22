@@ -39,7 +39,7 @@ class CommunicationFileTools:
         async with self._lock:
             if self._closed:
                 raise RuntimeError('文件工具服务已关闭')
-            residency, _ = await self._history.file_tool_access(conversation_id, secret_key=owner)
+            residency, _ = await self._history.file_tool_access(conversation_id, owner_userid=owner)
             previous = self._sessions.get(conversation_id)
             if previous and previous['residency'] != residency:
                 self.evict(conversation_id)
@@ -55,7 +55,7 @@ class CommunicationFileTools:
                 if revoked.is_set():
                     raise PermissionError('会话已释放')
                 current, name = asyncio.run_coroutine_threadsafe(
-                    self._history.file_tool_access(conversation_id, secret_key=owner, file_id=file_id), loop,
+                    self._history.file_tool_access(conversation_id, owner_userid=owner, file_id=file_id), loop,
                 ).result()
                 if revoked.is_set() or current != residency:
                     raise PermissionError('会话驻留身份已变化')
@@ -69,7 +69,7 @@ class CommunicationFileTools:
                 access(file_id)
                 # 当前任务附件可能尚未落盘：优先读取历史服务持有的内存字节。
                 _, content = asyncio.run_coroutine_threadsafe(
-                    self._history.read_file(conversation_id, file_id, secret_key=owner), loop,
+                    self._history.read_file(conversation_id, file_id, owner_userid=owner), loop,
                 ).result()
                 access(file_id)
                 return content
@@ -117,7 +117,7 @@ class CommunicationFileTools:
             async def authorize_search():
                 if revoked.is_set():
                     raise PermissionError('会话已释放')
-                current, _ = await self._history.file_tool_access(conversation_id, secret_key=owner)
+                current, _ = await self._history.file_tool_access(conversation_id, owner_userid=owner)
                 if revoked.is_set() or current != residency:
                     raise PermissionError('会话驻留身份已变化')
             tools = build_file_view_registrations(session_viewer=session, contract_viewer=contract)

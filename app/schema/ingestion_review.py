@@ -7,6 +7,7 @@ import math
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 from app.core.passport import Passports
+from app.schema.auth import UserId
 from app.service.contract_extraction.model import (
     ClauseDraftData, ContractClassificationView, CoreDraftData,
 )
@@ -37,6 +38,7 @@ class IngestionReviewSnapshot(BaseModel):
     file_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
     summary: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=3000)]
     submitted_by: NonEmptyText
+    submitted_by_userid: UserId | None = Field(default=None, description="统一认证的上传人 userid；历史快照未知时为空，不按姓名推断。")
     page_count: int = Field(gt=0, strict=True)
     classification: ContractClassificationView
     category_reasoning: dict[str, str]
@@ -72,6 +74,7 @@ class IngestionReviewRecord(BaseModel):
     reviewed_by: str | None = None
     reviewed_at: datetime | None = None
     passport: Passports | None = None
+    file_level: int | None = Field(default=None, strict=True, description='审核给出的文件等级；尚无反馈或历史反馈缺失时为空。')
     review_processed_at: datetime | None = None
     review_acked_at: datetime | None = None
     last_review_error: str | None = None
@@ -109,6 +112,7 @@ class IngestionReviewFeedbackView(BaseModel):
     reviewer: str | None
     reviewed_at: datetime | None
     passport: Passports | None = Field(description='审核返回的完整通行证数组；空数组表示未签发，未收到反馈时为 null。')
+    file_level: int | None = Field(default=None, strict=True, description='审核给出的整份文件等级；历史未知或尚无反馈时为 null。')
 
 
 class IngestionReviewIngestionView(BaseModel):
@@ -132,6 +136,7 @@ class IngestionReviewDetailResponse(BaseModel):
     run_id: str
     document_id: str
     file_name: str
+    file_level: int | None = Field(strict=True, description='本次入库审核给出的文件等级，与 review.file_level 一致；尚无反馈或历史未知时为 null。')
     summary: str
     page_count: int
     submitted_by: str

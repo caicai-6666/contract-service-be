@@ -1,73 +1,60 @@
-# 审核用户登录 API
+# 用户访问认证 API
 
-> **用途：** 本文定义审核用户仅凭密钥获取限时免登码的 HTTP 接口。用户文件契约见[审核用户 YAML 定义](../architecture/data/reviewer-user-definition.md)，全局 HTTP 约定见[API 参考](readme.md)。
+本平台不再验证本地密钥或签发免登码。用户由统一登录平台完成登录，随后携带用户 access_token 访问本平台；身份及当前平台管理员资格由中间件验证。实现及迁移见[用户身份与所有权](../architecture/data/user-identity.md)。
 
 ## 接口目录
 
 | 接口 | 方法 | 完整路径 |
 | --- | --- | --- |
-| [使用密钥登录](#使用密钥登录) | `POST` | `/contract/api/auth/login` |
+| [查询当前用户](#查询当前用户) | `GET` | `/knowledge-accumulation/contract/api/auth/me` |
 
 ---
 
-## 使用密钥登录
+## 查询当前用户
 
-```http
-POST /contract/api/auth/login
-Content-Type: application/json
-```
+必填请求头 `Authorization: Bearer <用户 access_token>`，无请求体及查询参数。该接口与其他业务接口使用相同认证依赖，查询会续期已有有效的用户登录，不创建登录、不复活过期 token。
 
-### 请求
-
-请求只包含审核用户密钥，不需要同时提交名称：
+成功返回 `200 application/json`，带 `Cache-Control: no-store`：
 
 ```json
-{
-  "secret_key": "change-this-local-reviewer-key"
-}
+{"userid":"user-001","username":"张三","ttl":90}
 ```
 
-`secret_key` 必须是非空字符串。应用在启动期用户快照中按密钥查找唯一审核人；用户配置禁止多个审核人使用同一密钥。
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| userid | string | 中间件返回的稳定用户 ID，作为会话、提取任务和删除审核人员范围的依据。 |
+| username | string | 当前显示名；业务操作时可冻结为上传人、申请人等名称快照，不用于身份匹配。 |
+| ttl | integer | 有效登录查询后续期的完整秒数，由中间件决定，不是本平台缓存期限。 |
 
-### 成功响应
-
-状态码：`200 OK`
-
-```json
-{
-  "login_code": "随机生成的免登码",
-  "user_name": "审核人名称"
-}
+```bash
+curl 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/auth/me' \
+  -H 'Authorization: Bearer replace-with-user-access-token'
 ```
-
-`user_name` 是当前密钥在启动期用户快照中对应的审核人名称，供前端展示当前登录身份。免登码使用安全随机数生成，并立即以“免登码 → 审核人名称 + 过期点”写入当前 API 进程内存。存活时间由 `AUTH_LOGIN_CODE_TTL_SECONDS` 配置，默认 `3600` 秒。每次在有效期内成功访问受保护接口，过期点都会刷新为“当前时刻 + TTL”；已经过期的免登码不会复活，并在后续签发或校验时从缓存清除。
-
-每次成功登录都会签发一个新免登码，不会主动撤销该用户尚未过期的旧免登码。
-
-
-除健康检查和本登录接口外，后续请求必须携带：
-
-```http
-Authorization: Bearer <login_code>
-```
-
-### 密钥无效
-
-状态码：`401 Unauthorized`
-
-```json
-{
-  "detail": "审核用户密钥无效"
-}
-```
-
-接口不会区分“密钥不存在”和其他密钥校验失败原因，也不会返回其他审核用户的信息。请求体为空、密钥为空或包含额外字段时返回 `422`。
 
 ---
 
-## 当前边界
+## 放行条件与错误
 
-- 免登码缓存不持久化、不跨进程共享，应用重启后全部失效。
-- 所有已登录用户可使用全部功能；接口仍独立校验任务、会话与附件的用户归属。凭据无效返回 `401`。
-- 当前没有登出、主动撤销、独立续期接口和单用户并发登录数量限制；续期只由成功访问受保护接口触发。
-- 密钥和免登码属于敏感凭据；非本机环境必须通过 HTTPS 或可信反向代理传输，不得写入访问日志。
+独立依赖 `app/router/dependency.py:require_platform_user` 顺序执行：
+
+1. 解析来访用户的 Bearer token。
+2. 用后台维护的平台令牌调用 `POST /middleware-service/api/user/login-cache`，JSON 只提交用户 access_token；响应必须登录有效并含 userid、username 和正数 TTL。
+3. 用平台令牌调用 `GET /middleware-service/api/platform/admins/list`；用户 userid 必须在当前平台管理员列表中。
+4. 注入不含凭据的 `AuthenticatedUser`。同一请求的多个依赖复用验证结果；不同请求重新查询，不跨请求缓存登录或管理员资格。
+
+| 状态码 | 含义 |
+| --- | --- |
+| 401 | 用户 token 缺失、格式错误，或中间件以 200 返回登录已失效；携带 WWW-Authenticate: Bearer。 |
+| 403 | 用户登录有效，但不属于当前平台管理员。 |
+| 503 | 平台会话未就绪、远端请求失败/超时或响应非法；不据此认定用户退出，也不按旧本地用户配置放行。 |
+
+中间件自身返回401表示平台令牌失效，失效该平台令牌并等待后台重登；向前端返回503，不混淆为用户 token 失效。错误不回显任何令牌或远端正文。
+
+---
+
+## 前端与连接边界
+
+- 移除旧 `POST /knowledge-accumulation/contract/api/auth/login` 调用与本地密钥登录页面，使用统一登录平台提供的用户 token。旧接口不保留兼容入口。
+- 所有业务 API、PDF 资源和 SSE 新连接都携带同一用户 Bearer token。仅健康检查公开；`/auth/me` 也必须验证管理员资格。
+- SSE 在建立连接时验证，已建立连接不会逐帧重新查询中间件；SSE 心跳不是用户登录续期。重连、快照和后续操作再次验证。若前端需要持续保持活跃登录，可在确有用户活动时调用 /auth/me，间隔应小于中间件返回 TTL；不由后台任务无限续期用户。
+- 本平台不写中间件用户总表、不创建用户登录缓存，也不维护管理员列表。平台登录心跳与用户登录生命周期独立。

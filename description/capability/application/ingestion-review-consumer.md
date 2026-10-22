@@ -27,18 +27,20 @@
 
 审核员保存为 `reviewed_by`，外部备注保存为 `review_note`，不覆盖入库员的 `note`；审核时间必须带时区。正式合同仅写 `uploader`，值来自快照 `submitted_by`；外部审核员不进入正式合同。
 
+新审核反馈同时提供 `file_level`，必须为严格整数，不限制范围；布尔值、字符串、小数及显式 null 都视为非法反馈，不入库、不 ack。历史消息允许缺失，保留为未知等级；不补 0，也不将 null 视为历史缺失。批准与拒绝均先保存等级，批准后由消费者传给正式入库服务，与 SQLite 合同元数据一同落盘。对外字段见[合同元数据接口](../../api/contract.md#获取所有已入库合同元数据)。
+
 ---
 
 ## 持久化顺序与幂等
 
-1. pull 后按 request_id 查找申请；事务保存完整反馈及其 ID、offset、审核人、备注、时间、passport。批准标记 approved，拒绝标记 rejected。反馈一旦绑定不可被另一反馈覆盖。
+1. pull 后按 request_id 查找申请；事务保存完整反馈及其 ID、offset、审核人、备注、时间、passport、file_level。批准标记 approved，拒绝标记 rejected。反馈一旦绑定不可被另一反馈覆盖。
 2. 批准时置 ingestion_status=ingesting，读取并校验待审 PDF，复用 `ContractIngestionService.ingest`：摘要向量化、正式 SQLite/PDF/ES/Neo4j 写入及 ready 发布。拒绝不进入该步骤。
 3. 成功后记录 `review_processed_at`；批准置 succeeded，拒绝保持 pending（未执行入库）。该完成标记提交成功后才允许 ack。
 4. ack 成功后记录 `review_acked_at`。待审 PDF 和快照由[定时清理服务](ingestion-review-cleanup.md)在本地处理完成并达到保留期后删除。
 
 反馈 ID 唯一；多份合同允许共用 passport，同 ID 内容变化或同申请不同反馈仍拒绝处理。重复 pull 已本地完成的反馈时跳过入库，只确认当前消息。已清理申请通过最小处理凭据核验并直接 ack；确认时间可写入该凭据，不再读取快照。相同反馈重投到另一 offset 时使用新 pull 的 offset 校验 ack。
 
-正式合同 SQLite 为 passport 建立普通索引，同一通行证可关联多份合同，历史合同保留 NULL。启动初始化自动移除正式库和待审库的旧通行证唯一约束。批准入库遇到相同 document_id、相同 passport 且已 ready 时直接返回原结果，不重复编码、不改写入库时间；身份不同或正在删除则失败。部分持久化失败继续沿用既有 ingesting 恢复机制。
+正式合同 SQLite 为 passport 建立普通索引，同一通行证可关联多份合同，历史合同保留 NULL。启动初始化自动移除正式库和待审库的旧通行证唯一约束。批准入库遇到相同 document_id、相同 passport、相同 file_level 且已 ready 时直接返回原结果，不重复编码、不改写入库时间；身份、等级不同或正在删除则失败。部分持久化失败继续沿用既有 ingesting 恢复机制。缺失等级的历史反馈继续以原有正文及哈希校验，带等级反馈不得通过移除等级来匹配旧回执。
 
 ---
 

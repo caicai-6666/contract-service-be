@@ -21,7 +21,7 @@ data/ingestion-review/
 
 初始化将旧 `pending_reviews` 表原地更名为 `ingestion_reviews` 并重建具名索引，保留快照、备注、申请 ID、消息 ID、审核结果及 processed_review_receipts；若新旧申请表同时存在则拒绝自动合并。数据库文件名仍为 reviews.db。快照 schema_version、审核状态 `pending_review` 和 UUID 生成命名空间保持原值，避免改名后重新投递或生成不同申请 ID。
 
-入库审核查询前缀已改为 `/contract/api/ingestion-reviews/...`，旧 `/contract/api/pending-reviews/...` 已移除；资源 PDF 仍使用 `/contract/api/resource/pending-review-pdf/...`。Python 路由模块和文档文件使用 ingestion_review 名称。旧配置变量不再读取，部署时需要更新配置后再启动。
+入库审核查询前缀已改为 `/knowledge-accumulation/contract/api/ingestion-reviews/...`，旧 `/knowledge-accumulation/contract/api/pending-reviews/...` 已移除；资源 PDF 仍使用 `/knowledge-accumulation/contract/api/resource/pending-review-pdf/...`。Python 路由模块和文档文件使用 ingestion_review 名称。旧配置变量不再读取，部署时需要更新配置后再启动。
 
 `INGESTION_REVIEW_DIRECTORY` 默认 `data/ingestion-review`，相对项目根目录解析。`get_settings().ingestion_review_path` 提供绝对路径。后端 lifespan 创建目录、初始化 SQLite（WAL、FULL 同步），并将 `ingestion_review_store`、`ingestion_review_service` 保存至 `application.state`。存储初始化不自动转存提取任务；后台发送服务只处理待审表中完整保存的记录。
 
@@ -61,6 +61,7 @@ data/ingestion-review/
 | `review_message_id` / `review_offset` | 反馈消息 ID（唯一）与当前交付位置；不是原发布消息 ID。 |
 | `review_payload_json` | 首次接收的完整反馈，用于检查重投内容一致性。 |
 | `review_note` / `reviewed_by` / `reviewed_at` | 审核平台的备注、审核员与带时区时间，独立于入库员信息。 |
+| `file_level` | 审核反馈给出的严格整数等级，以十进制 TEXT 无损保存；未收到反馈或历史反馈缺失时为 NULL。批准、拒绝均保留，批准后传入正式合同元数据。 |
 | `passport` | JSON 数组文本，批准时保存全部跨平台通行证；拒绝为空数组；尚无反馈为 NULL。单合同允许多个通行证，多合同也可共用通行证；格式与迁移见[通行证集合契约](passport.md)。初始化移除旧 ingestion_reviews_passport 唯一索引。 |
 | `review_processed_at` / `review_acked_at` | 本地业务处理完成时间与本地确认收到 ack 成功的时间，后者不代替远端进度。 |
 | `last_review_error` | 最近正式入库失败的异常类型，不保存响应正文。 |
@@ -77,6 +78,8 @@ data/ingestion-review/
 | `created_at`、`updated_at` | 带 UTC 时区的 ISO 时间。 |
 
 审核状态与正式入库状态独立。当前已实现保存、后台扫描发布，以及成功后从 `pending_send` 变为 `pending_review`；批准、拒绝与正式入库由[审核反馈消费者](../../capability/application/ingestion-review-consumer.md)推进。状态加创建时间建立联合索引，方便后续扫描。旧的早期待审库初始化时补建 `message_id` 列，旧库初始化时新增 `note` 列；将旧快照中的备注移出并重算快照哈希，未填写的备注保留为空字符串。初始化同时幂等补齐外部审核字段，旧记录保持 NULL；将旧 `files/<submission_id>.pdf` 路径简化为 `<submission_id>.pdf`，实际 PDF 仍保存在 `files/`，无需移动。
+
+`file_level` 不加入送审前的不可变快照。首次收到反馈时，与完整反馈正文同事务保存，详情顶层 `file_level` 与兼容字段 `review.file_level` 由同一待审列返回；未收到反馈或历史未知时两者均为 null，不从当前正式合同反推历史。缺失等级的历史消息在序列化时继续省略该键，兼容已持久化的正文和清理回执哈希。有等级的反馈则将其纳入一致性核验；更改或移除等级的重投不得视作相同消息。
 
 ---
 
@@ -115,7 +118,7 @@ data/ingestion-review/
 
 ## 当前边界与验证
 
-`POST /contract/api/contract/extraction-runs/{run_id}/ingestion` 已接入待审提交，必填 note；成功持久化后释放提取运行。后台扫描与消息发送已实现，详见[待审请求发布](../../capability/application/ingestion-review-publisher.md)。审核回执拉取、状态处理及批准后自动入库已接入后台消费者；消费者不依赖提取运行，使用已持久化快照完成正式入库。
+`POST /knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}/ingestion` 已接入待审提交，必填 note；成功持久化后释放提取运行。后台扫描与消息发送已实现，详见[待审请求发布](../../capability/application/ingestion-review-publisher.md)。审核回执拉取、状态处理及批准后自动入库已接入后台消费者；消费者不依赖提取运行，使用已持久化快照完成正式入库。
 
 `tests/test_ingestion_review.py` 使用临时库和真实生成的 PDF，验证重启读取、备注、并发幂等、冲突拒绝、消息绑定及唯一性、旧库迁移、错误文件、文件写入失败和 SQLite 提交失败后的恢复。
 
@@ -152,3 +155,5 @@ data/ingestion-review/
 ## 只读列表与预览
 
 已提供[待入库申请 API](../../api/ingestion-review.md)。`/list` 仅返回全部尚未清理的申请 ID（包括批准、拒绝）；`/detail/{submission_id}` 分区包装基本信息、两类备注、各阶段状态及 PDF 地址，不返回完整快照或向量。清理计时以本地 review_processed_at 为准，正式入库时间另从合同元数据读取，不能用提交时间代替。临时 PDF 经认证与哈希校验后读取。
+
+用户身份切换后，快照增加 submitted_by_userid，submitted_by 继续保存提交时用户名。历史快照缺失 ID 时为 NULL，不按同名用户自动映射。按 run_id 的入库重试校验稳定 ID，批准后将其写入正式元数据 uploader_userid；完整边界见[用户身份与所有权](user-identity.md)。

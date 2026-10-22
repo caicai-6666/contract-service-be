@@ -5,7 +5,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
 
-from app.router.dependency import ReviewerUserDependency
+from app.router.dependency import UserIdDependency
 from app.schema.deletion_review import DeletionReviewDetailResponse, DeletionReviewListResponse
 from app.service.deletion_review_query import DeletionReviewQueryService
 
@@ -22,10 +22,10 @@ QueryService = Annotated[DeletionReviewQueryService, Depends(get_query_service)]
 
 @router.get('/list', response_model=DeletionReviewListResponse, summary='获取本人提交或上传合同的删除申请ID列表',
             responses={503: {'description': '删除申请列表暂时无法读取。'}})
-async def list_deletion_reviews(service: QueryService, user_name: ReviewerUserDependency, response: Response):
+async def list_deletion_reviews(service: QueryService, userid: UserIdDependency, response: Response):
     response.headers['Cache-Control'] = 'no-store'
     try:
-        return await service.list_records(user_name)
+        return await service.list_records(userid)
     except Exception:
         logger.exception('删除申请列表读取失败')
         raise HTTPException(503, '删除申请列表暂时无法读取，请稍后重试') from None
@@ -36,11 +36,11 @@ async def list_deletion_reviews(service: QueryService, user_name: ReviewerUserDe
                        503: {'description': '删除申请详情暂时无法读取。'}})
 async def deletion_review_detail(
     submission_id: Annotated[UUID, Path(description='删除申请列表中的 submission_id，不是合同 ID 或消息 ID。')],
-    service: QueryService, user_name: ReviewerUserDependency, response: Response,
+    service: QueryService, userid: UserIdDependency, response: Response,
 ):
     response.headers['Cache-Control'] = 'no-store'
     try:
-        return await service.detail(submission_id, user_name)
+        return await service.detail(submission_id, userid)
     except LookupError:
         raise HTTPException(404, '删除申请不存在或不在当前用户查询范围内') from None
     except Exception:

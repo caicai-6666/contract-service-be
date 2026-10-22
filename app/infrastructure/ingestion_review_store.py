@@ -14,6 +14,7 @@ from uuid import UUID
 import pymupdf
 
 from app.infrastructure.passport_storage import encode_passports, decode_passports, migrate_passport_storage
+from app.core.file_level import encode_file_level, decode_file_level
 from app.schema.ingestion_review import IngestionReviewRecord, IngestionReviewSnapshot, ProcessedReviewReceipt
 
 
@@ -105,6 +106,7 @@ class SQLiteIngestionReviewStore:
                 'reviewed_by': 'TEXT',
                 'reviewed_at': 'TEXT',
                 'passport': 'TEXT',
+                'file_level': 'TEXT',
                 'review_processed_at': 'TEXT',
                 'review_acked_at': 'TEXT',
                 'last_review_error': 'TEXT',
@@ -153,6 +155,7 @@ class SQLiteIngestionReviewStore:
             publish_attempts=row['publish_attempts'], next_publish_at=row['next_publish_at'],
             last_publish_error=row['last_publish_error'],
             passport=decode_passports(row['passport']),
+            file_level=decode_file_level(row['file_level']),
             **{key: row[key] for key in ('review_message_id', 'review_offset', 'review_note',
                 'reviewed_by', 'reviewed_at', 'review_processed_at', 'review_acked_at', 'last_review_error')},
             snapshot=IngestionReviewSnapshot.model_validate_json(row['snapshot_json']),
@@ -243,7 +246,7 @@ class SQLiteIngestionReviewStore:
         """按申请身份读取轻量详情，避免加载大型快照及融合向量。"""
         with self._connection() as c:
             row = c.execute("""SELECT submission_id,run_id,document_id,submitted_by,note,
-                review_note,reviewed_by,reviewed_at,passport,message_id,delivery_status,
+                review_note,reviewed_by,reviewed_at,passport,file_level,message_id,delivery_status,
                 review_status,ingestion_status,created_at,updated_at,review_processed_at,
                 pdf_relative_path,review_message_id,
                 json_extract(snapshot_json,'$.file_name') AS file_name,
@@ -252,7 +255,8 @@ class SQLiteIngestionReviewStore:
                 FROM ingestion_reviews WHERE submission_id=?""", (str(UUID(str(submission_id))),)).fetchone()
             if row is None:
                 raise LookupError('待审申请不存在')
-            return dict(row) | {'passport': decode_passports(row['passport'])}
+            return dict(row) | {'passport': decode_passports(row['passport']),
+                                'file_level': decode_file_level(row['file_level'])}
 
     def read_pdf(self, submission_id: UUID) -> bytes:
         record = self.get(submission_id)
@@ -402,10 +406,11 @@ class SQLiteIngestionReviewStore:
             else:
                 try:
                     c.execute("""UPDATE ingestion_reviews SET review_message_id=?,review_offset=?,
-                        review_payload_json=?,review_note=?,reviewed_by=?,reviewed_at=?,passport=?,
+                        review_payload_json=?,review_note=?,reviewed_by=?,reviewed_at=?,passport=?,file_level=?,
                         review_status=?,delivery_status='published',next_publish_at=NULL,updated_at=? WHERE submission_id=?""",
                         (message.message_id,delivery.offset,payload,message.note,message.reviewer,
                          message.created_at.isoformat(),encode_passports(message.passport),
+                         encode_file_level(message.file_level),
                          'approved' if message.passport else 'rejected',now,row['submission_id']))
                 except sqlite3.IntegrityError as exc:
                     raise IngestionReviewConflictError('反馈标识已绑定其他申请') from exc

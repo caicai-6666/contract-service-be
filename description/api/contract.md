@@ -6,35 +6,36 @@
 
 | 接口 | 方法 | 完整路径 |
 | --- | --- | --- |
-| [获取所有已入库合同元数据](#获取所有已入库合同元数据) | `GET` | `/contract/api/contract/documents` |
-| [提交正式合同删除审核](#删除正式合同) | `DELETE` | `/contract/api/contract/documents/{document_id}` |
-| [获取合同类别列表](#获取合同类别列表) | `GET` | `/contract/api/contract/categories` |
-| [获取 Core 审核表单定义](#获取-core-审核表单定义) | `GET` | `/contract/api/contract/core-definitions` |
-| [列出尚未入库的运行](#列出尚未入库的运行) | `GET` | `/contract/api/contract/extraction-runs` |
-| [上传 PDF 并创建任务](#上传-pdf-并创建任务) | `POST` | `/contract/api/contract/extraction-runs` |
-| [获取当前状态与提取结果](#获取当前状态与提取结果) | `GET` | `/contract/api/contract/extraction-runs/{run_id}` |
-| [取消任务](#取消任务) | `DELETE` | `/contract/api/contract/extraction-runs/{run_id}` |
-| [确认查重并继续](#确认查重并继续) | `POST` | `/contract/api/contract/extraction-runs/{run_id}/continue` |
-| [订阅处理事件](#订阅处理事件) | `GET` | `/contract/api/contract/extraction-runs/{run_id}/events` |
-| [重试失败阶段](#重试失败阶段) | `POST` | `/contract/api/contract/extraction-runs/{run_id}/stages/{stage_code}/retry` |
-| [提交合同待审申请](#正式入库合同) | `POST` | `/contract/api/contract/extraction-runs/{run_id}/ingestion` |
-| [获取合同注意事项列表](#获取合同注意事项列表) | `GET` | `/contract/api/contract/documents/{document_id}/notes` |
-| [新增合同注意事项](#新增合同注意事项) | `POST` | `/contract/api/contract/documents/{document_id}/notes` |
-| [获取合同内容摘要](#获取合同内容摘要) | `GET` | `/contract/api/contract/documents/{document_id}/summary` |
-| [删除合同注意事项](#删除合同注意事项) | `DELETE` | `/contract/api/contract/documents/{document_id}/notes/{note_id}` |
-| [创建合同关联](#创建合同关联) | `POST` | `/contract/api/contract/relations` |
-| [删除合同关联](#删除合同关联) | `DELETE` | `/contract/api/contract/relations/{relation_id}` |
-| [获取合同一跳关系列表](#获取合同一跳关系列表) | `GET` | `/contract/api/contract/documents/{document_id}/relations` |
+| [获取所有已入库合同元数据](#获取所有已入库合同元数据) | `GET` | `/knowledge-accumulation/contract/api/contract/documents` |
+| [获取全部文件等级变更记录](#获取全部文件等级变更记录) | `GET` | `/knowledge-accumulation/contract/api/contract/file-level-history` |
+| [提交正式合同删除审核](#删除正式合同) | `DELETE` | `/knowledge-accumulation/contract/api/contract/documents/{document_id}` |
+| [获取合同类别列表](#获取合同类别列表) | `GET` | `/knowledge-accumulation/contract/api/contract/categories` |
+| [获取 Core 审核表单定义](#获取-core-审核表单定义) | `GET` | `/knowledge-accumulation/contract/api/contract/core-definitions` |
+| [列出尚未入库的运行](#列出尚未入库的运行) | `GET` | `/knowledge-accumulation/contract/api/contract/extraction-runs` |
+| [上传 PDF 并创建任务](#上传-pdf-并创建任务) | `POST` | `/knowledge-accumulation/contract/api/contract/extraction-runs` |
+| [获取当前状态与提取结果](#获取当前状态与提取结果) | `GET` | `/knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}` |
+| [取消任务](#取消任务) | `DELETE` | `/knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}` |
+| [确认查重并继续](#确认查重并继续) | `POST` | `/knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}/continue` |
+| [订阅处理事件](#订阅处理事件) | `GET` | `/knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}/events` |
+| [重试失败阶段](#重试失败阶段) | `POST` | `/knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}/stages/{stage_code}/retry` |
+| [提交合同待审申请](#正式入库合同) | `POST` | `/knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}/ingestion` |
+| [获取合同注意事项列表](#获取合同注意事项列表) | `GET` | `/knowledge-accumulation/contract/api/contract/documents/{document_id}/notes` |
+| [新增合同注意事项](#新增合同注意事项) | `POST` | `/knowledge-accumulation/contract/api/contract/documents/{document_id}/notes` |
+| [获取合同内容摘要](#获取合同内容摘要) | `GET` | `/knowledge-accumulation/contract/api/contract/documents/{document_id}/summary` |
+| [删除合同注意事项](#删除合同注意事项) | `DELETE` | `/knowledge-accumulation/contract/api/contract/documents/{document_id}/notes/{note_id}` |
+| [创建合同关联](#创建合同关联) | `POST` | `/knowledge-accumulation/contract/api/contract/relations` |
+| [删除合同关联](#删除合同关联) | `DELETE` | `/knowledge-accumulation/contract/api/contract/relations/{relation_id}` |
+| [获取合同一跳关系列表](#获取合同一跳关系列表) | `GET` | `/knowledge-accumulation/contract/api/contract/documents/{document_id}/relations` |
 
 
 ---
 
 ## 资源约定
 
-- 本文所有接口都必须携带 `Authorization: Bearer <login_code>`；免登码通过[审核用户登录接口](auth.md)取得。
-- 所有已登录用户均可查看、新增和删除共享正式合同，以及维护共享注意事项。提取任务仍按所有者隔离；取消任务不等于删除正式合同。
+- 本文所有接口都必须携带 `Authorization: Bearer <用户 access_token>`；用户访问令牌通过[审核用户登录接口](auth.md)取得。
+- 所有已通过本平台访问验证的用户均可查看、新增和删除共享正式合同，以及维护共享注意事项。提取任务仍按所有者隔离；取消任务不等于删除正式合同。
 - `run_id` 是一次上传任务的唯一标识，不等同于合同 `document_id`。
-- 创建任务时，服务端会把免登码解析出的审核人名称写为任务所有者；客户端不提交、也不能覆盖该名称。
+- 创建任务时，服务端以经中间件验证的 userid 绑定任务所有者；客户端不提交、也不能覆盖归属。用户名仅在提交入库等操作时冻结为人员展示快照。
 - 运行列表以及所有携带 `run_id` 的查询、SSE 和状态变更接口只允许任务所有者访问。其他审核用户访问时与任务不存在一样返回 `404`，不会泄露 `run_id` 是否真实存在。
 - `document_id` 是任务实际保存并计划入库的处理版 PDF 字节 SHA-256。
 - SSE 及时传递状态事件、紧凑的合同文档判断、查重审核结果、分类结果和合同概览（名称与摘要）；单任务快照持续保存分类与合同概览，Core 与 Clause 提取值也只能通过快照接口获取。
@@ -45,7 +46,7 @@
 ## 获取所有已入库合同元数据
 
 ```http
-GET /contract/api/contract/documents
+GET /knowledge-accumulation/contract/api/contract/documents
 ```
 
 无需路径参数、查询参数或请求体。返回 SQLite 中所有 `ready` 合同，不分页、不按审核人过滤；正在入库的 `ingesting` 记录不可见。所有已登录审核人均可读取该共享正式合同目录，这与按所有者隔离的内存运行列表不同。
@@ -63,6 +64,7 @@ GET /contract/api/contract/documents
     "uploader": "上传人甲",
     "can_delete": true,
     "passport": ["PASS-001", "PASS-002"],
+    "file_level": 2,
     "ingested_at": "2026-09-07T06:00:00Z"
   }
 ]
@@ -79,23 +81,71 @@ GET /contract/api/contract/documents
 | `ingested_at` | string | 带时区的 ISO 8601 入库时间。 |
 | `can_delete` | boolean | 是否允许发起删除申请；提交申请后 false，审核拒绝后恢复 true。与 ready 状态及合同查看、检索可见性独立。 |
 | `passport` | string[] 或 null | 合同关联的完整通行证数组，保留原值、顺序和重复项；历史未绑定时为 `null`，不省略字段。 |
+| `file_level` | integer 或 null | 注册中心在入库审核反馈中确定的整份文件等级，适用于该合同的全部通行证；不限制整数范围，历史未记录时返回 `null`。 |
 
-响应每项仅包含以上九个必有字段，不返回入库状态、尝试标识、分类理由或完整 Core/Clause。`passport` 采用[通行证集合契约](../architecture/data/passport.md)，不只返回第一项或将多个值拼接为字符串。接口复用 `SQLiteContractMetadataStore.list_ready()`，同步查询在线程池中执行，不访问 Elasticsearch 或读取 PDF。当前不提供筛选与分页。
+响应每项包含以上全部字段（包括可为 null 的字段），不返回入库状态、尝试标识、分类理由或完整 Core/Clause。`passport` 采用[通行证集合契约](../architecture/data/passport.md)，不只返回第一项或将多个值拼接为字符串。接口复用 `SQLiteContractMetadataStore.list_ready()`，同步查询在线程池中执行，不访问 Elasticsearch 或读取 PDF。当前不提供筛选与分页；`file_level` 的返回尚不增加按等级过滤或文件访问判定。
 
 ```bash
-curl --header 'Authorization: Bearer <login_code>' \
-  'http://127.0.0.1:20000/contract/api/contract/documents'
+curl --header 'Authorization: Bearer <用户 access_token>' \
+  'http://127.0.0.1:20000/knowledge-accumulation/contract/api/contract/documents'
 ```
 
-缺少、无效或过期的 Bearer 免登码返回 `401`。
+缺少、无效或过期的 Bearer 用户访问令牌返回 `401`。
+
+---
+
+## 获取全部文件等级变更记录
+
+`GET /knowledge-accumulation/contract/api/contract/file-level-history`，只读返回本平台消费等级变更流后保存的全部历史记录。
+
+**认证方式：** `Authorization: Bearer <用户 access_token>`，沿用统一登录与本平台管理员资格校验，共享查询，不按申请人过滤。
+
+**请求参数：** 无 path、query 参数或请求体；无需传合同 ID，不分页。
+
+**成功响应：** `200 OK`、`application/json`，带 `Cache-Control: no-store`。按本地处理序号 history_id 降序返回数组，无记录时返回 `[]`。
+
+```json
+[
+  {
+    "history_id": 1,
+    "message_id": "adjustment-001",
+    "document_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "previous_level": 2,
+    "new_level": 3,
+    "reviewer": "注册中心操作人",
+    "note": "调整文件等级",
+    "status": "applied",
+    "created_at": "2026-10-21T03:00:00Z",
+    "processed_at": "2026-10-21T03:00:10Z"
+  }
+]
+```
+
+| 字段 | 类型与含义 |
+| --- | --- |
+| history_id / message_id | 本地历史序号及中间件调整消息 ID；重复交付不会增加记录。 |
+| document_id | 变更流 source_id 对应的完整合同 ID。 |
+| previous_level / new_level | 原等级与消息要求的新等级，整数；原等级未知或目标不存在时 previous_level 为 null。 |
+| reviewer / note | 注册中心操作人及调整备注，备注允许空字符串。 |
+| status | applied 已更新等级；skipped_missing 目标文件不存在，跳过修改。 |
+| created_at / processed_at | 消息生成时间及本平台处理时间，均为带时区 ISO 8601。 |
+
+**错误响应：** `401` 用户未登录或令牌无效；`403` 无本平台访问资格；`503` 认证服务或历史查询暂不可用。查询失败不会伪装为无记录，内部数据库错误不直接返回。
+
+```bash
+curl 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/contract/file-level-history' \
+  -H 'Authorization: Bearer <用户 access_token>'
+```
+
+**行为与边界：** 仅读取 `contract_file_level_history`，不调用中间件 pull/ack，不修改文件等级。包含已删除文件和目标不存在时保存的跳过记录，不依赖当前合同目录；不为初次入库或未接收到的消息补造历史。内部消费 offset、入库实例及哈希不公开。消费机制见[文件等级调整消费与历史](../capability/application/file-permission-adjustments.md)。
 
 ---
 
 ## 删除正式合同
 
-`DELETE /contract/api/contract/documents/{document_id}`，提交正式合同的删除审核申请，替代原立即删除行为。
+`DELETE /knowledge-accumulation/contract/api/contract/documents/{document_id}`，提交正式合同的删除审核申请，替代原立即删除行为。
 
-**认证方式：** `Authorization: Bearer <免登码>`；所有已登录用户均可申请删除共享合同，删除提交人由服务端登录身份取得，不受原上传人限制。
+**认证方式：** `Authorization: Bearer <用户访问令牌>`；所有已通过本平台访问验证的用户均可申请删除共享合同，删除提交人由服务端登录身份取得，不受原上传人限制。
 
 **请求参数：**
 
@@ -127,19 +177,19 @@ curl --header 'Authorization: Bearer <login_code>' \
 
 | 状态码 | 含义 |
 | --- | --- |
-| `401` | 未登录或免登码无效。 |
+| `401` | 未登录或用户访问令牌无效。 |
 | `404` | 正式 SQLite 不存在该合同或已删除。 |
 | `409` | 合同尚未就绪、正在实际删除、can_delete=false，或已有未拒绝且尚未删除成功的申请。 |
 | `422` | 文档 ID 格式错误、缺少请求体或 note、note 不是字符串或超过 10000 字符，或请求体包含额外字段。 |
 | `503` | 本地申请或标志写入失败；申请可能已保存，请先查询申请列表。 |
 
-**请求示例：** 将免登码及合同 ID 替换为实际值。
+**请求示例：** 将用户访问令牌及合同 ID 替换为实际值。
 
 ```bash
-curl --request DELETE --header 'Authorization: Bearer replace-with-login-code' \
+curl --request DELETE --header 'Authorization: Bearer replace-with-user-access-token' \
   --header 'Content-Type: application/json' \
   --data '{"note":"申请删除重复上传的合同"}' \
-  'http://127.0.0.1:20000/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  'http://127.0.0.1:20000/knowledge-accumulation/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 ```
 
 **行为与边界：** 在与正式入库/删除共享的文档锁内保存合同身份快照、上传人、当前删除提交人、申请备注及时间，然后将 `contracts.can_delete` 置为 false。合同仍保持 ready，可正常查看和检索，PDF、ES、Neo4j、注意事项均不清理。并发申请只有一份成功；成功后同一用户或其他用户再次申请均为409。
@@ -155,7 +205,7 @@ curl --request DELETE --header 'Authorization: Bearer replace-with-login-code' \
 ## 获取合同类别列表
 
 ```http
-GET /contract/api/contract/categories
+GET /knowledge-accumulation/contract/api/contract/categories
 ```
 
 无需路径参数、查询参数或请求体。读取 SQLite 的 `contract_category_metadata`，返回全部类别（包括尚未关联任何合同的类别），按 `category_id` 升序排列，不分页。该表在应用启动时从权威类别目录同步；接口不查询 Elasticsearch，也不返回模型分类理由。
@@ -174,11 +224,11 @@ GET /contract/api/contract/categories
 | `code` | string | 权威类别目录的稳定代码，可与提取结果的类别 `code` 对应。 |
 | `name` | string | 类别标准中文名称，供前端展示。 |
 
-所有字段均必有且非空。缺少、无效或过期的 Bearer 免登码返回 `401`，沿用统一认证约定。
+所有字段均必有且非空。缺少、无效或过期的 Bearer 用户访问令牌返回 `401`，沿用统一认证约定。
 
 ```bash
-curl --header 'Authorization: Bearer <login_code>' \
-  'http://127.0.0.1:20000/contract/api/contract/categories'
+curl --header 'Authorization: Bearer <用户 access_token>' \
+  'http://127.0.0.1:20000/knowledge-accumulation/contract/api/contract/categories'
 ```
 
 本接口仅提供类别选项，不查询合同列表，也不新增或修改类别。
@@ -188,7 +238,7 @@ curl --header 'Authorization: Bearer <login_code>' \
 ## 获取 Core 审核表单定义
 
 ```http
-GET /contract/api/contract/core-definitions
+GET /knowledge-accumulation/contract/api/contract/core-definitions
 ```
 
 该接口直接投影应用启动时已加载并校验的 Core 定义快照，不重复读取 YAML。响应顺序与定义目录的稳定加载顺序一致，并且在当前进程生命周期内不变。
@@ -248,7 +298,7 @@ GET /contract/api/contract/core-definitions
 ## 列出尚未入库的运行
 
 ```http
-GET /contract/api/contract/extraction-runs
+GET /knowledge-accumulation/contract/api/contract/extraction-runs
 ```
 
 该路径的 `GET` 用于恢复运行，`POST` 仍用于上传 PDF 并创建新运行。列表只返回当前登录审核用户创建，并且正在处理、等待查重确认或已经形成 Core/Clause 结果但尚未入库的任务；其他用户的任务不会出现在结果中。
@@ -300,7 +350,7 @@ GET /contract/api/contract/extraction-runs
 
 这个运行期 `document` 对象只服务恢复和前端展示，不会被整体复制到 Elasticsearch。正式入库会从中使用处理版页数，并以用户最终提交的 `file_name` 替代创建任务时的原始文件名。
 
-恢复 PDF 预览时，使用 `file_id` 请求 `GET /contract/api/resource/extraction-pdf/{file_id}`，携带同一用户的 Bearer 免登码。读取原有内存处理版，不重新渲染；完整协议与生命周期见[内存处理版 PDF 读取](resource.md#读取提取任务的内存处理版-pdf)。
+恢复 PDF 预览时，使用 `file_id` 请求 `GET /knowledge-accumulation/contract/api/resource/extraction-pdf/{file_id}`，携带同一用户的 Bearer 用户访问令牌。读取原有内存处理版，不重新渲染；完整协议与生命周期见[内存处理版 PDF 读取](resource.md#读取提取任务的内存处理版-pdf)。
 
 > **送审后释放：** 待审快照与 PDF 保存成功后，提取服务从内存注册表删除对应 `run_id`；该任务随后不再出现在本列表中，正式入库等待外部审核。
 
@@ -309,7 +359,7 @@ GET /contract/api/contract/extraction-runs
 ## 上传 PDF 并创建任务
 
 ```http
-POST /contract/api/contract/extraction-runs?file_name={file_name}
+POST /knowledge-accumulation/contract/api/contract/extraction-runs?file_name={file_name}
 Content-Type: application/pdf
 ```
 
@@ -320,7 +370,7 @@ Content-Type: application/pdf
 | Query | `file_name` | string | 是 | 前端展示使用的原始文件名，长度为 1～255。 |
 | Body | PDF 字节 | binary | 是 | 非空的原始 PDF 请求体。 |
 
-接口不接收服务器文件路径，也不使用 `multipart/form-data`。浏览器可以直接把 `File` 对象作为 `fetch` 的 `body`。请求不提供用户名字段；服务端使用当前 Bearer 免登码对应的审核人名称标记任务。
+接口不接收服务器文件路径，也不使用 `multipart/form-data`。浏览器可以直接把 `File` 对象作为 `fetch` 的 `body`。请求不提供用户名字段；服务端使用当前 Bearer 用户访问令牌对应的审核人名称标记任务。
 
 创建接口会等待内部 PDF 技术服务完成格式、加密状态、页数、视觉预算和页面渲染检查。该步骤只是创建任务的输入校验与标准化，不作为“合同预处理”用户阶段或 SSE 状态暴露。无法读取、损坏或加密的 PDF 不会创建任务，返回 `422`。文件大小、恶意内容和更细业务规则仍未实施独立上传策略。
 
@@ -328,10 +378,10 @@ Content-Type: application/pdf
 
 ```bash
 curl --request POST \
-  --header 'Authorization: Bearer <login_code>' \
+  --header 'Authorization: Bearer <用户 access_token>' \
   --header 'Content-Type: application/pdf' \
   --data-binary '@contract.pdf' \
-  'http://127.0.0.1:10000/contract/api/contract/extraction-runs?file_name=contract.pdf'
+  'http://127.0.0.1:10000/knowledge-accumulation/contract/api/contract/extraction-runs?file_name=contract.pdf'
 ```
 
 ### 成功响应
@@ -394,7 +444,7 @@ curl --request POST \
 ## 获取当前状态与提取结果
 
 ```http
-GET /contract/api/contract/extraction-runs/{run_id}
+GET /knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}
 ```
 
 ### 成功响应
@@ -511,7 +561,7 @@ draft:
 - `file_name`、`file_uri` 和 `uploader` 均直接来自该候选的 Elasticsearch 文档；`uploader` 表示本平台提交该合同待审申请的上传人。服务不使用哈希文件名覆盖友好展示名称，也不生成运行级下载地址。
 - `failed` 判断只保留在内部结果及私有审计中，不作为有效候选返回前端；查重技术失败不会自动推进。
 - 每个返回候选都提供 `reasoning_summary`；精确哈希命中只说明文件身份一致，MLLM 判断也不公开完整工具轨迹。
-- 前端需要预览 PDF 时，将 `file_uri` 作为查询参数传给[资源文件 API](resource.md)，即 `GET /contract/api/resource/contract?file_uri=...`。SSE 不内联 PDF 二进制或 Base64。
+- 前端需要预览 PDF 时，将 `file_uri` 作为查询参数传给[资源文件 API](resource.md)，即 `GET /knowledge-accumulation/contract/api/resource/contract?file_uri=...`。SSE 不内联 PDF 二进制或 Base64。
 - 召回候选为空时自动推进：`review_expires_at=null`、`can_continue=false`，`continued_at` 记录自动推进时间。不创建确认期限。
 - 重复合同不进入暂停点：`can_continue=false`、`review_expires_at=null`、`continued_at=null`，运行状态为 `duplicate_rejected`。候选 PDF 列表、负责人和理由继续展示，快照及事件保留至普通运行 TTL 到期；保留期内仍进入可恢复运行列表，列表状态为 `blocked`。SSE 发出终态事件后关闭，重连可回放。前端须接收新事件并隐藏继续、重试和入库操作，而不是隐藏候选列表。
 - 无重复但存在召回候选时进入 `awaiting_deduplication_review`：`can_continue=true`、`continued_at=null`，设置固定确认截止时间（默认 600 秒）。用户调用 continue 后继续结构识别、分类及提取。重复结果不可人工放行，即使之后删除候选，原任务也不能继续，需要重新上传发起查重。继续、重试和入库入口均在后端校验重复结果并返回 `409`。
@@ -578,7 +628,7 @@ clauses:
 ## 取消任务
 
 ```http
-DELETE /contract/api/contract/extraction-runs/{run_id}
+DELETE /knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}
 ```
 
 请求没有 Body。当前审核用户可以取消自己仍驻留内存的任意任务，包括正在自动执行、等待查重确认、失败阻塞或已经形成草稿的任务。
@@ -597,7 +647,7 @@ DELETE /contract/api/contract/extraction-runs/{run_id}
 ## 确认查重并继续
 
 ```http
-POST /contract/api/contract/extraction-runs/{run_id}/continue
+POST /knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}/continue
 ```
 
 此接口用于确认超过阈值的候选合同并继续；无候选已自动推进的任务调用返回 `409`。请求没有 Body。只有 `awaiting_deduplication_review` 状态接受该操作；成功后返回 `202 Accepted` 和当前快照，运行恢复普通 TTL，`contract_structure_recognition` 已进入 `running`。结构识别成功后服务自动开始分类。暂停点只能消费一次，重复提交不具备幂等成功语义。
@@ -615,14 +665,14 @@ POST /contract/api/contract/extraction-runs/{run_id}/continue
 ## 订阅处理事件
 
 ```http
-GET /contract/api/contract/extraction-runs/{run_id}/events
+GET /knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}/events
 Accept: text/event-stream
 Last-Event-ID: 11
 ```
 
 `Last-Event-ID` 可省略。提供时必须是非负整数，服务只回放缓冲区中 `sequence` 更大的事件，然后继续发送实时事件。
 
-> **SSE 客户端：** 浏览器原生 `EventSource` 不能设置 `Authorization` 请求头。订阅受保护的事件流时，应使用支持自定义请求头的 fetch 流式客户端。免登码只在建立 SSE 请求时校验和刷新一次，不会因后续心跳或业务事件持续续期。
+> **SSE 客户端：** 浏览器原生 `EventSource` 不能设置 `Authorization` 请求头。订阅受保护的事件流时，应使用支持自定义请求头的 fetch 流式客户端。用户访问令牌只在建立 SSE 请求时校验和刷新一次，不会因后续心跳或业务事件持续续期。
 
 ### 业务事件帧
 
@@ -783,7 +833,7 @@ X-Accel-Buffering: no
 ## 重试失败阶段
 
 ```http
-POST /contract/api/contract/extraction-runs/{run_id}/stages/{stage_code}/retry
+POST /knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}/stages/{stage_code}/retry
 ```
 
 `stage_code` 接受八个用户业务阶段：
@@ -818,7 +868,7 @@ POST /contract/api/contract/extraction-runs/{run_id}/stages/{stage_code}/retry
 服务端会将用户最终确认的名称与摘要合并向量化并保存至 SQLite，客户端无需增加参数，响应字段不变。此步骤依赖 Embedding 服务；编码失败返回 `502`，不会开始本次持久化，可修复服务后重试。
 
 ```http
-POST /contract/api/contract/extraction-runs/{run_id}/ingestion
+POST /knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}/ingestion
 Content-Type: application/json
 ```
 
@@ -911,9 +961,9 @@ Content-Type: application/json
 
 ## 推荐前端调用顺序
 
-1. 使用审核用户密钥调用登录接口并保存 `login_code`。
+1. 在统一登录平台登录，取得用户 access_token，并确认该 userid 已加入本平台管理员列表。
 2. 查询当前审核用户尚未入库的运行列表；用户选择已有 `run_id` 时查询其快照并重新建立 SSE，否则上传原始 PDF 创建新任务。
-3. 后续请求统一携带 Bearer 免登码；新建任务时保存创建响应中的 `run_id`。
+3. 后续请求统一携带 Bearer 用户访问令牌；新建任务时保存创建响应中的 `run_id`。
 4. 立即渲染创建或同步响应中的 `contract_document_detection` 状态。
 5. 使用支持 `Authorization` 请求头的客户端建立 SSE 连接，按事件更新处理时间线。
 6. 收到 `run.document_rejected` 后展示非合同证据并停止流程；若合同识别成功，则继续等待查重事件。
@@ -929,9 +979,9 @@ Content-Type: application/json
 
 ## 获取合同注意事项列表
 
-**方法与路径：** `GET /contract/api/contract/documents/{document_id}/notes`。读取指定已入库合同的用户注意事项。
+**方法与路径：** `GET /knowledge-accumulation/contract/api/contract/documents/{document_id}/notes`。读取指定已入库合同的用户注意事项。
 
-**认证：** `Authorization: Bearer <免登码>`。所有已登录用户均可读取共享合同，不按合同原审核人或备注作者过滤。
+**认证：** `Authorization: Bearer <用户访问令牌>`。所有已通过本平台访问验证的用户均可读取共享合同，不按合同原审核人或备注作者过滤。
 
 **请求参数：** 路径 `document_id` 为处理版PDF的64位小写SHA-256。无请求体，无分页参数。
 
@@ -948,12 +998,12 @@ Content-Type: application/json
 ]
 ```
 
-**错误响应：** `401` 未登录或免登码失效；`404` 合同不存在或已删除；`409` 合同尚未完成入库；`422` 文档标识格式错误。错误体使用FastAPI标准 `detail`。
+**错误响应：** `401` 未登录或用户访问令牌失效；`404` 合同不存在或已删除；`409` 合同尚未完成入库；`422` 文档标识格式错误。错误体使用FastAPI标准 `detail`。
 
-**调用示例：** 替换主机端口、免登码及文档标识。
+**调用示例：** 替换主机端口、用户访问令牌及文档标识。
 
 ```bash
-curl 'http://127.0.0.1:8000/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/notes' \
+curl 'http://127.0.0.1:8000/knowledge-accumulation/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/notes' \
   -H 'Authorization: Bearer YOUR_LOGIN_CODE'
 ```
 
@@ -965,9 +1015,9 @@ curl 'http://127.0.0.1:8000/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaa
 
 服务端自动对每条注意事项正文单独向量化，并与正文一起保存至 SQLite。请求和返回字段不变，客户端不提交向量。依赖现有 Embedding 服务；编码或存储失败返回通用 `502`，编码失败不创建条目。编码期间合同被删除或状态改变仍按 `404/409` 反馈。旧备注不自动回填，删除条目时同步删除向量。详见[注意事项向量](../architecture/data/contract-sqlite-metadata.md#注意事项向量)。
 
-**方法与路径：** `POST /contract/api/contract/documents/{document_id}/notes`。为指定已入库合同追加一条注意事项并落盘。
+**方法与路径：** `POST /knowledge-accumulation/contract/api/contract/documents/{document_id}/notes`。为指定已入库合同追加一条注意事项并落盘。
 
-**认证：** `Authorization: Bearer <免登码>`。所有已登录用户均可追加共享合同注意事项。作者名称从认证用户取得，创建时间由服务端生成。
+**认证：** `Authorization: Bearer <用户访问令牌>`。所有已通过本平台访问验证的用户均可追加共享合同注意事项。作者名称从认证用户取得，创建时间由服务端生成。
 
 **请求参数：** 路径 `document_id` 为处理版PDF的64位小写SHA-256。JSON请求体仅接受 `content`，必须为文字，去除首尾空白后长度1至10000字符。不接受客户端指定作者、时间、note_id或在请求体重复传document_id。
 
@@ -986,12 +1036,12 @@ curl 'http://127.0.0.1:8000/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaa
 }
 ```
 
-**错误响应：** `401` 未登录或免登码失效；`404` 合同不存在或已删除；`409` 合同尚未完成入库；`422` 路径、正文类型/长度或额外字段不合法；`502` 注意事项向量化或存储失败。错误体使用FastAPI标准 `detail`。
+**错误响应：** `401` 未登录或用户访问令牌失效；`404` 合同不存在或已删除；`409` 合同尚未完成入库；`422` 路径、正文类型/长度或额外字段不合法；`502` 注意事项向量化或存储失败。错误体使用FastAPI标准 `detail`。
 
-**调用示例：** 替换主机端口、免登码及文档标识。
+**调用示例：** 替换主机端口、用户访问令牌及文档标识。
 
 ```bash
-curl -X POST 'http://127.0.0.1:8000/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/notes' \
+curl -X POST 'http://127.0.0.1:8000/knowledge-accumulation/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/notes' \
   -H 'Authorization: Bearer YOUR_LOGIN_CODE' \
   -H 'Content-Type: application/json' \
   -d '{"content":"签约前核对履约担保期限。"}'
@@ -1003,9 +1053,9 @@ curl -X POST 'http://127.0.0.1:8000/contract/api/contract/documents/aaaaaaaaaaaa
 
 ## 获取合同内容摘要
 
-**方法与路径：** `GET /contract/api/contract/documents/{document_id}/summary`。读取已入库合同在SQLite中保存的单份内容摘要。
+**方法与路径：** `GET /knowledge-accumulation/contract/api/contract/documents/{document_id}/summary`。读取已入库合同在SQLite中保存的单份内容摘要。
 
-**认证：** `Authorization: Bearer <免登码>`。所有已登录用户均可访问共享正式合同摘要，不按原入库审核人过滤。
+**认证：** `Authorization: Bearer <用户访问令牌>`。所有已通过本平台访问验证的用户均可访问共享正式合同摘要，不按原入库审核人过滤。
 
 **请求参数：** 路径 `document_id` 必填，为处理版PDF的64位小写SHA-256。无请求体及查询参数。
 
@@ -1018,12 +1068,12 @@ curl -X POST 'http://127.0.0.1:8000/contract/api/contract/documents/aaaaaaaaaaaa
 }
 ```
 
-**错误响应：** `401` 未登录或免登码失效；`404` 合同不存在或已删除；`409` 合同尚未完成入库；`422` 文档标识格式错误。错误体使用FastAPI标准 `detail`。
+**错误响应：** `401` 未登录或用户访问令牌失效；`404` 合同不存在或已删除；`409` 合同尚未完成入库；`422` 文档标识格式错误。错误体使用FastAPI标准 `detail`。
 
-**调用示例：** 替换主机端口、免登码及文档标识。
+**调用示例：** 替换主机端口、用户访问令牌及文档标识。
 
 ```bash
-curl 'http://127.0.0.1:8000/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/summary' \
+curl 'http://127.0.0.1:8000/knowledge-accumulation/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/summary' \
   -H 'Authorization: Bearer YOUR_LOGIN_CODE'
 ```
 
@@ -1044,9 +1094,9 @@ curl 'http://127.0.0.1:8000/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaa
 
 ## 删除合同注意事项
 
-**方法与路径：** `DELETE /contract/api/contract/documents/{document_id}/notes/{note_id}`。
+**方法与路径：** `DELETE /knowledge-accumulation/contract/api/contract/documents/{document_id}/notes/{note_id}`。
 
-**认证：** `Authorization: Bearer <免登码>`。所有已登录用户均可删除任意作者的共享注意事项。
+**认证：** `Authorization: Bearer <用户访问令牌>`。所有已通过本平台访问验证的用户均可删除任意作者的共享注意事项。
 
 **请求参数：** `document_id` 是合同完整的64位小写SHA-256；`note_id` 是注意事项列表或新增响应返回的UUID。无请求体。
 
@@ -1055,7 +1105,7 @@ curl 'http://127.0.0.1:8000/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaa
 **错误响应：** `401` 未登录；`404` 合同不存在，或该合同下没有指定注意事项（包括已删除及属于其他合同）；`409` 合同尚未完成入库；`422` 路径格式错误；`503` SQLite暂时不可用。错误体使用标准 `detail`，不暴露内部数据库异常。
 
 ```bash
-curl -X DELETE 'http://127.0.0.1:20000/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/notes/a03e827d-8d9c-4dbb-9c2d-d5c6bf682394' \
+curl -X DELETE 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/notes/a03e827d-8d9c-4dbb-9c2d-d5c6bf682394' \
   -H 'Authorization: Bearer YOUR_LOGIN_CODE'
 ```
 
@@ -1066,11 +1116,11 @@ curl -X DELETE 'http://127.0.0.1:20000/contract/api/contract/documents/aaaaaaaaa
 
 ## 创建合同关联
 
-**方法与用途：** `POST /contract/api/contract/relations`。为两份已正式入库合同创建一条无向关联，保存关系描述和创建信息。服务端同时生成描述向量并与关系原子写入 Neo4j；客户端无需提供向量，返回字段不变。关系创建后不可修改。
+**方法与用途：** `POST /knowledge-accumulation/contract/api/contract/relations`。为两份已正式入库合同创建一条无向关联，保存关系描述和创建信息。服务端同时生成描述向量并与关系原子写入 Neo4j；客户端无需提供向量，返回字段不变。关系创建后不可修改。
 
 新增依赖配置的 Embedding 服务可用；编码失败或响应校验失败时返回 `502`，不创建关系。编码与历史数据边界见[关系描述向量](../architecture/data/contract-graph.md#关系描述向量)。
 
-**认证方式：** `Authorization: Bearer <login_code>`。所有已登录用户均可操作，创建人从当前登录身份取得。
+**认证方式：** `Authorization: Bearer <用户 access_token>`。所有已通过本平台访问验证的用户均可操作，创建人从当前登录身份取得。
 
 **请求参数：** 无路径或查询参数，JSON 请求体如下：
 
@@ -1101,7 +1151,7 @@ curl -X DELETE 'http://127.0.0.1:20000/contract/api/contract/documents/aaaaaaaaa
 
 | 状态码 | 含义 |
 | --- | --- |
-| `401` | 未登录或免登码无效。 |
+| `401` | 未登录或用户访问令牌无效。 |
 | `404` | 任一合同不存在或已删除。 |
 | `409` | 任一合同正在入库/删除、图节点缺失，或两份合同间已有关系。 |
 | `422` | ID 非法、自关联、描述为空/超长/非文字，或携带额外字段。 |
@@ -1109,11 +1159,11 @@ curl -X DELETE 'http://127.0.0.1:20000/contract/api/contract/documents/aaaaaaaaa
 
 错误体使用 `{"detail":"原因"}`，参数校验失败沿用框架错误数组。图节点缺失时需同步后重试。HTTP 响应丢失后的重新提交可能返回 `409`，不会覆盖已经写入的关系，不提供 HTTP 幂等键。
 
-**请求示例：** 替换合同 ID 和免登码。
+**请求示例：** 替换合同 ID 和用户访问令牌。
 
 ```bash
-curl --request POST 'http://127.0.0.1:20000/contract/api/contract/relations' \
-  --header 'Authorization: Bearer <login_code>' \
+curl --request POST 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/contract/relations' \
+  --header 'Authorization: Bearer <用户 access_token>' \
   --header 'Content-Type: application/json' \
   --data '{"document_id_a":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","document_id_b":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","description":"主合同与交付补充协议。"}'
 ```
@@ -1127,9 +1177,9 @@ curl --request POST 'http://127.0.0.1:20000/contract/api/contract/relations' \
 
 ## 删除合同关联
 
-**方法与用途：** `DELETE /contract/api/contract/relations/{relation_id}`。物理删除指定关系边，保留两端合同及其他关系。
+**方法与用途：** `DELETE /knowledge-accumulation/contract/api/contract/relations/{relation_id}`。物理删除指定关系边，保留两端合同及其他关系。
 
-**认证方式：** `Authorization: Bearer <login_code>`。所有已登录用户均可删除，不按原创建人限制。
+**认证方式：** `Authorization: Bearer <用户 access_token>`。所有已通过本平台访问验证的用户均可删除，不按原创建人限制。
 
 **请求参数：** 路径 `relation_id` 必填，为创建关联接口返回的 UUID；无查询参数和请求体。UUID 解析后转换为标准小写形式，不接受合同 ID 代替关系 ID。
 
@@ -1139,19 +1189,19 @@ curl --request POST 'http://127.0.0.1:20000/contract/api/contract/relations' \
 
 | 状态码 | 含义 |
 | --- | --- |
-| `401` | 未登录或免登码无效。 |
+| `401` | 未登录或用户访问令牌无效。 |
 | `404` | 指定关系不存在、已独立删除，或随合同删除而清除；重复删除也返回此状态。 |
 | `422` | 关系 ID 不是合法 UUID。 |
 | `502` | Neo4j 删除失败，返回通用提示，内部错误保留日志。 |
 
 错误体使用 `{"detail":"原因"}`，路径校验失败沿用框架错误数组。
 
-**请求示例：** 替换免登码及关系 ID。
+**请求示例：** 替换用户访问令牌及关系 ID。
 
 ```bash
 curl --request DELETE \
-  'http://127.0.0.1:20000/contract/api/contract/relations/c514f63b-4526-4672-aa96-d960e5b1a006' \
-  --header 'Authorization: Bearer <login_code>'
+  'http://127.0.0.1:20000/knowledge-accumulation/contract/api/contract/relations/c514f63b-4526-4672-aa96-d960e5b1a006' \
+  --header 'Authorization: Bearer <用户 access_token>'
 ```
 
 **行为与边界：** 仅按 `relation_id` 匹配连接 `Contract` 节点的 `RELATED_TO` 边，执行单个图事务，不读取或修改 SQLite、ES、PDF，不调用模型。删除不依赖合同为 `ready`，因此也可清理删除中合同的残留关系。与合同删除并发时，若关系已经被清理则返回 `404`。
@@ -1163,9 +1213,9 @@ curl --request DELETE \
 
 ## 获取合同一跳关系列表
 
-**方法与用途：** `GET /contract/api/contract/documents/{document_id}/relations`。读取指定合同的直接关联，即固定深度为 1 的无向邻居，不扩展到对方合同的其他邻居。
+**方法与用途：** `GET /knowledge-accumulation/contract/api/contract/documents/{document_id}/relations`。读取指定合同的直接关联，即固定深度为 1 的无向邻居，不扩展到对方合同的其他邻居。
 
-**认证方式：** `Authorization: Bearer <login_code>`。所有已登录用户均可查询，不按关系创建人过滤。
+**认证方式：** `Authorization: Bearer <用户 access_token>`。所有已通过本平台访问验证的用户均可查询，不按关系创建人过滤。
 
 **请求参数：** 路径 `document_id` 必填，必须为完整的 64 位小写 SHA-256。无请求体，不提供深度或分页参数。
 
@@ -1189,7 +1239,7 @@ curl --request DELETE \
 
 | 状态码 | 含义 |
 | --- | --- |
-| `401` | 未登录或免登码无效。 |
+| `401` | 未登录或用户访问令牌无效。 |
 | `404` | 起点合同不存在或已删除。 |
 | `409` | 起点合同正在入库/删除，或其图节点缺失、需要同步。 |
 | `422` | 合同 ID 格式错误。 |
@@ -1197,11 +1247,11 @@ curl --request DELETE \
 
 错误体使用 `{"detail":"原因"}`，路径校验失败沿用框架错误数组。
 
-**请求示例：** 替换合同 ID 和免登码。
+**请求示例：** 替换合同 ID 和用户访问令牌。
 
 ```bash
-curl 'http://127.0.0.1:20000/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/relations' \
-  --header 'Authorization: Bearer <login_code>'
+curl 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/relations' \
+  --header 'Authorization: Bearer <用户 access_token>'
 ```
 
 **行为与边界：** 持有起点合同的共享文档锁，先校验 SQLite `ready` 状态，再查询 Neo4j 单跳关系，并过滤 SQLite 中不存在或非 `ready` 的对方合同。查询仅访问 SQLite 和 Neo4j，不读取 PDF、ES 或调用模型。结果是查询时可见列表，不保证返回后关系或合同不会被并发删除；不构成跨存储快照事务。固定返回所有可见一跳关系，不提供多跳扩展。

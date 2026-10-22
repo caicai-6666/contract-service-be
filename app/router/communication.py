@@ -15,9 +15,9 @@ from anyio import CancelScope
 from app.infrastructure.communication_store import SQLiteCommunicationStore
 from app.infrastructure.contract_metadata_store import SQLiteContractMetadataStore, ContractMetadataStatus
 from app.schema.communication import ContractReference
-from app.user import ReviewerUser
+from app.schema.auth import AuthenticatedUser
 
-from app.router.dependency import AuthenticatedUserDependency
+from app.router.dependency import PlatformUserDependency
 from app.schema.communication import CommunicationEvent, CommunicationSnapshot, ConversationListItem, ConversationRenameRequest, TurnCreatedResponse, ConversationTaskHistoryResponse
 from app.service.communication_history import ConversationHistoryService, ConversationNotResidentError
 from app.service.communication_display import display_payload
@@ -83,19 +83,19 @@ def resolve_contract_references(store, contract_ids) -> tuple[ContractReference,
 
 
 async def require_conversation_owner(
-    conversation_id: ConversationId, store: StoreDependency, user: AuthenticatedUserDependency,
+    conversation_id: ConversationId, store: StoreDependency, user: PlatformUserDependency,
     request: Request,
 ) -> str:
     history = getattr(request.app.state, "communication_history_service", None)
-    if history is not None and await history.owns_ephemeral(conversation_id, secret_key=user.secret_key):
-        return user.name
+    if history is not None and await history.owns_ephemeral(conversation_id, owner_userid=user.userid):
+        return user.userid
     try:
-        await run_in_threadpool(store.read_conversation, conversation_id, secret_key=user.secret_key)
+        await run_in_threadpool(store.read_conversation, conversation_id, owner_userid=user.userid)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="会话不存在") from exc
     except sqlite3.Error as exc:
         raise HTTPException(status_code=503, detail="会话存储暂时不可用") from exc
-    return user.name
+    return user.userid
 
 
 ConversationOwnerDependency = Annotated[str, Depends(require_conversation_owner)]
@@ -106,10 +106,10 @@ ConversationOwnerDependency = Annotated[str, Depends(require_conversation_owner)
     summary="获取当前用户保留的全部会话",
     responses={401: {"description": "免登码无效或过期。"}, 503: {"description": "会话存储暂时不可用。"}},
 )
-async def list_conversations(store: StoreDependency, user: AuthenticatedUserDependency) -> list[dict]:
+async def list_conversations(store: StoreDependency, user: PlatformUserDependency) -> list[dict]:
     """归属只取认证用户的密钥；在线程中读取持久化目录，不阻塞事件循环。"""
     try:
-        return await run_in_threadpool(store.list_conversations, secret_key=user.secret_key)
+        return await run_in_threadpool(store.list_conversations, owner_userid=user.userid)
     except sqlite3.Error as exc:
         raise HTTPException(status_code=503, detail="会话存储暂时不可用") from exc
 
@@ -123,7 +123,7 @@ async def list_conversations(store: StoreDependency, user: AuthenticatedUserDepe
                503: {"description": "会话存储暂时不可用。"}},
 )
 async def open_conversation(
-    conversation_id: ConversationId, history: HistoryDependency, user: AuthenticatedUserDependency,
+    conversation_id: ConversationId, history: HistoryDependency, user: PlatformUserDependency,
 ) -> ConversationTaskHistoryResponse:
     return await _load_history(history, conversation_id, user, refresh=False)
 
@@ -135,16 +135,16 @@ async def open_conversation(
                409: {"description": "会话尚未打开或历史内容冲突。"}, 503: {"description": "存储暂时不可用。"}},
 )
 async def refresh_conversation(
-    conversation_id: ConversationId, history: HistoryDependency, user: AuthenticatedUserDependency,
+    conversation_id: ConversationId, history: HistoryDependency, user: PlatformUserDependency,
 ) -> ConversationTaskHistoryResponse:
     return await _load_history(history, conversation_id, user, refresh=True)
 
 
 async def _load_history(history: ConversationHistoryService, conversation_id: str,
-                        user: ReviewerUser, *, refresh: bool) -> ConversationTaskHistoryResponse:
+                        user: AuthenticatedUser, *, refresh: bool) -> ConversationTaskHistoryResponse:
     try:
         method = history.refresh if refresh else history.open
-        snapshot = await method(conversation_id, secret_key=user.secret_key)
+        snapshot = await method(conversation_id, owner_userid=user.userid)
         # 对外只提供精简展示事件；内部摘要、工具轨迹及模型窗口保持不变。
         return ConversationTaskHistoryResponse(
             **snapshot.model_dump(exclude={"records"}),
@@ -169,11 +169,11 @@ async def _load_history(history: ConversationHistoryService, conversation_id: st
 )
 async def rename_conversation(
     conversation_id: ConversationId, body: ConversationRenameRequest,
-    store: StoreDependency, user: AuthenticatedUserDependency,
+    store: StoreDependency, user: PlatformUserDependency,
 ) -> dict:
     try:
         return await run_in_threadpool(store.rename_conversation, conversation_id,
-                                       secret_key=user.secret_key, name=body.name)
+                                       owner_userid=user.userid, name=body.name)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="会话不存在") from exc
     except ValueError as exc:
@@ -190,10 +190,10 @@ async def rename_conversation(
 )
 async def delete_conversation(
     conversation_id: ConversationId, history: HistoryDependency,
-    user: AuthenticatedUserDependency,
+    user: PlatformUserDependency,
 ) -> Response:
     try:
-        await history.delete(conversation_id, secret_key=user.secret_key)
+        await history.delete(conversation_id, owner_userid=user.userid)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="会话不存在") from exc
     except sqlite3.Error as exc:
@@ -225,15 +225,15 @@ def _format_event(event: CommunicationEvent) -> str:
 )
 async def create_turn(
     conversation_id: ConversationId, service: EventServiceDependency,
-    reviewer_user_name: ConversationOwnerDependency,
-    user: AuthenticatedUserDependency, contract_store: ContractStoreDependency,
+    owner_userid: ConversationOwnerDependency,
+    user: PlatformUserDependency, contract_store: ContractStoreDependency,
     text: Annotated[str | None, Form(max_length=20000, description="用户原始文字；与 files、contract_ids 至少提供一项非空输入。")] = None,
     contract_ids: Annotated[list[str] | None, Form(description="可选正式合同 ID 列表，重复提交 contract_ids 字段，最多 10 份；名称与摘要由后端读取。")] = None,
     files: Annotated[list[UploadFile] | None, File(description="可选 PDF 列表；重复使用 files 字段，最多 10 份，每份 10 MiB，总量 20 MiB。")] = None,
     supersedes_turn_id: Annotated[str | None, Form(min_length=1, max_length=128, description="补充或调整执行中请求时，显式指定同会话需要被替代的旧轮次 ID。")] = None,
 ) -> TurnCreatedResponse:
     return await _submit_turn(
-        conversation_id, service, reviewer_user_name, text, files, supersedes_turn_id,
+        conversation_id, service, owner_userid, text, files, supersedes_turn_id,
         new_user=user, contract_store=contract_store, contract_ids=contract_ids,
     )
 
@@ -249,7 +249,7 @@ async def create_turn(
     },
 )
 async def create_conversation(
-    service: EventServiceDependency, store: StoreDependency, user: AuthenticatedUserDependency,
+    service: EventServiceDependency, store: StoreDependency, user: PlatformUserDependency,
     contract_store: ContractStoreDependency,
     name: Annotated[str | None, Form(max_length=200, description="可选会话名称；未提供时按北京时间生成年月日时分秒。")] = None,
     text: Annotated[str | None, Form(max_length=20000, description="首次请求文字，与 files、contract_ids 至少提供一项非空输入。")] = None,
@@ -257,7 +257,7 @@ async def create_conversation(
     files: Annotated[list[UploadFile] | None, File(description="首次请求 PDF 列表，最多 10 份，每份 10 MiB，合计 20 MiB。")] = None,
 ) -> TurnCreatedResponse:
     return await _submit_turn(
-        str(uuid4()), service, user.name, text, files, None,
+        str(uuid4()), service, user.userid, text, files, None,
         new_store=store, new_user=user, name=name, contract_store=contract_store, contract_ids=contract_ids,
     )
 
@@ -266,7 +266,7 @@ async def _submit_turn(
     conversation_id: str, service: CommunicationEventService, owner: str,
     text: str | None, files: list[UploadFile] | None, supersedes_turn_id: str | None,
     *, new_store: SQLiteCommunicationStore | None = None,
-    new_user: ReviewerUser | None = None, name: str | None = None,
+    new_user: AuthenticatedUser | None = None, name: str | None = None,
     contract_store: SQLiteContractMetadataStore | None = None, contract_ids: list[str] | None = None,
 ) -> TurnCreatedResponse:
     """只暂存输入及注册事件源；成功返回前不进行 PDF 渲染或模型调用。"""
@@ -308,18 +308,18 @@ async def _submit_turn(
                 try:
                     if new_store is not None:
                         await run_in_threadpool(new_store.create_conversation, conversation_id,
-                                                secret_key=new_user.secret_key, name=name)
+                                                owner_userid=new_user.userid, name=name)
                         created = True
                     snapshot = await service.register_turn(
                         conversation_id, turn_id, owner=owner,
                         supersedes_turn_id=supersedes_turn_id,
                         staged_input=TurnInput(text=text if text and text.strip() else None, files=tuple(staged_files), contracts=contracts),
-                        secret_key=new_user.secret_key if new_user else None,
+                        owner_userid=new_user.userid if new_user else None,
                     )
                 except BaseException:
                     if created:
                         await run_in_threadpool(new_store.rollback_empty_conversation,
-                                                conversation_id, secret_key=new_user.secret_key)
+                                                conversation_id, owner_userid=new_user.userid)
                     raise
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -356,7 +356,7 @@ async def _submit_turn(
 )
 async def stream_turn_events(
     conversation_id: ConversationId, turn_id: TurnId,
-    service: EventServiceDependency, reviewer_user_name: ConversationOwnerDependency,
+    service: EventServiceDependency, owner_userid: ConversationOwnerDependency,
     last_event_id: Annotated[
         str | None, Header(alias="Last-Event-ID", description="已收到的轮次事件序号；缺省从 0 开始。"),
     ] = None,
@@ -368,7 +368,7 @@ async def stream_turn_events(
         raise HTTPException(status_code=422, detail="Last-Event-ID 必须是非负整数")
     try:
         stream = await service.subscribe(
-            conversation_id, turn_id, owner=reviewer_user_name,
+            conversation_id, turn_id, owner=owner_userid,
             after_sequence=int(last_event_id) if last_event_id is not None else 0,
         )
     except CommunicationNotFoundError as exc:
@@ -408,11 +408,11 @@ async def stream_turn_events(
 )
 async def get_turn(
     conversation_id: ConversationId, turn_id: TurnId,
-    service: EventServiceDependency, reviewer_user_name: ConversationOwnerDependency,
+    service: EventServiceDependency, owner_userid: ConversationOwnerDependency,
 ) -> CommunicationSnapshot:
     """原子读取事件投影快照，不返回内部上下文或私有审计。"""
     try:
-        return await service.snapshot(conversation_id, turn_id, owner=reviewer_user_name)
+        return await service.snapshot(conversation_id, turn_id, owner=owner_userid)
     except CommunicationNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -428,11 +428,11 @@ async def get_turn(
 )
 async def cancel_turn(
     conversation_id: ConversationId, turn_id: TurnId,
-    service: EventServiceDependency, reviewer_user_name: ConversationOwnerDependency,
+    service: EventServiceDependency, owner_userid: ConversationOwnerDependency,
 ) -> CommunicationSnapshot:
     """仅取消已开放中断的轮次；业务门禁期间禁止用户取消。"""
     try:
-        return await service.cancel_turn(conversation_id, turn_id, owner=reviewer_user_name)
+        return await service.cancel_turn(conversation_id, turn_id, owner=owner_userid)
     except CommunicationNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -446,7 +446,7 @@ __all__ = ["router"]
             summary='读取本人任务的开发链路（仅开发环境显式启用）')
 async def get_development_trace(
     conversation_id: ConversationId, turn_id: TurnId, service: EventServiceDependency,
-    reviewer_user_name: ConversationOwnerDependency,
+    owner_userid: ConversationOwnerDependency,
 ) -> dict:
     from app.core.config import get_settings
     from app.infrastructure.development_trace import safe_value
@@ -454,7 +454,7 @@ async def get_development_trace(
     if not settings.communication_trace_enabled or settings.app_env != 'development':
         raise HTTPException(status_code=404, detail='开发链路未启用')
     try:
-        snapshot = await service.snapshot(conversation_id, turn_id, owner=reviewer_user_name)
+        snapshot = await service.snapshot(conversation_id, turn_id, owner=owner_userid)
     except CommunicationNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {'snapshot': snapshot.model_dump(mode='json'),
@@ -465,7 +465,7 @@ async def get_development_trace(
 @router.post('/development-turns', response_model=TurnCreatedResponse, status_code=201,
              summary='创建仅内存的独立展示任务')
 async def create_development_turn(
-    service: EventServiceDependency, history: HistoryDependency, user: AuthenticatedUserDependency,
+    service: EventServiceDependency, history: HistoryDependency, user: PlatformUserDependency,
     text: Annotated[str, Form(min_length=1, max_length=20000, description='本次独立提问的原始文字。')],
 ) -> TurnCreatedResponse:
     from app.core.config import get_settings
@@ -477,14 +477,14 @@ async def create_development_turn(
     conversation_id, turn_id = str(uuid4()), str(uuid4())
     with CancelScope(shield=True):
         try:
-            await history.create_ephemeral(conversation_id, secret_key=user.secret_key)
+            await history.create_ephemeral(conversation_id, owner_userid=user.userid)
         except ValueError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         try:
-            snapshot = await service.register_turn(conversation_id, turn_id, owner=user.name,
-                secret_key=user.secret_key, staged_input=TurnInput(text=text))
+            snapshot = await service.register_turn(conversation_id, turn_id, owner=user.userid,
+                owner_userid=user.userid, staged_input=TurnInput(text=text))
         except BaseException:
-            await history.delete(conversation_id, secret_key=user.secret_key)
+            await history.delete(conversation_id, owner_userid=user.userid)
             raise
     return TurnCreatedResponse(conversation_id=conversation_id, turn_id=turn_id,
         activation_expires_at=snapshot.activation_expires_at, can_interrupt=snapshot.can_interrupt)

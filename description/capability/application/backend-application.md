@@ -16,10 +16,12 @@
 | `app.infrastructure` | 适配 Elasticsearch 等外部系统。 |
 | `app.agent` | 存放可复用的合同处理 Agent 工作流。 |
 | `app.service` | 承载业务用例及其应用契约，调用 Agent 工作流并协调外部依赖。 |
-| `app.user` | 定义审核用户对象，并加载启动期 YAML 内存快照。 |
+| `app/router/dependency.py` | 查询中间件登录及平台管理员资格，并注入稳定用户身份。 |
 | `app.tool` | 存放无业务状态的通用技术工具，例如 PDF 页面渲染和压缩。 |
 
-路由层只负责协议转换和依赖装配；服务层负责业务用例、权限、幂等性和持久化边界；复杂的模型编排与状态流转位于 `agent`。`app.router.contract` 是合同事务的统一 HTTP/SSE 路由模块，当前承载合同上传、查重暂停与继续、提取状态、草稿、重试和正式入库接口，并统一使用 `/contract/api/contract` 业务前缀。
+路由层只负责协议转换和依赖装配；服务层负责业务用例、权限、幂等性和持久化边界；复杂的模型编排与状态流转位于 `agent`。`app.router.contract` 是合同事务的统一 HTTP/SSE 路由模块，当前承载合同上传、查重暂停与继续、提取状态、草稿、重试和正式入库接口，并统一使用 `/knowledge-accumulation/contract/api/contract` 业务前缀。
+
+`app/core/routing.py` 统一定义应用前缀 `/knowledge-accumulation` 与 API 前缀 `/knowledge-accumulation/contract/api`。应用工厂在一次路由挂载中应用 API 前缀，Swagger UI、ReDoc、OpenAPI 和 Swagger OAuth 回调也置于应用前缀下；不使用 `root_path` 模拟路径迁移。待审详情返回的 PDF 地址复用同一 API 常量，旧无前缀地址不保留。调用方和网关须保留完整新路径，数据库内 `file_uri` 与外部中间件接口地址保持自身契约。
 
 `app.bootstrap` 是框架入口与业务实现之间唯一的启动期组合根。`app.main` 只将其 `lifespan` 注册到 FastAPI；`core` 不依赖具体基础设施，`infrastructure` 也不负责组装业务服务。这样可以在不扩大领域层职责的前提下集中管理 Elasticsearch、内存任务服务、正式入库服务和业务目录快照。
 
@@ -47,15 +49,14 @@ SQLite 是正式合同文件管理的权威目录，Elasticsearch 是完整合�
 
 同一生命周期还会从 `FIELD_DEFINITION_DIR` 全量读取 Core YAML，构造不可变 `FieldDefinitionCatalog` 并保存到 `application.state.field_definition_catalog`。Core 必须非空，名称和稳定索引 `code` 必须全局唯一；根目录不允许出现 `core` 之外的职责目录。目录加载完成后，该快照立即用于正式索引 mapping 同步。字段对象结构、目录边界和指纹规则见[模型提取对象定义结构](../../architecture/data/field-definition.md)。
 
-审核用户从 `REVIEWER_USER_FILE` 指定的单个 YAML 文件加载，默认文件为 `data/user/users.yaml`。每个条目被校验并转换为不可变 `ReviewerUser`，完整快照保存到 `application.state.reviewer_user_catalog`；文件不存在、用户为空、名称或密钥重复、密钥为空或出现未定义字段都会阻止应用启动。密钥使用 `SecretStr` 保存在对象中，普通日志与对象表示不会输出明文。生命周期同时创建 `application.state.login_code_cache` 和 `application.state.auth_service`，供登录路由签发与解析免登码。完整用户契约见[审核用户 YAML 定义](../../architecture/data/reviewer-user-definition.md)，接口见[审核用户登录 API](../../api/auth.md)。
+认证服务复用后台平台会话，查询中间件有效用户登录及当前平台管理员列表。独立依赖注入业务路由，用户身份仅含 userid、username、ttl，不加载本地用户目录或签发令牌。见[用户身份与所有权](../../architecture/data/user-identity.md)。
 
 ---
 
 ## 配置与启动
 
-配置从项目根目录的 `.env` 加载；可复制 `.env.example` 作为本地模板。合同类别目录使用 `CONTRACT_CATEGORY_DEFINITION_DIR`，字段定义总目录使用 `FIELD_DEFINITION_DIR`，检索问题指南目录使用 `RETRIEVAL_VIEW_GUIDE_DIR`，审核用户文件使用 `REVIEWER_USER_FILE`。`RETRIEVAL_VIEW_MAX_QUESTIONS` 是单份合同由模型提出的问题数量上限，默认值为 `8`，必须大于零；实际问题数量可以更少。Elasticsearch 通过逗号分隔的 `ELASTICSEARCH_HOSTS` 配置节点地址，中文全文字段分析器由 `ELASTICSEARCH_TEXT_ANALYZER` 指定并默认使用 `smartcn`；本机 Compose 的启动、插件、数据卷和安全边界见[Elasticsearch 本地开发部署](../infrastructure/elasticsearch-development.md)。
+配置从项目根目录的 `.env` 加载；可复制 `.env.example` 作为本地模板。合同类别目录使用 `CONTRACT_CATEGORY_DEFINITION_DIR`，字段定义总目录使用 `FIELD_DEFINITION_DIR`，检索问题指南目录使用 `RETRIEVAL_VIEW_GUIDE_DIR`。`RETRIEVAL_VIEW_MAX_QUESTIONS` 是单份合同由模型提出的问题数量上限，默认值为 `8`，必须大于零；实际问题数量可以更少。Elasticsearch 通过逗号分隔的 `ELASTICSEARCH_HOSTS` 配置节点地址，中文全文字段分析器由 `ELASTICSEARCH_TEXT_ANALYZER` 指定并默认使用 `smartcn`；本机 Compose 的启动、插件、数据卷和安全边界见[Elasticsearch 本地开发部署](../infrastructure/elasticsearch-development.md)。
 
-`AUTH_LOGIN_CODE_TTL_SECONDS` 控制免登码在当前 API 进程内存中的空闲存活时间，默认 `3600` 秒且必须大于零。缓存使用单调时钟判断过期，不受系统墙上时间调整影响；每次成功校验都会刷新对应免登码的过期点，普通缓存快照不会续期。缓存不持久化，应用关闭或热重载后全部免登码失效。
 
 ### 中间件服务配置
 
@@ -66,7 +67,7 @@ SQLite 是正式合同文件管理的权威目录，Elasticsearch 是完整合�
 | 环境变量 | 配置属性 | 用途 |
 | --- | --- | --- |
 | `MIDDLEWARE_PLATFORM_CODE` | `middleware_platform_code` | 本平台登记的 `platform_code`，加载时去除首尾空白。 |
-| `MIDDLEWARE_SECRET` | `middleware_secret` | 本平台的登录 `secret`，使用 `SecretStr` 避免配置对象常规输出泄露明文；保留原值，不裁剪凭证。 |
+| `MIDDLEWARE_SECRET` | `middleware_secret` | 本平台的登录 `secret`，使用 `str` 避免配置对象常规输出泄露明文；保留原值，不裁剪凭证。 |
 
 真实 secret 只填写本地环境或部署密钥配置，`.env.example` 保持空值；不得记录到日志。仅在登录请求发送时通过 `get_secret_value()` 读取凭证明文。
 
@@ -97,7 +98,7 @@ python -m app.main
 
 首次配置及依赖准备见[仓库 README](../../../README.md#启动方式)。Lindera 是需单独准备的原生扩展，不能仅靠安装 Python 依赖完成启动环境。
 
-运行依赖统一维护在项目根目录的 `requirements.txt`，使用兼容版本区间而不是应用打包元数据。 网页搜索复用 `httpx` 异步请求博查，`trafilatura>=2.2,<3.0` 用于本地 HTML 正文提取；搜索和结果列表工具已接入会话缓存、分页与主循环；网页子图已实现 HTTP、正文提取和模型精炼，打开工具已注册主循环并接入正文缓存与分页，详见[网页工具](../../architecture/workflow/contract-communication/web-search.md)。 历史搜索与正文提取验证见[归档报告](../../../experiment/web-search-extraction/REPORT.md)，已记录误召回、权限限制提示遗漏及附件链接丢失等边界。`.venv` 只用于本机隔离且已被 Git 忽略。`app.main` 的 `__main__` 分支直接调用 `uvicorn.run`；从项目根目录执行 `python -m app.main`，默认监听 `0.0.0.0:20000` 并开启源码热重载。IDE 运行时应将项目根目录加入 Python 包搜索路径。
+运行依赖统一维护在项目根目录的 `requirements.txt`，使用兼容版本区间而不是应用打包元数据。 网页搜索复用 `httpx` 异步请求DeepSeek Search，`trafilatura>=2.2,<3.0` 用于本地 HTML 正文提取；搜索和结果列表工具已接入会话缓存、分页与主循环；网页子图已实现 HTTP、正文提取和模型精炼，打开工具已注册主循环并接入正文缓存与分页，详见[网页工具](../../architecture/workflow/contract-communication/web-search.md)。 历史搜索与正文提取验证见[归档报告](../../../experiment/web-search-extraction/REPORT.md)，已记录误召回、权限限制提示遗漏及附件链接丢失等边界。`.venv` 只用于本机隔离且已被 Git 忽略。`app.main` 的 `__main__` 分支直接调用 `uvicorn.run`；从项目根目录执行 `python -m app.main`，默认监听 `0.0.0.0:20000` 并开启源码热重载。IDE 运行时应将项目根目录加入 Python 包搜索路径。
 
 热重载会重启唯一工作进程并清空内存合同任务，只适合本地开发。部署入口应由外部 ASGI 进程管理器加载 `app.main:app`，关闭热重载，并继续保持单 worker。
 
@@ -128,7 +129,7 @@ MLLM 默认使用 `262144` token 上下文。视觉预算从上下文中扣除 `
 
 若 vLLM 因 KV cache 容量不足而拒绝 `262144`，应优先降低 `--max-num-seqs`，再根据实际显存调整 `--gpu-memory-utilization`，不能让应用配置的上下文大于服务端上限。配置模型同时校验 MLLM 的非视觉预留和显式视觉上限不超过上下文窗口、重排 `top_n` 不超过候选上限，以及 Embedding 输出维度与 Elasticsearch 向量维度一致。
 
-所有业务路由统一使用 `/contract/api` 前缀。`GET /contract/api/health` 和审核用户登录保持公开，其他路由在聚合时统一注入免登码校验依赖；依赖从 `Authorization: Bearer <login_code>` 解析当前审核人名称。应用启动时装配合同文档识别图和 PDF 查重图；合同提取服务先执行合同门禁，再使用共享 Elasticsearch 客户端和 `data/contract` 候选加载器执行查重。暂停事件只返回 Elasticsearch 中的友好文件名和 `file_uri`，不内联合同字节或生成运行级下载 URL。应用同时装配受限本地合同文件存储，供[资源文件 API](../../api/resource.md)按 `file_uri` 流式返回正式合同 PDF。登录接口见[审核用户登录 API](../../api/auth.md)，合同上传、合同文档判断、查重暂停、继续、状态、SSE 与重试接口见[合同 API](../../api/contract.md)。ASGI 服务器应加载 `app.main:app`。
+所有业务路由统一使用 `/knowledge-accumulation/contract/api` 前缀，仅健康检查公开，其余入口统一验证用户登录及本平台管理员资格。任务所有者采用 userid；用户名只用于展示。应用启动时装配合同文档识别图和 PDF 查重图；合同提取服务先执行合同门禁，再使用共享 Elasticsearch 客户端和 `data/contract` 候选加载器执行查重。暂停事件只返回 Elasticsearch 中的友好文件名和 `file_uri`，不内联合同字节或生成运行级下载 URL。应用同时装配受限本地合同文件存储，供[资源文件 API](../../api/resource.md)按 `file_uri` 流式返回正式合同 PDF。登录接口见[用户访问认证 API](../../api/auth.md)，合同上传、合同文档判断、查重暂停、继续、状态、SSE 与重试接口见[合同 API](../../api/contract.md)。ASGI 服务器应加载 `app.main:app`。
 
 
 ## Neo4j 生命周期
@@ -138,6 +139,8 @@ MLLM 默认使用 `262144` token 上下文。视觉预算从上下文中扣除 `
 ---
 
 ## 审核反馈后台任务
+
+正式合同存储就绪后还会启动 `file_permission_consumer`，轮询中间件文件等级调整，先原子更新等级与历史，再 ack。目标不存在时记录跳过并确认；关闭时先停止消费者。配置及恢复规则见[文件等级调整消费与历史](file-permission-adjustments.md)。
 
 `IngestionReviewPublisher` 复用平台会话定时上传，利用中间件 `(platform_code, source_id)` 查重，自动重试不确定结果，409重复响应关联此前申请；旧挂起及进程中断申请启动后恢复延迟重试。见[待审请求后台发布](ingestion-review-publisher.md)。
 

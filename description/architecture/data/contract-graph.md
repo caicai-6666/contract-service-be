@@ -27,7 +27,7 @@
 
 此外保存内部属性 `pair_key`，值为按字典序排序的完整 ID 以冒号拼接，用于数据库级无向端点去重，不接受客户端指定、不在响应中公开。`pair_key` 与 `relation_id` 分别具有唯一约束。
 
-客户端只提交两端合同 ID 与描述，不指定关系 ID、操作人或创建时间。当前系统所有已登录用户具有统一操作资格；不引入管理员等级。
+客户端只提交两端合同 ID 与描述，不指定关系 ID、操作人或创建时间。当前系统所有已通过本平台访问验证的用户具有统一操作资格；不引入管理员等级。
 
 关系只保存创建信息，不保存 `updated_at`、`updated_by`。字段名统一使用 `description`，不另设含义重复的 `note`。描述中的角色应明确对应具体合同，避免依赖展示顺序使用“前者”“后者”。
 
@@ -62,14 +62,14 @@ created_by: "amy"
 | --- | --- |
 | `description_embedding` | 描述的 L2 归一化浮点向量。 |
 | `embedding_model` | 本次使用的 Embedding 模型名称。 |
-| `embedding_version` | 编码指令版本，当前为 `contract-relation-description-v1`。 |
+| `embedding_version` | 编码指令版本，当前为 `generic-text-retrieval-en-v1`。 |
 | `embedding_dimensions` | 本次向量维度。 |
 
-编码由 `app/service/contract_relation_embedding.py` 提供，复用 `EmbeddingClient`、全局 Embedding 并发配额和现有 `VLLM_EMBEDDING_*` 配置，不另设模型或连接配置。使用现有文本编码的 ChatML 输入形式：system 放关系描述编码指令，user 放经请求校验的描述原文；不加入合同哈希、作者或创建时间。指令保留合同角色、关联原因、条件、否定和不确定性，不补造事实。
+编码由 `app/service/contract_relation_embedding.py` 提供，复用 `EmbeddingClient`、全局 Embedding 并发配额和现有 `VLLM_EMBEDDING_*` 配置，不另设模型或连接配置。使用现有文本编码的 ChatML 输入形式：system 放统一通用文本编码指令，user 放经请求校验的描述原文；不加入合同哈希、作者或创建时间。查询与描述共用 `app/core/embedding_prompt.py` 的通用文本指令，保留实体、关系、条件、否定和不确定性，不补造事实。
 
 响应必须匹配配置模型、一个向量和配置维度；布尔值、非有限数值、零向量与非法范数均拒绝。向量统一 L2 归一化，图存储入口再次检查数值和编码信息。连接在成功、失败或取消时关闭，模型调用不置于 Neo4j 事务回调中，驱动重试不会重新编码。
 
-此阶段只实现新增关系编码及持久化，未创建向量索引、全文索引或检索接口。历史关系不会自动回填，仍能正常查看和删除；后续建立向量检索时必须处理历史缺失值及模型/维度兼容性。数据库启动不调用 Embedding，更换模型不会自动重算既有向量。
+关系检索已实现查询内存中的 BM25、向量与RRF，不依赖Neo4j持久化向量索引或全文索引。历史关系不会自动回填，仍能正常查看和删除；后续建立向量检索时必须处理历史缺失值及模型/维度兼容性。数据库启动不调用 Embedding，更换模型不会自动重算既有向量。
 
 验证：关系 API 与编码/图写入的 15 项单元测试通过；未执行真实 Embedding 与 Neo4j 联调，也未修改已有业务关系。
 

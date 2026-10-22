@@ -123,9 +123,9 @@ information_ids 必须已经存在且无重复；失败时原剩余规划完整�
 from app.agent.contract_communication.agent_core import execute_workspace_tool
 
 async def commit(payload, expected_revision):
-    # history、conversation_id、secret_key 由当前已认证执行器绑定。
+    # history、conversation_id、owner_userid 由当前已认证执行器绑定。
     return await history.update_workspace(
-        conversation_id, secret_key=secret_key,
+        conversation_id, owner_userid=owner_userid,
         payload=payload, expected_revision=expected_revision,
     )
 

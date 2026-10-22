@@ -46,7 +46,7 @@
 
 打开会话仍只驻留最新摘要及后续历史。归档会按需补读该会话 SQLite 中尚未加工的更早任务，避免旧任务因摘要窗口截断而永远漏掉；此补读不扩展前端或问答模型的历史窗口，不读取已存的向量与检索正文。未驻留的会话不会被后台主动打开，重启后尚未加工任务在会话再次打开后恢复调度。
 
-Service向单任务图传入完整ConversationHistoryRecord副本，保留record_id、sequence、turn_id、状态、payload和计时，但不传用户密钥或工作区。图只把三个公开区域送入Embedding，身份和序号由程序持有。输出record必须与该输入完整相等，retrieval.record_id必须一致，禁止错配、修改原文或遗漏任务。
+Service向单任务图传入完整ConversationHistoryRecord副本，保留record_id、sequence、turn_id、状态、payload和计时，但不传用户 userid或工作区。图只把三个公开区域送入Embedding，身份和序号由程序持有。输出record必须与该输入完整相等，retrieval.record_id必须一致，禁止错配、修改原文或遗漏任务。
 
 外层 `should_index_task` 的确定性筛选规则：
 

@@ -114,10 +114,10 @@ SQLite 查询显式选择记录元数据、payload、activated_at 与 processing
 
 内部接口供后续问答执行器使用，不是新增 HTTP 或模型工具接口：
 
-- `get_workspace(conversation_id, secret_key=...)`：加载并返回工作区深拷贝，包含 payload、revision、updated_at。
-- `update_workspace(conversation_id, secret_key=..., payload=..., expected_revision=...)`：校验归属、完整结构及内存版本，接受后递增 revision，更新时间并唤醒后台备份；返回深拷贝。过期版本拒绝提交。
-- `create_workspace_entry(conversation_id, secret_key=..., section=..., entry=..., expected_revision=...)`：创建用户补充（section=task_constraints，entry 为文本）、已知信息或剩余方向，程序生成键并返回 `(key, snapshot)`；不能直接创建已探索记录。
-- `update_workspace_field(conversation_id, secret_key=..., section=..., key=..., field=..., value=..., expected_revision=...)`：修改已有字段。task_constraints 中 key=task 修改用户任务，其他 key 定位已有补充，此时 field 为 null；其余区域按条目键与字段更新。
+- `get_workspace(conversation_id, owner_userid=...)`：加载并返回工作区深拷贝，包含 payload、revision、updated_at。
+- `update_workspace(conversation_id, owner_userid=..., payload=..., expected_revision=...)`：校验归属、完整结构及内存版本，接受后递增 revision，更新时间并唤醒后台备份；返回深拷贝。过期版本拒绝提交。
+- `create_workspace_entry(conversation_id, owner_userid=..., section=..., entry=..., expected_revision=...)`：创建用户补充（section=task_constraints，entry 为文本）、已知信息或剩余方向，程序生成键并返回 `(key, snapshot)`；不能直接创建已探索记录。
+- `update_workspace_field(conversation_id, owner_userid=..., section=..., key=..., field=..., value=..., expected_revision=...)`：修改已有字段。task_constraints 中 key=task 修改用户任务，其他 key 定位已有补充，此时 field 为 null；其余区域按条目键与字段更新。
 - `complete_workspace_direction(..., direction_id=..., outcome=..., conclusion=..., information_ids=..., expected_revision=...)`：同一提交将剩余方向移入已探索区，保留 ID 并记录结果；失败不移除原规划。
 - `remove_workspace_entry(..., section=..., key=..., expected_revision=...)`：移除失效补充、已知信息或方向条目；不允许留下悬空信息引用，不删除原始轨迹。
 - `flush()`：每个会话最多尝试一个备份批次；返回值只表示本轮尝试是否成功，不代表处理期间新产生的数据已经全部保存。

@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
-from pydantic import TypeAdapter, SecretStr
+from pydantic import TypeAdapter
 from app.agent.contract_communication.business_gate.state import FileSummary
 from app.service.communication_trace import ToolCallTrace, ToolResultTrace
 
@@ -131,7 +131,7 @@ class CommunicationEventService:
         self, conversation_id: str, turn_id: str, *, owner: str,
         supersedes_turn_id: str | None = None,
         staged_input: TurnInput | None = None,
-        secret_key: SecretStr | None = None,
+        owner_userid: str | None = None,
     ) -> CommunicationSnapshot:
         """注册事件源；用户调整时原子替代旧轮次，不等于实际中断模型任务。"""
         if any(not value.strip() or len(value) > 128 for value in (conversation_id, turn_id, owner)):
@@ -198,7 +198,7 @@ class CommunicationEventService:
                     )
                 # 所有注册校验完成后才暂存附件和加入共享轨迹；失败不终止旧轮次。
                 await self._history.register_locked(
-                    conversation_id, turn_id, secret_key=secret_key, source=staged_input,
+                    conversation_id, turn_id, owner_userid=owner_userid, source=staged_input,
                     can_interrupt=turn.snapshot.can_interrupt,
                 )
                 turn.history_registered = True

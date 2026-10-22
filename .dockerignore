@@ -1,22 +1,22 @@
 **
 !requirements.txt
-!app/
 !app/**
-!data/
-!data/definition/
-!data/definition/**
-!data/tool-tag/
-!data/tool-tag/qwen3.8-flash-next-nvfp4.txt
-**/__pycache__/
-**/*.pyc
 
-!data/template/
-!data/template/deepseek-v4.1-flash.jinja
-!data/tool-tag/deepseek-v4.1-flash.txt
-!data/template/glm-5.3-flash.jinja
-!data/tool-tag/glm-5.3-flash.txt
+# Docker 的目录例外会递归放行后代，只对白名单文件设例外。
+!data/definition/**/*.yaml
+!data/definition/**/*.yml
+!data/tool-tag/*.txt
+!data/template/*.jinja
 
 # Dockerfile 内直接构建 Lindera，只放行配置与依赖锁，不包含本地 scripts。
-!config/
 !config/lindera-Cargo.lock
 !config/lindera-jieba.yml
+
+# 资源白名单不能重新放行嵌套的凭据、系统文件或编译缓存。
+**/.env
+**/.env.*
+**/.DS_Store
+**/._*
+**/__pycache__/
+**/*.pyc
+**/*.pyo

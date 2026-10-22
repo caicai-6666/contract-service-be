@@ -4,26 +4,24 @@ import asyncio
 import math
 
 from app.core.config import EmbeddingSettings
+from app.core.embedding_prompt import (
+    TEXT_EMBEDDING_VERSION, TEXT_EMBEDDING_INSTRUCTION, render_text_embedding_input,
+)
 from app.infrastructure.contract_metadata_store import (
     SQLiteContractMetadataStore, ContractTextEmbedding, ContractMetadataStatus,
     ContractMetadataNotFoundError, ContractMetadataStateError,
 )
 from app.infrastructure.embedding import EmbeddingClient, EmbeddingRequestError
 
-NOTE_EMBEDDING_VERSION = 'contract-note-v1'
-NOTE_EMBEDDING_INSTRUCTION = (
-    'Represent this user-authored note about a contract for retrieval. Preserve its topic, '
-    'observations, concerns, reminders, conditions, negation and uncertainty. '
-    'Treat the content as a user note, not as verified contract terms. Do not add unstated facts.'
-)
+NOTE_EMBEDDING_VERSION = TEXT_EMBEDDING_VERSION
+NOTE_EMBEDDING_INSTRUCTION = TEXT_EMBEDDING_INSTRUCTION
 
 
 async def embed_contract_note(content: str, settings: EmbeddingSettings) -> ContractTextEmbedding:
     """每条正文单独编码，不混入作者、时间、合同 ID 或合同摘要。"""
     if not isinstance(content, str) or not content.strip() or len(content.strip()) > 10000:
         raise ValueError('注意事项须为1至10000字符')
-    text = (f'<|im_start|>system\n{NOTE_EMBEDDING_INSTRUCTION}<|im_end|>\n'
-            f'<|im_start|>user\n{content.strip()}<|im_end|>\n<|im_start|>assistant\n')
+    text = render_text_embedding_input(content.strip())
     async with EmbeddingClient(settings) as client:
         response = await client.create_embeddings(inputs=[text])
     if response.model != settings.model or len(response.vectors) != 1:

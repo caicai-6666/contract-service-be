@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from anyio import CancelScope
-from pydantic import SecretStr
 from starlette.concurrency import run_in_threadpool
 
 from app.infrastructure.communication_store import SQLiteCommunicationStore, CommunicationStoreConflict
@@ -65,7 +64,7 @@ class ArchiveCandidate:
     conversation_id: str
     residency_id: str
     activity_generation: int
-    secret_key: SecretStr = field(repr=False)
+    owner_userid: str = field(repr=False)
     records: tuple[ConversationHistoryRecord, ...]
     force: bool
 
@@ -81,7 +80,7 @@ class ConversationHistoryService:
         self._lock = asyncio.Lock()
         self._backup_lock = asyncio.Lock()
         self._persisted: set[str] = set()
-        self._owners: dict[str, SecretStr] = {}
+        self._owners: dict[str, str] = {}
         self._dirty = asyncio.Event()
         self._worker: asyncio.Task | None = None
         self.evict_runtime = None
@@ -91,7 +90,7 @@ class ConversationHistoryService:
         """事件提交与历史读取共用锁，禁止复制成第二份独立任务轨迹。"""
         return self._lock
 
-    async def create_ephemeral(self, conversation_id: str, *, secret_key: SecretStr) -> None:
+    async def create_ephemeral(self, conversation_id: str, *, owner_userid: str) -> None:
         """展示任务只建内存工作区；不创建 SQLite 会话，也不进入备份与记忆归档。"""
         from app.schema.communication_workspace import empty_workspace_payload
         async with self._lock:
@@ -105,23 +104,23 @@ class ConversationHistoryService:
             workspace = WorkspaceSnapshot(payload=empty_workspace_payload(), revision=0, updated_at=now)
             self._resident[conversation_id] = ResidentConversation(history, workspace, 0,
                 ephemeral=True, last_activity=self._clock(), last_idle_scan=self._clock())
-            self._owners[conversation_id] = secret_key
+            self._owners[conversation_id] = owner_userid
 
-    async def owns_ephemeral(self, conversation_id: str, *, secret_key: SecretStr) -> bool:
+    async def owns_ephemeral(self, conversation_id: str, *, owner_userid: str) -> bool:
         async with self._lock:
             resident = self._resident.get(conversation_id)
-            return bool(resident and resident.ephemeral and self._owners.get(conversation_id) == secret_key)
+            return bool(resident and resident.ephemeral and self._owners.get(conversation_id) == owner_userid)
 
-    async def open(self, conversation_id: str, *, secret_key: SecretStr) -> ConversationHistoryResponse:
-        return await self._load(conversation_id, secret_key=secret_key, refresh=False)
+    async def open(self, conversation_id: str, *, owner_userid: str) -> ConversationHistoryResponse:
+        return await self._load(conversation_id, owner_userid=owner_userid, refresh=False)
 
-    async def refresh(self, conversation_id: str, *, secret_key: SecretStr) -> ConversationHistoryResponse:
-        return await self._load(conversation_id, secret_key=secret_key, refresh=True)
+    async def refresh(self, conversation_id: str, *, owner_userid: str) -> ConversationHistoryResponse:
+        return await self._load(conversation_id, owner_userid=owner_userid, refresh=True)
 
-    def _find_file_locked(self, conversation_id: str, file_id: str, secret_key: SecretStr):
+    def _find_file_locked(self, conversation_id: str, file_id: str, owner_userid: str):
         """直接定位指定会话，只查其已驻留任务；不跨会话搜索或查询历史数据库。"""
         resident = self._resident.get(conversation_id)
-        if resident is None or self._owners.get(conversation_id) != secret_key:
+        if resident is None or self._owners.get(conversation_id) != owner_userid:
             raise ConversationFileNotFoundError('会话附件不存在或不可用')
         for record in resident.history.records:
             if record.kind != 'task' or record.status not in {
@@ -137,41 +136,41 @@ class ConversationHistoryService:
                     return resident, file
         raise ConversationFileNotFoundError('会话附件不存在或不可用')
 
-    async def memory_query_pool(self, conversation_id, *, secret_key):
+    async def memory_query_pool(self, conversation_id, *, owner_userid):
         """已鉴权驻留会话共用配置容量的查询池；由检索会话注入使用。"""
         from app.agent.contract_communication.agent_core.subgraph.memory_retrieval.pool import MemoryQueryPool
         async with self._lock:
             resident = self._resident.get(conversation_id)
-            if resident is None or self._owners.get(conversation_id) != secret_key:
+            if resident is None or self._owners.get(conversation_id) != owner_userid:
                 raise PermissionError('会话不可用')
             if resident.memory_query_pool is None:
                 resident.memory_query_pool = MemoryQueryPool(conversation_id, self._store.database_path,
                     capacity=self._memory_query_capacity, page_size=self._memory_query_page_size)
             return resident.memory_query_pool
 
-    async def file_tool_access(self, conversation_id, *, secret_key, file_id=None):
+    async def file_tool_access(self, conversation_id, *, owner_userid, file_id=None):
         """文件工具的权限快照；工作线程须桥接到事件循环，不能直接读驻留字典。"""
         async with self._lock:
             resident = self._resident.get(conversation_id)
-            if resident is None or self._owners.get(conversation_id) != secret_key:
+            if resident is None or self._owners.get(conversation_id) != owner_userid:
                 raise PermissionError('会话不可用')
             name = None
             if file_id is not None:
                 try:
-                    _, file = self._find_file_locked(conversation_id, file_id, secret_key)
+                    _, file = self._find_file_locked(conversation_id, file_id, owner_userid)
                 except ConversationFileNotFoundError as exc:
                     raise PermissionError('会话附件不可用') from exc
                 name = file['file_name']
             return resident.residency_id, name
 
-    async def read_file(self, conversation_id: str, file_id: str, *, secret_key: SecretStr) -> tuple[str, bytes]:
+    async def read_file(self, conversation_id: str, file_id: str, *, owner_userid: str) -> tuple[str, bytes]:
         """准入后即可读内存原 PDF；归档后回退磁盘，不等待任务完成、不触发备份。"""
         try:
             file_id = str(UUID(file_id))
         except (ValueError, TypeError, AttributeError) as exc:
             raise ConversationFileNotFoundError('会话附件不存在或不可用') from exc
         async with self._lock:
-            resident, file = self._find_file_locked(conversation_id, file_id, secret_key)
+            resident, file = self._find_file_locked(conversation_id, file_id, owner_userid)
             name = file['file_name']
             content = resident.uploads.get(file['file_path'])
             if content:
@@ -183,16 +182,16 @@ class ConversationHistoryService:
         except (OSError, ValueError) as exc:
             raise ConversationFileNotFoundError('会话附件不存在或不可用') from exc
         async with self._lock:
-            current, _ = self._find_file_locked(conversation_id, file_id, secret_key)
+            current, _ = self._find_file_locked(conversation_id, file_id, owner_userid)
             if current is not resident:
                 raise ConversationFileNotFoundError('会话附件不存在或不可用')
             # 读取期间删除、驱逐或重新打开不能继承旧授权；成功读取算作用户活动。
             self._touch_locked(conversation_id)
         return name, content
 
-    async def _load(self, conversation_id: str, *, secret_key: SecretStr, refresh: bool) -> ConversationHistoryResponse:
+    async def _load(self, conversation_id: str, *, owner_userid: str, refresh: bool) -> ConversationHistoryResponse:
         async with self._lock:
-            result = await self._load_locked(conversation_id, secret_key=secret_key, refresh=refresh)
+            result = await self._load_locked(conversation_id, owner_userid=owner_userid, refresh=refresh)
             self._touch_locked(conversation_id)
             return result
 
@@ -202,21 +201,21 @@ class ConversationHistoryService:
         resident.last_activity = resident.last_idle_scan = self._clock()
         resident.idle_scans = 0
 
-    async def _load_locked(self, conversation_id: str, *, secret_key: SecretStr, refresh: bool) -> ConversationHistoryResponse:
+    async def _load_locked(self, conversation_id: str, *, owner_userid: str, refresh: bool) -> ConversationHistoryResponse:
         resident = self._resident.get(conversation_id)
         if resident is not None and resident.ephemeral:
-            if self._owners.get(conversation_id) != secret_key:
+            if self._owners.get(conversation_id) != owner_userid:
                 raise LookupError('会话不存在')
             return resident.history.model_copy(deep=True)
         # 即便命中缓存也重新校验密钥；不把命中缓存视为授权。
-        await run_in_threadpool(self._store.read_conversation, conversation_id, secret_key=secret_key)
+        await run_in_threadpool(self._store.read_conversation, conversation_id, owner_userid=owner_userid)
         resident = self._resident.get(conversation_id)
         current = resident.history if resident else None
         if refresh and current is None:
             raise ConversationNotResidentError("会话尚未打开，请先调用 open")
         start = current.records[0].sequence if current and current.records else None
         page = await run_in_threadpool(
-            self._store.read_history_window, conversation_id, secret_key=secret_key,
+            self._store.read_history_window, conversation_id, owner_userid=owner_userid,
             start_sequence=start, extend=refresh and start is not None,
             include_workspace=resident is None,
         )
@@ -243,14 +242,14 @@ class ConversationHistoryService:
             now = self._clock()
             self._resident[conversation_id] = ResidentConversation(
                 result, workspace, workspace.revision, last_activity=now, last_idle_scan=now,
-                reasoning_window=await run_in_threadpool(self._store.read_reasoning_window, conversation_id, secret_key=secret_key),
+                reasoning_window=await run_in_threadpool(self._store.read_reasoning_window, conversation_id, owner_userid=owner_userid),
             )
         else:
             resident.history = result
         # 在途事务即便已经被读到，也要等“轨迹 + 工作区”整批确认成功后再标记。
         resident_ids = {r.record_id for r in current.records} if current else set()
         self._persisted.update(record.record_id for record in incoming if record.record_id not in resident_ids)
-        self._owners[conversation_id] = secret_key
+        self._owners[conversation_id] = owner_userid
         return result.model_copy(deep=True)
 
     def get_agent_core_snapshot_locked(self, conversation_id, turn_id):
@@ -291,9 +290,9 @@ class ConversationHistoryService:
         payload['agent_core_ready'] = True
         self._replace_locked(conversation_id, record.model_copy(update={'payload': payload}))
 
-    async def register_locked(self, conversation_id, turn_id, *, secret_key, source, can_interrupt=False):
+    async def register_locked(self, conversation_id, turn_id, *, owner_userid, source, can_interrupt=False):
         """调用者持有共享锁；注册时确定顺序，不能按后台备份完成顺序编号。"""
-        await self._load_locked(conversation_id, secret_key=secret_key, refresh=False)
+        await self._load_locked(conversation_id, owner_userid=owner_userid, refresh=False)
         current = self._resident[conversation_id].history
         if any(r.turn_id == turn_id for r in current.records):
             raise ValueError('轮次已存在于会话历史中')
@@ -576,13 +575,13 @@ class ConversationHistoryService:
                     await run_in_threadpool(ensure_uploaded_files,
                                             self._store.database_path.parent / 'upload', backup.records, uploads)
                     await run_in_threadpool(
-                        self._store.backup_tasks_with_workspace, cid, secret_key=key,
+                        self._store.backup_tasks_with_workspace, cid, owner_userid=key,
                         records=[record.model_dump() for record in backup.records],
                         workspace=backup.workspace.model_dump(),
                         expected_workspace_revision=backup.expected_workspace_revision, positions=backup.positions,
                     )
                 except (sqlite3.Error, ValueError, LookupError, OSError):
-                    # 不回显密钥、正文或数据库异常细节；保留内存供展示和重试。
+                    # 不回显用户标识、正文或数据库异常细节；保留内存供展示和重试。
                     logger.warning('会话轨迹与工作区备份失败，将保留内存并重试：conversation_id=%s', cid)
                     success = False
                 else:
@@ -600,21 +599,21 @@ class ConversationHistoryService:
                             self._dirty.set()
         return success
 
-    async def get_workspace(self, conversation_id: str, *, secret_key: SecretStr) -> WorkspaceSnapshot:
+    async def get_workspace(self, conversation_id: str, *, owner_userid: str) -> WorkspaceSnapshot:
         """供后续问答执行器读取工作区；深拷贝禁止调用方绕过校验直接修改驻留状态。"""
         async with self._lock:
-            await self._load_locked(conversation_id, secret_key=secret_key, refresh=False)
+            await self._load_locked(conversation_id, owner_userid=owner_userid, refresh=False)
             return self._resident[conversation_id].workspace.model_copy(deep=True)
 
     async def update_workspace(
-        self, conversation_id: str, *, secret_key: SecretStr, payload: dict, expected_revision: int,
+        self, conversation_id: str, *, owner_userid: str, payload: dict, expected_revision: int,
     ) -> WorkspaceSnapshot:
         """接受执行器已确认的完整工作区；只负责校验/存储，不推断或整理业务内容。"""
         validated = WorkspacePayload.model_validate(payload).model_copy(deep=True)
         if type(expected_revision) is not int or expected_revision < 0:
             raise ValueError('工作区版本必须为非负整数')
         async with self._lock:
-            await self._load_locked(conversation_id, secret_key=secret_key, refresh=False)
+            await self._load_locked(conversation_id, owner_userid=owner_userid, refresh=False)
             return self.update_workspace_locked(conversation_id, payload=validated, expected_revision=expected_revision)
 
     def update_workspace_locked(self, conversation_id, *, payload, expected_revision):
@@ -632,7 +631,7 @@ class ConversationHistoryService:
         return resident.workspace.model_copy(deep=True)
 
     async def create_workspace_entry(
-        self, conversation_id: str, *, secret_key: SecretStr, section: str,
+        self, conversation_id: str, *, owner_userid: str, section: str,
         entry: dict | str, expected_revision: int,
     ) -> tuple[str, WorkspaceSnapshot]:
         """创建用户补充、已知信息或剩余方向；方向结论须通过收束接口生成。"""
@@ -640,28 +639,28 @@ class ConversationHistoryService:
                     'remaining_directions': 'direction'}
         if section not in prefixes:
             raise ValueError('不允许直接创建该工作区条目')
-        snapshot = await self._workspace_for_edit(conversation_id, secret_key, expected_revision)
+        snapshot = await self._workspace_for_edit(conversation_id, owner_userid, expected_revision)
         payload = snapshot.payload.model_dump()
         target = payload['task_constraints']['supplements'] if section == 'task_constraints' else payload[section]
         key = f'{prefixes[section]}_{uuid4().hex}'
         while key in target or key in payload['explored_directions']:
             key = f'{prefixes[section]}_{uuid4().hex}'
         target[key] = entry
-        accepted = await self.update_workspace(conversation_id, secret_key=secret_key,
+        accepted = await self.update_workspace(conversation_id, owner_userid=owner_userid,
             payload=payload, expected_revision=expected_revision)
         return key, accepted
 
-    async def _workspace_for_edit(self, conversation_id, secret_key, expected_revision):
+    async def _workspace_for_edit(self, conversation_id, owner_userid, expected_revision):
         """编辑前读取深拷贝；最终提交仍再次比较版本，拒绝读取后的竞争更新。"""
         if type(expected_revision) is not int or expected_revision < 0:
             raise ValueError('工作区版本必须为非负整数')
-        snapshot = await self.get_workspace(conversation_id, secret_key=secret_key)
+        snapshot = await self.get_workspace(conversation_id, owner_userid=owner_userid)
         if snapshot.revision != expected_revision:
             raise CommunicationStoreConflict('工作区版本已过期')
         return snapshot
 
     async def update_workspace_field(
-        self, conversation_id: str, *, secret_key: SecretStr, section: str, key: str,
+        self, conversation_id: str, *, owner_userid: str, section: str, key: str,
         field: str | None, value: object, expected_revision: int,
     ) -> WorkspaceSnapshot:
         """修改一个已有字段；task_constraints 中 task 或补充键直接更新文本。"""
@@ -669,7 +668,7 @@ class ConversationHistoryService:
             raise ValueError('不允许修改该工作区分区')
         if not isinstance(key, str) or (field is not None and not isinstance(field, str)):
             raise ValueError('工作区键与字段必须为字符串')
-        snapshot = await self._workspace_for_edit(conversation_id, secret_key, expected_revision)
+        snapshot = await self._workspace_for_edit(conversation_id, owner_userid, expected_revision)
         payload = snapshot.payload.model_dump()
         if section == 'task_constraints':
             if field is not None:
@@ -682,15 +681,15 @@ class ConversationHistoryService:
             if key not in payload[section] or field not in payload[section][key]:
                 raise ValueError('待修改条目或字段不存在')
             payload[section][key][field] = value
-        return await self.update_workspace(conversation_id, secret_key=secret_key,
+        return await self.update_workspace(conversation_id, owner_userid=owner_userid,
             payload=payload, expected_revision=expected_revision)
 
     async def complete_workspace_direction(
-        self, conversation_id: str, *, secret_key: SecretStr, direction_id: str,
+        self, conversation_id: str, *, owner_userid: str, direction_id: str,
         outcome: str, conclusion: str, information_ids: list[str], expected_revision: int,
     ) -> WorkspaceSnapshot:
         """同一提交将剩余方向转入已探索区，保留 ID；任一校验失败均不移除原方向。"""
-        snapshot = await self._workspace_for_edit(conversation_id, secret_key, expected_revision)
+        snapshot = await self._workspace_for_edit(conversation_id, owner_userid, expected_revision)
         payload = snapshot.payload.model_dump()
         if not isinstance(direction_id, str) or direction_id not in payload['remaining_directions']:
             raise ValueError('待收束的剩余方向不存在')
@@ -699,23 +698,23 @@ class ConversationHistoryService:
             'plan': direction['plan'], 'outcome': outcome, 'conclusion': conclusion,
             'information_ids': information_ids,
         }
-        return await self.update_workspace(conversation_id, secret_key=secret_key,
+        return await self.update_workspace(conversation_id, owner_userid=owner_userid,
             payload=payload, expected_revision=expected_revision)
 
     async def remove_workspace_entry(
-        self, conversation_id: str, *, secret_key: SecretStr, section: str, key: str,
+        self, conversation_id: str, *, owner_userid: str, section: str, key: str,
         expected_revision: int,
     ) -> WorkspaceSnapshot:
         """移除不再有效的工作区条目；信息引用必须仍有效，原始轨迹不受影响。"""
         if section not in ('task_constraints', 'known_information', 'explored_directions', 'remaining_directions'):
             raise ValueError('不允许移除该分区的记录')
-        snapshot = await self._workspace_for_edit(conversation_id, secret_key, expected_revision)
+        snapshot = await self._workspace_for_edit(conversation_id, owner_userid, expected_revision)
         payload = snapshot.payload.model_dump()
         target = payload[section]['supplements'] if section == 'task_constraints' else payload[section]
         if not isinstance(key, str) or key not in target:
             raise ValueError('待移除条目不存在')
         del target[key]
-        return await self.update_workspace(conversation_id, secret_key=secret_key,
+        return await self.update_workspace(conversation_id, owner_userid=owner_userid,
             payload=payload, expected_revision=expected_revision)
 
     async def archive_candidates(self, *, interval: float, idle_limit: int, idle_seconds: float) -> tuple[ArchiveCandidate, ...]:
@@ -757,7 +756,7 @@ class ConversationHistoryService:
 
     async def memory_backlog(self, candidate: ArchiveCandidate) -> tuple[ConversationHistoryRecord, ...]:
         stored = await run_in_threadpool(self._store.read_memory_backlog, candidate.conversation_id,
-                                        secret_key=candidate.secret_key)
+                                        owner_userid=candidate.owner_userid)
         async with self._lock:
             self._matching_resident(candidate)
         boundary = max((r.sequence for r in candidate.records), default=0)
@@ -792,7 +791,7 @@ class ConversationHistoryService:
                 uploads = dict(resident.uploads)
             await run_in_threadpool(ensure_uploaded_files, self._store.database_path.parent / 'upload', records, uploads)
             await run_in_threadpool(
-                self._store.archive_tasks_with_workspace, cid, secret_key=candidate.secret_key,
+                self._store.archive_tasks_with_workspace, cid, owner_userid=candidate.owner_userid,
                 records=[r.model_dump() for r in records], memories=[r.model_dump() for r in memories],
                 workspace=workspace.model_dump(), expected_workspace_revision=revision,
             )
@@ -818,7 +817,7 @@ class ConversationHistoryService:
                 uploads = dict(resident.uploads)
             await run_in_threadpool(ensure_uploaded_files, self._store.database_path.parent / 'upload', records, uploads)
             stored = await run_in_threadpool(self._store.read_memory_backlog, candidate.conversation_id,
-                                            secret_key=candidate.secret_key)
+                                            owner_userid=candidate.owner_userid)
             async with self._lock:
                 resident = self._matching_resident(candidate)
                 if (resident.activity_generation != candidate.activity_generation
@@ -838,22 +837,22 @@ class ConversationHistoryService:
                     self.evict_runtime(candidate.conversation_id)
                 return True
 
-    async def get_model_records(self, conversation_id: str, *, secret_key: SecretStr) -> tuple[ConversationHistoryRecord, ...]:
+    async def get_model_records(self, conversation_id: str, *, owner_userid: str) -> tuple[ConversationHistoryRecord, ...]:
         """仅返回最新摘要（包含）之后的历史候选；最终提示词与状态过滤由后续 Agent 层负责。"""
-        snapshot = await self.open(conversation_id, secret_key=secret_key)
+        snapshot = await self.open(conversation_id, owner_userid=owner_userid)
         boundary = snapshot.model_context_start_sequence
         return tuple(r for r in snapshot.records if boundary is not None and r.sequence >= boundary)
 
-    async def delete(self, conversation_id: str, *, secret_key: SecretStr) -> None:
+    async def delete(self, conversation_id: str, *, owner_userid: str) -> None:
         # 与在途备份串行，保证删除后不被旧备份重新写入；运行时提交共用内层锁。
         async with self._backup_lock, self._lock:
             with CancelScope(shield=True):
                 resident = self._resident.get(conversation_id)
                 if resident is not None and resident.ephemeral:
-                    if self._owners.get(conversation_id) != secret_key:
+                    if self._owners.get(conversation_id) != owner_userid:
                         raise LookupError('会话不存在')
                 else:
-                    await run_in_threadpool(self._store.delete_conversation, conversation_id, secret_key=secret_key)
+                    await run_in_threadpool(self._store.delete_conversation, conversation_id, owner_userid=owner_userid)
                 current = self._resident.pop(conversation_id, None)
                 if current and current.memory_query_pool:
                     current.memory_query_pool.close()
@@ -902,5 +901,5 @@ class ConversationHistoryService:
             tokens=tokens, max_rounds=max_rounds)
         if not resident.ephemeral:
             await run_in_threadpool(self._store.save_reasoning_window, conversation_id,
-                secret_key=self._owners[conversation_id], window=updated, expected_position=original.next_position)
+                owner_userid=self._owners[conversation_id], window=updated, expected_position=original.next_position)
         resident.reasoning_window = updated

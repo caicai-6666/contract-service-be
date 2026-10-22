@@ -17,7 +17,7 @@
 
 ## 检索与排序
 
-查询复用 `contract-summary-v1` 摘要编码指令，返回独立 L2 归一化向量。SQLite 同一读取快照内执行 BM25 和余弦向量两路召回，范围及 ready 状态在两路截断前过滤。全文检索使用 Lindera（Jieba），输入先切词，再引用转义构造 OR 查询，不将自然语言作为 FTS 运算符执行。
+查询复用 `generic-text-retrieval-en-v1` 摘要编码指令，返回独立 L2 归一化向量。SQLite 同一读取快照内执行 BM25 和余弦向量两路召回，范围及 ready 状态在两路截断前过滤。全文检索使用 Lindera（Jieba），输入先切词，再引用转义构造 OR 查询，不将自然语言作为 FTS 运算符执行。
 
 每路最多召回 `min(top_k × 4, 200)` 份合同，等权 RRF 计分 `sum(1 / (60 + rank))`，rank 从 1 开始；某路未命中贡献为零，不调整分母。按 RRF 降序、document_id 升序稳定排序后截断 top_k，不融合源结果集的旧分数。
 

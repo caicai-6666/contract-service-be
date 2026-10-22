@@ -305,7 +305,7 @@ class ContractExtractionService:
     async def create_run(
         self,
         *,
-        reviewer_user_name: str,
+        owner_userid: str,
         file_name: str,
         pdf_bytes: bytes,
     ) -> ContractExtractionSnapshot:
@@ -321,7 +321,7 @@ class ContractExtractionService:
         now = _utcnow()
         aggregate = RunAggregate(
             run_id=str(uuid4()),
-            reviewer_user_name=reviewer_user_name,
+            owner_userid=owner_userid,
             source=SourceDocument(
                 file_name=request.source_name,
                 document_id=prepared_pdf.document_id,
@@ -365,12 +365,12 @@ class ContractExtractionService:
         self,
         run_id: str,
         *,
-        reviewer_user_name: str,
+        owner_userid: str,
     ) -> ContractExtractionSnapshot:
         """返回状态与当前草稿在同一把锁下形成的原子快照。"""
         aggregate = await self._get_live_aggregate(
             run_id,
-            reviewer_user_name=reviewer_user_name,
+            owner_userid=owner_userid,
         )
         async with aggregate.lock:
             if aggregate.cancelled or aggregate.expired or aggregate.submitted:
@@ -378,12 +378,12 @@ class ContractExtractionService:
             return self._snapshot_locked(aggregate)
 
     async def get_processed_pdf(
-        self, file_id: str, *, reviewer_user_name: str,
+        self, file_id: str, *, owner_userid: str,
     ) -> tuple[ProcessedPDFMetadataView, bytes]:
         """读取本人的页面并按需组装 PDF，不重新渲染或通过访问延长保留期限。"""
         await self.expire_due_runs()
         aggregate = await self._get_live_aggregate(
-            file_id, reviewer_user_name=reviewer_user_name,
+            file_id, owner_userid=owner_userid,
         )
         async with aggregate.lock:
             # 与取消、过期和入库共用锁，防止初次查找后读取已被释放的任务。
@@ -393,7 +393,7 @@ class ContractExtractionService:
             prepared = aggregate.prepared_pdf
         # CPU 组装在线程执行且不占聚合锁；取消无需等待 PDF 编码。
         content = await assemble_processed_pdf(prepared)
-        await self._get_live_aggregate(file_id, reviewer_user_name=reviewer_user_name)
+        await self._get_live_aggregate(file_id, owner_userid=owner_userid)
         async with aggregate.lock:
             if aggregate.cancelled or aggregate.expired or aggregate.submitted:
                 raise RunNotFoundError(file_id)
@@ -402,7 +402,7 @@ class ContractExtractionService:
     async def list_unpersisted_runs(
         self,
         *,
-        reviewer_user_name: str,
+        owner_userid: str,
     ) -> ContractExtractionRunList:
         """列出未入库且仍驻留的任务，包括仅可查看的业务拒绝终态。"""
         # 列表读取不续期；先清理已到期且没有活跃执行的任务，避免前端
@@ -415,7 +415,7 @@ class ContractExtractionService:
                     aggregate.cancelled
                     or aggregate.expired
                     or aggregate.submitted
-                    or aggregate.reviewer_user_name != reviewer_user_name
+                    or aggregate.owner_userid != owner_userid
                 ):
                     continue
                 run_status = self._run_status_locked(aggregate)
@@ -451,12 +451,12 @@ class ContractExtractionService:
         self,
         run_id: str,
         *,
-        reviewer_user_name: str,
+        owner_userid: str,
     ) -> None:
         """终止当前用户的运行，并释放其全部进程内资源。"""
         aggregate = await self._get_live_aggregate(
             run_id,
-            reviewer_user_name=reviewer_user_name,
+            owner_userid=owner_userid,
         )
         async with aggregate.lock:
             # 与继续、重试的状态变更共用聚合锁；标记后即使其请求已经
@@ -492,7 +492,8 @@ class ContractExtractionService:
         self,
         run_id: str,
         *,
-        reviewer_user_name: str,
+        owner_userid: str,
+        submitted_by: str,
         file_name: str,
         summary: str,
         note: str,
@@ -514,7 +515,7 @@ class ContractExtractionService:
                 raise RunNotFoundError(run_id) from exc
             except Exception as exc:
                 raise ContractPersistenceError('待审申请读取失败，请使用相同内容重试') from exc
-            if record.snapshot.submitted_by != reviewer_user_name:
+            if record.snapshot.submitted_by_userid != owner_userid:
                 raise RunNotFoundError(run_id)
             snap = record.snapshot
             if (snap.file_name != file_name.strip() or snap.summary != summary.strip()
@@ -522,7 +523,7 @@ class ContractExtractionService:
                 raise RunConflictError('该任务已提交待审，不允许覆盖既有内容或备注')
             return record
         try:
-            aggregate = await self._get_live_aggregate(run_id, reviewer_user_name=reviewer_user_name)
+            aggregate = await self._get_live_aggregate(run_id, owner_userid=owner_userid)
         except RunNotFoundError:
             # 回执丢失或进程重启后仍可按原 run_id 找到已落盘申请，严格校验归属和内容。
             return await existing_submission()
@@ -577,7 +578,7 @@ class ContractExtractionService:
                 snapshot = IngestionReviewSnapshot(
                     run_id=run_id, document_id=aggregate.source.document_id,
                     page_count=aggregate.prepared_pdf.page_count, file_name=file_name, summary=summary,
-                    submitted_by=reviewer_user_name, classification=classification,
+                    submitted_by=submitted_by, submitted_by_userid=owner_userid, classification=classification,
                     category_reasoning={match.decision.category_code: match.reasoning_summary
                         for match in context.classification.matches},
                     core=core, clauses=clauses,
@@ -646,7 +647,7 @@ class ContractExtractionService:
         self,
         run_id: str,
         *,
-        reviewer_user_name: str,
+        owner_userid: str,
     ) -> RunAggregate:
         """让任何访问都严格执行暂停截止时间，不依赖定时任务调度精度。"""
         aggregate = await self._registry.get(run_id)
@@ -654,7 +655,7 @@ class ContractExtractionService:
         expired = False
         submitted = False
         async with aggregate.lock:
-            if aggregate.reviewer_user_name != reviewer_user_name:
+            if aggregate.owner_userid != owner_userid:
                 raise RunNotFoundError(run_id)
             if aggregate.cancelled:
                 cancelled = True
@@ -681,12 +682,12 @@ class ContractExtractionService:
         self,
         run_id: str,
         *,
-        reviewer_user_name: str,
+        owner_userid: str,
     ) -> ContractExtractionSnapshot:
         """消费唯一暂停点并继续执行结构识别及后续提取。"""
         aggregate = await self._get_live_aggregate(
             run_id,
-            reviewer_user_name=reviewer_user_name,
+            owner_userid=owner_userid,
         )
         expired = False
         async with aggregate.lock:
@@ -745,12 +746,12 @@ class ContractExtractionService:
         run_id: str,
         stage_code: StageCode,
         *,
-        reviewer_user_name: str,
+        owner_userid: str,
     ) -> ContractExtractionSnapshot:
         """异步重跑失败阶段，并从该阶段已有的成功前置结果继续。"""
         aggregate = await self._get_live_aggregate(
             run_id,
-            reviewer_user_name=reviewer_user_name,
+            owner_userid=owner_userid,
         )
         understanding: DocumentUnderstandingOutput | None = None
         async with aggregate.lock:
@@ -845,7 +846,7 @@ class ContractExtractionService:
         self,
         run_id: str,
         *,
-        reviewer_user_name: str,
+        owner_userid: str,
         after_sequence: int | None = None,
     ) -> AsyncIterator[
         tuple[
@@ -856,7 +857,7 @@ class ContractExtractionService:
         """原子注册订阅者并回放断线期间仍在缓冲区中的事件。"""
         aggregate = await self._get_live_aggregate(
             run_id,
-            reviewer_user_name=reviewer_user_name,
+            owner_userid=owner_userid,
         )
         queue: asyncio.Queue[ContractExtractionEvent | None] = asyncio.Queue(
             maxsize=self._event_buffer_size

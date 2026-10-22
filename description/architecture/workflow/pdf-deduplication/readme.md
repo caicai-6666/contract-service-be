@@ -39,10 +39,10 @@ flowchart TD
 
 ## 页面向量输入策略
 
-页面向量化正式采用 `contract-near-duplicate-v2`，权威定义位于 `app.agent.pdf_deduplication.prompt`。system instruction 固定为：
+页面向量化正式采用 `generic-image-retrieval-zh-v1`，权威定义位于 `app.agent.pdf_deduplication.prompt`。system instruction 固定为：
 
 ```text
-为合同页面图像近重复检索表示此页面。重点保留可见文字、数字、表格、版式、页面结构、页眉页脚、印章与签名；忽略压缩、缩放、渲染差异和轻微扫描噪声，但保留合同主体、金额、日期、条款、页码及签章等实质差异。
+为检索表示这张图像，保留可见内容、文字、名称、数字、空间关系和版式。忽略轻微缩放、压缩及扫描噪声，保留实质内容差异。
 ```
 
 输入必须遵循以下规则：
@@ -55,9 +55,9 @@ flowchart TD
 
 正式索引不额外保存单页向量或逐文档输入版本，因此同一个索引中的 `vectors.page_fusion` 必须由同一输入版本和同一融合版本生成。更换输入版本时必须为已有合同全量重算，并在新索引或隔离字段完成回填后整体切换；不得把不同版本向量直接混入同一个召回空间。
 
-该策略由 [PDF 页面向量召回实验](../../../../experiment/pdf-page-embedding-recall/README.md)确定。扩充后的实验覆盖 9 份唯一合同、5 份多页合同和 88 次成功页面请求；推荐指令总体及多页子集 Recall@1 均为 100%，且平均正负间隔均优于官方默认指令。实验仍只验证重渲染变化，困难负样本、结构性页面变化和 Elasticsearch 实际召回属于后续验证范围。
+当前指令由 `app/core/embedding_prompt.py` 统一提供，查重与图片检索共用。通用指令的对照、困难轮及真实文件扰动结果见[通用 Embedding 指令选择](../../../capability/infrastructure/embedding-instruction-selection.md)。
 
-`contract-near-duplicate-v2` 只调整模型可见的输入介质表述，历史实验产物仍记录并验证 `v1`。Embedding 输入版本不同的向量不得长期混用；升级后应重新生成正式索引中的 `vectors.page_fusion`，并使用同一版本重新验证召回指标。
+历史 `contract-near-duplicate-v1/v2` 合同专用策略的实验不能直接视为当前指令的验证；旧实验产物保持原样。切换指令必须隔离重建正式索引中的页面与问题融合向量，并保留旧索引备份；不能在同一召回空间混用新旧版本。
 
 ---
 
@@ -68,7 +68,7 @@ flowchart TD
 `vectorize_processed_pdf` 负责：
 
 1. 按物理页码读取 `PreparedPDF.pages` 中已经处理好的 PNG，不重新渲染 PDF。
-2. 使用 `contract-near-duplicate-v2` 对称输入和多模态 Embedding 为每页生成固定维度向量。
+2. 使用 `generic-image-retrieval-zh-v1` 对称输入和多模态 Embedding 为每页生成固定维度向量。
 3. 校验每页向量的维度、有限数值和归一化边界。
 4. 对全部页面执行尾页 1.5 倍、其余页面 1.0 倍的加权平均，并重新 L2 归一化，形成 `PDFPageFusionVector`。融合版本应标记为 `tail-weighted-1.5-l2-v1`。
 

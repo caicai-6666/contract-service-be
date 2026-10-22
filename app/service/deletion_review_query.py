@@ -5,6 +5,7 @@ from urllib.parse import urlencode
 from uuid import UUID
 
 from app.infrastructure.contract_file_store import ContractFileNotFoundError
+from app.core.routing import API_PREFIX
 from app.schema.deletion_review import DeletionReviewDetailResponse, DeletionReviewListResponse
 
 
@@ -15,13 +16,13 @@ class DeletionReviewQueryService:
         self._files = file_store
         self._retention = settings.deletion_review_retention_seconds
 
-    async def list_records(self, user_name: str) -> DeletionReviewListResponse:
-        ids = await asyncio.to_thread(self._store.list_ids_for_user, user_name)
+    async def list_records(self, userid: str) -> DeletionReviewListResponse:
+        ids = await asyncio.to_thread(self._store.list_ids_for_user, userid)
         return DeletionReviewListResponse(submission_ids=list(ids))
 
-    async def detail(self, submission_id: UUID, user_name: str) -> DeletionReviewDetailResponse:
+    async def detail(self, submission_id: UUID, userid: str) -> DeletionReviewDetailResponse:
         def read():
-            record = self._store.get_for_user(submission_id, user_name)
+            record = self._store.get_for_user(submission_id, userid)
             completed = record.review_status == 'rejected' or (
                 record.review_status == 'approved' and record.deletion_status == 'succeeded')
             eligible_at = None
@@ -41,10 +42,10 @@ class DeletionReviewQueryService:
                     except ContractFileNotFoundError:
                         pass
                     else:
-                        url = '/contract/api/resource/contract?' + urlencode({'file_uri': record.file_uri})
+                        url = f'{API_PREFIX}/resource/contract?' + urlencode({'file_uri': record.file_uri})
             return DeletionReviewDetailResponse(
                 **{key: getattr(record, key) for key in (
-                    'submission_id', 'document_id', 'passport', 'file_name', 'summary',
+                    'submission_id', 'document_id', 'passport', 'file_name', 'file_level', 'summary',
                     'uploader', 'requested_by', 'contract_ingested_at', 'note', 'created_at', 'updated_at')},
                 delivery={'status': record.delivery_status,
                           'message_id': record.message_id},

@@ -1,31 +1,12 @@
-"""审核用户登录接口契约。"""
+"""中间件认证后的用户身份；不包含任何登录凭据。"""
+from typing import Annotated
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
-
-
-
-class LoginRequest(BaseModel):
-    """只携带审核用户密钥的登录请求。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    secret_key: SecretStr = Field(
-        min_length=1,
-        description="审核用户 YAML 中配置的非空密钥。",
-    )
+UserId = Annotated[str, StringConstraints(strict=True, min_length=1, pattern=r".*\S.*")]
 
 
-class LoginResponse(BaseModel):
-    """登录成功后签发的免登码与审核人名称。"""
-
-    login_code: str = Field(
-        min_length=1,
-        description="可在配置时效内解析为审核人名称的免登码。",
-    )
-    user_name: str = Field(
-        min_length=1,
-        description="当前密钥对应的审核人名称。",
-    )
-
-
-__all__ = ["LoginRequest", "LoginResponse"]
+class AuthenticatedUser(BaseModel):
+    model_config = ConfigDict(frozen=True, extra='forbid')
+    userid: UserId = Field(description='中间件返回的稳定用户唯一标识，作为任务与会话所有者。')
+    username: UserId = Field(description='中间件返回的当前用户名，只用于展示和业务操作人快照。')
+    ttl: int = Field(gt=0, strict=True, description='本次中间件有效登录查询续期后的完整有效秒数。')

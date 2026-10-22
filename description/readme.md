@@ -27,12 +27,14 @@
 | 了解最终审核值校验、PDF 保存和正式 ES 写入 | [复核后合同正式入库](capability/application/contract-ingestion.md) |
 | 修改内存任务、查重暂停 TTL、阶段状态、增量草稿或重试机制 | [合同提取应用运行时](architecture/system/contract-extraction-runtime.md) |
 | 设计或实现复核后合同的 Elasticsearch 入库 | [合同 Elasticsearch 文档结构](architecture/data/contract-elasticsearch-document.md) |
-| 配置审核用户名称与密钥 | [审核用户 YAML 定义](architecture/data/reviewer-user-definition.md) |
-| 对接审核用户登录与免登码 | [审核用户登录 API](api/auth.md) |
+| 了解统一用户身份与历史归属迁移 | [用户身份与所有权](architecture/data/user-identity.md) |
+| 对接用户 token 与平台访问验证 | [用户访问认证 API](api/auth.md) |
 | 读取正式合同、提取处理版或已驻留会话任务附件 PDF | [资源文件 API](api/resource.md) |
 | 设计处理版 PDF 的向量召回与多模态查重 | [PDF 查重 Agent 工作流](architecture/workflow/pdf-deduplication/readme.md) |
 | 设计查重前的合同文档类型门禁 | [合同文档识别 Agent 工作流](architecture/workflow/contract-document-detection/readme.md) |
 | 降低并发视觉请求的内存与网络重复载荷 | [vLLM 多模态媒体引用](capability/infrastructure/vllm-media-reference.md) |
+| 选择领域无关的文本及图像向量指令 | [通用 Embedding 指令选择](capability/infrastructure/embedding-instruction-selection.md) |
+| 判断哪些文件必须随源码分发、哪些保持忽略 | [版本控制与运行资源](capability/infrastructure/repository-files.md) |
 
 ---
 
@@ -151,13 +153,14 @@ description/
 - [已完成删除审核申请清理](capability/application/deletion-review-cleanup.md)：按本地处理完成时间保留、审核行清理、最小幂等凭据及反馈重放。
 - [已完成待审申请清理](capability/application/ingestion-review-cleanup.md)：按完成时间保留、快照与 PDF 删除、最小幂等凭据及重投恢复。
 - [审核反馈拉取与批准入库](capability/application/ingestion-review-consumer.md)：反馈轮询、passport、外部审核备注、幂等入库与 ack 恢复。
+- [文件等级调整消费与历史](capability/application/file-permission-adjustments.md)：调整 pull、原子更新等级及历史、缺失文件跳过、幂等重投与 ack。
 - [待审请求后台发布](capability/application/ingestion-review-publisher.md)：后台扫描、令牌复用、文件上传、去重回执及不确定投递重试。
 - [合同关联图存储契约](architecture/data/contract-graph.md)：定义合同节点、不可修改的无向关系边、创建人和创建时间，以及删除重建规则。
 - [合同 Elasticsearch 文档结构](architecture/data/contract-elasticsearch-document.md)：定义复核后合同的正式索引结构、启动创建及 Core mapping 增量同步边界。
 - [模型提取对象定义结构](architecture/data/field-definition.md)：定义单值或多值扁平对象的 YAML 结构、稳定索引代码、分词策略、基本类型及禁止嵌套约束。
 - [合同交易类别定义结构](architecture/data/contract-category-definition.md)：定义一类一文件的交易类别 YAML、类别边界与后续加载约束。
 - [检索问题指南定义结构](architecture/data/retrieval-view-definition.md)：定义通用与领域提问 YAML 的字段、目录约束及用户扩展步骤。
-- [审核用户 YAML 定义](architecture/data/reviewer-user-definition.md)：定义审核人名称、密钥和启动期内存对象边界。
+- [用户身份与所有权](architecture/data/user-identity.md)：定义稳定 userid、用户名快照、数据归属与历史迁移。
 
 ---
 
@@ -165,7 +168,7 @@ description/
 
 - [多轮对话 API](api/communication.md)：说明 `/communication` 路由前缀、认证约定和当前未实现边界。
 - [API 参考](api/readme.md)：定义服务入口、全局媒体类型、错误格式、健康检查和业务接口导航。
-- [审核用户登录 API](api/auth.md)：定义仅凭审核用户密钥签发限时免登码的接口。
+- [用户访问认证 API](api/auth.md)：定义用户 token、当前身份及本平台管理员资格验证。
 - [资源文件 API](api/resource.md)：定义正式合同、提取处理版和本人已驻留任务准入附件的 PDF 读取接口。
 - [合同 API](api/contract.md)：定义 Core 表单目录、PDF 上传、合同文档判断、查重结果、暂停继续、状态与 Core/Clause 查询、SSE 事件、断线续传、失败阶段重试、正式入库、错误码和前端接入顺序。
 

@@ -2,21 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Final, Literal
+from typing import Final
+from app.core.embedding_prompt import (
+    IMAGE_EMBEDDING_VERSION, IMAGE_EMBEDDING_INSTRUCTION, ImageEmbeddingVersion,
+)
 
 from app.infrastructure.png_image import PNGImage
 
-PDFPageEmbeddingInputVersion = Literal["contract-near-duplicate-v2"]
+PDFPageEmbeddingInputVersion = ImageEmbeddingVersion
 
 PDF_PAGE_EMBEDDING_INPUT_VERSION: Final[PDFPageEmbeddingInputVersion] = (
-    "contract-near-duplicate-v2"
+    IMAGE_EMBEDDING_VERSION
 )
 
-PDF_PAGE_EMBEDDING_SYSTEM_INSTRUCTION: Final = (
-    "为合同页面图像近重复检索表示此页面。重点保留可见文字、数字、表格、版式、"
-    "页面结构、页眉页脚、印章与签名；忽略压缩、缩放、渲染差异和轻微扫描"
-    "噪声，但保留合同主体、金额、日期、条款、页码及签章等实质差异。"
-)
+PDF_PAGE_EMBEDDING_SYSTEM_INSTRUCTION: Final = IMAGE_EMBEDDING_INSTRUCTION
 
 
 def build_pdf_page_embedding_messages(

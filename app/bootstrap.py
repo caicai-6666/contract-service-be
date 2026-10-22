@@ -49,7 +49,8 @@ from app.service.deletion_review_executor import DeletionReviewExecutor
 from app.service.deletion_review_cleanup import DeletionReviewCleanupService
 from app.service.deletion_review_publisher import DeletionReviewPublisher
 from app.service.deletion_review_consumer import DeletionReviewConsumer
-from app.service.auth import AuthService, LoginCodeCache
+from app.service.file_permission_consumer import FilePermissionAdjustmentConsumer
+from app.service.auth import AuthService
 from app.service.communication_workflow import CommunicationWorkflowService
 from app.service.communication_file_tools import CommunicationFileTools
 from app.agent.contract_communication.agent_core.runtime import run_agent_core
@@ -64,7 +65,6 @@ from app.service.contract_extraction import (
     ContractExtractionService,
 )
 from app.service.pdf_preparation import AsyncPDFPreparationService
-from app.user import load_reviewer_user_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -113,32 +113,11 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
             for category in contract_category_catalog.categories
         },
     )
-    reviewer_user_catalog = load_reviewer_user_catalog(
-        settings.reviewer_user_path
-    )
-
     application.state.contract_category_catalog = contract_category_catalog
     application.state.field_definition_catalog = field_definition_catalog
     application.state.retrieval_view_guide_catalog = (
         retrieval_view_guide_catalog
     )
-    application.state.reviewer_user_catalog = reviewer_user_catalog
-    login_code_cache = LoginCodeCache(
-        ttl_seconds=settings.auth_login_code_ttl_seconds
-    )
-    auth_service = AuthService(
-        reviewer_users=reviewer_user_catalog,
-        login_code_cache=login_code_cache,
-    )
-    application.state.login_code_cache = login_code_cache
-    application.state.auth_service = auth_service
-    logger.info(
-        "审核用户加载完成：count=%s source=%s login_code_ttl_seconds=%s",
-        len(reviewer_user_catalog.users),
-        reviewer_user_catalog.source_path,
-        settings.auth_login_code_ttl_seconds,
-    )
-
     elasticsearch = create_elasticsearch_client(settings)
     application.state.elasticsearch = elasticsearch
     contract_extraction_service: ContractExtractionService | None = None
@@ -171,11 +150,14 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     communication_event_service.bind_history(communication_history_service)
     middleware_session = MiddlewareSessionService(settings)
     application.state.middleware_session_service = middleware_session
+    auth_service = AuthService(middleware_session, settings)
+    application.state.auth_service = auth_service
     ingestion_review_consumer = None
     deletion_review_executor = None
     deletion_review_publisher = None
     deletion_review_cleanup = None
     deletion_review_consumer = None
+    file_permission_consumer = None
     ingestion_review_cleanup = IngestionReviewCleanupService(ingestion_review_store, settings)
     application.state.ingestion_review_cleanup_service = ingestion_review_cleanup
     ingestion_review_publisher = IngestionReviewPublisher(ingestion_review_store, middleware_session, settings)
@@ -316,12 +298,17 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
             deletion_review_executor, settings)
         application.state.deletion_review_consumer = deletion_review_consumer
         await deletion_review_consumer.start()
+        file_permission_consumer = FilePermissionAdjustmentConsumer(contract_metadata_store, middleware_session, settings)
+        application.state.file_permission_consumer = file_permission_consumer
+        await file_permission_consumer.start()
         deletion_review_cleanup = DeletionReviewCleanupService(deletion_review_store, deletion_review_service, settings)
         application.state.deletion_review_cleanup_service = deletion_review_cleanup
         await deletion_review_cleanup.start()
         yield
     finally:
         try:
+            if file_permission_consumer is not None:
+                await file_permission_consumer.close()
             # 删除扫描必须先结束当前文档操作，再关闭正式库的外部连接。
             if deletion_review_consumer is not None:
                 await deletion_review_consumer.close()
@@ -350,6 +337,9 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
                     try:
                         await ingestion_review_publisher.close()
                     finally:
-                        await middleware_session.close()
+                        try:
+                            await auth_service.close()
+                        finally:
+                            await middleware_session.close()
                 finally:
                     await elasticsearch.close()

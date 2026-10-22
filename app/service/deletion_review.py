@@ -87,7 +87,7 @@ class DeletionReviewService:
                 logger.warning('删除申请标志协调失败，将再次重试：submission_id=%s error_type=%s',
                     record.submission_id, type(exc).__name__)
 
-    async def submit(self, *, document_id: str, requested_by: str, note: str):
+    async def submit(self, *, document_id: str, requested_by: str, note: str, requested_by_userid: str):
         # 内部调用同样遵守 HTTP 备注契约，在跨库写入前完成校验。
         note = DeletionReviewSubmissionRequest(note=note).note
         def write():
@@ -100,7 +100,7 @@ class DeletionReviewService:
             if (latest is not None and latest.review_status != 'rejected'
                     and latest.deletion_status != 'succeeded'):
                 # 只恢复同一提交人且备注未变的请求，防止重试替换已冻结的申请。
-                if (latest.review_status == 'pending_send' and latest.requested_by == requested_by
+                if (latest.review_status == 'pending_send' and latest.requested_by_userid == requested_by_userid
                         and latest.note == note
                         and self._matches(latest, metadata) and metadata.can_delete):
                     self._sync_flag(latest)
@@ -113,7 +113,9 @@ class DeletionReviewService:
                 raise ContractMetadataStateError('该合同当前不允许申请删除')
             snapshot = DeletionReviewSnapshot(document_id=metadata.document_id,
                 passport=metadata.passport, file_name=metadata.file_name, summary=metadata.summary,
+                file_level=metadata.file_level,
                 uploader=metadata.uploader, requested_by=requested_by,
+                uploader_userid=metadata.uploader_userid, requested_by_userid=requested_by_userid,
                 file_uri=metadata.file_uri, contract_ingested_at=metadata.ingested_at)
             # 先保存恢复入口，再锁定标志。若第二步失败，申请唯一索引仍阻止重复申请，
             # 启动/后台扫描按快照补齐标志，不撤销已经持久化的申请。
@@ -122,7 +124,8 @@ class DeletionReviewService:
             return record
         return await self._run_locked(document_id, write)
 
-    async def save(self, *, submission_id: UUID, document_id: str, requested_by: str, note: str = ''):
+    async def save(self, *, submission_id: UUID, document_id: str, requested_by: str, note: str = '',
+                   requested_by_userid: str | None = None):
         def write():
             # 重试优先读取原申请；正式合同变化不能重建并覆盖已经冻结的快照。
             try:
@@ -130,7 +133,7 @@ class DeletionReviewService:
             except LookupError:
                 old = None
             if old is not None:
-                if (old.document_id, old.requested_by, old.note) != (document_id, requested_by, note):
+                if (old.document_id, old.requested_by, old.note, old.requested_by_userid) != (document_id, requested_by, note, requested_by_userid):
                     raise DeletionReviewConflictError('同一删除申请不能更换合同、操作人或备注')
                 return old
             metadata = self._metadata.get(document_id)
@@ -140,7 +143,9 @@ class DeletionReviewService:
                 raise ContractMetadataStateError('合同尚未就绪或已禁止申请删除')
             snapshot = DeletionReviewSnapshot(document_id=metadata.document_id,
                 passport=metadata.passport, file_name=metadata.file_name, summary=metadata.summary,
+                file_level=metadata.file_level,
                 uploader=metadata.uploader, requested_by=requested_by,
+                uploader_userid=metadata.uploader_userid, requested_by_userid=requested_by_userid,
                 file_uri=metadata.file_uri, contract_ingested_at=metadata.ingested_at)
             return self._store.save(submission_id, snapshot, note=note)
         return await asyncio.to_thread(write)

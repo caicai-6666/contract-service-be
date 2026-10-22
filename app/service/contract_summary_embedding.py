@@ -2,23 +2,21 @@
 import math
 
 from app.core.config import EmbeddingSettings
+from app.core.embedding_prompt import (
+    TEXT_EMBEDDING_VERSION, TEXT_EMBEDDING_INSTRUCTION, render_text_embedding_input,
+)
 from app.infrastructure.contract_metadata_store import ContractTextEmbedding
 from app.infrastructure.embedding import EmbeddingClient, EmbeddingRequestError
 
-SUMMARY_EMBEDDING_VERSION = 'contract-summary-v1'
-SUMMARY_EMBEDDING_INSTRUCTION = (
-    'Represent this contract summary for retrieval. Emphasize the contract identity, '
-    'transaction subject, purpose and key terms. Preserve conditions, negation and uncertainty. '
-    'Use only the supplied information; do not add unstated facts.'
-)
+SUMMARY_EMBEDDING_VERSION = TEXT_EMBEDDING_VERSION
+SUMMARY_EMBEDDING_INSTRUCTION = TEXT_EMBEDDING_INSTRUCTION
 
 
 def render_contract_summary_embedding_input(summary: str) -> str:
     """只编码摘要正文，名称不作为输入，也不添加字段标签。"""
     if not isinstance(summary, str) or not summary.strip():
         raise ValueError('合同摘要不能为空')
-    return (f'<|im_start|>system\n{SUMMARY_EMBEDDING_INSTRUCTION}<|im_end|>\n'
-            f'<|im_start|>user\n{summary.strip()}<|im_end|>\n<|im_start|>assistant\n')
+    return render_text_embedding_input(summary.strip())
 
 
 async def embed_contract_summary(summary: str, settings: EmbeddingSettings) -> ContractTextEmbedding:

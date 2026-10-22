@@ -19,15 +19,10 @@
 
 ## 向量与 BM25
 
-存储侧保持 `contract-relation-description-v1`。查询侧为 `contract-relation-query-v1`，ChatML user 直接放 query，system 为：
+存储与查询统一使用 `generic-text-retrieval-en-v1`，指令由 `app/core/embedding_prompt.py` 提供。ChatML user 直接放原文，system为：
 
 ```text
-Represent this description of a desired relationship between contracts
- to retrieve matching user-authored relationship descriptions.
-Focus on the relationship type, the stated roles of the contracts,
-the reason for their association, and explicit conditions.
-Preserve negation and uncertainty. Use only the supplied information;
-do not infer missing roles or facts.
+Represent this text for semantic retrieval. Preserve its topic, entities, relationships, actions, conditions, negation and uncertainty. Use only information explicitly present.
 ```
 
 Neo4j 保存唯一关系原文及向量；程序先获取指定范围的边快照，在查询内存 SQLite 中使用 Lindera（Jieba）做 BM25，sqlite-vec 做精确余弦排序。BM25、向量使用同一 query；仅向量输入附带指令。没有新增 Neo4j 全文或向量索引，也没有持久化第二份关系副本。关系新建、删除下次查询自动可见。

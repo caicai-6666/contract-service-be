@@ -30,9 +30,12 @@ data/deletion-review/
 | `document_id` | `TEXT` | 正式合同的 64 位 SHA-256；也是后续送审所用的本平台数据身份。 |
 | `passport` | `TEXT NULL` | JSON 数组文本，冻结原正式合同的全部跨平台通行证；历史缺失值保持 NULL，不猜测。格式与迁移见[通行证集合契约](passport.md)。 |
 | `file_name` | `TEXT` | 申请时的合同名称；对应中间件资料名称 name。 |
+| `file_level` | `TEXT NULL` | 申请时从正式合同元数据冻结的严格整数等级，十进制文本无损存储，HTTP 详情顶层返回整数；旧记录未知为 NULL。 |
 | `summary` | `TEXT NULL` | 申请时的合同摘要；对应 abstract；历史缺失值保留 NULL。 |
 | `uploader` | `TEXT` | 原合同上传人，即合同入库员；来自正式元数据。 |
 | `requested_by` | `TEXT` | 本平台发起删除申请的用户，由删除接口从认证身份取得。 |
+| `requested_by_userid` | `TEXT NULL` | 统一认证的删除申请人 userid，查询授权使用该 ID，不按姓名匹配；旧数据未知时为 NULL。 |
+| `uploader_userid` | `TEXT NULL` | 原合同上传人稳定 userid，从正式元数据冻结。 |
 | `file_uri` | `TEXT` | 正式 PDF 的根相对地址，严格为 `/<document_id>.pdf`。 |
 | `contract_ingested_at` | `TEXT` | 原合同入库时间，保留时区。 |
 | `note` | `TEXT` | 删除申请人的审核沟通备注，最多 10000 字符。HTTP 申请必须提交该字段，允许空字符串；内部兼容保存与历史记录默认空字符串。 |
@@ -91,13 +94,15 @@ data/deletion-review/
 
 相同申请 ID、快照和 note 可重复保存，不改变创建时间、消息和已有审核结果；同一申请不能替换合同、操作人或备注。定时发送重试也沿用这些冻结字段。消息绑定及审核结果使用短事务，重复同值回执直接返回原记录；清理后同值反馈返回 `ProcessedDeletionReviewReceipt`，冲突抛出 `DeletionReviewConflictError`。已清理申请不能按原 ID 重新创建，旧消息 ID 不能绑定新申请。反馈中的 approved 必须为真实布尔值，不能按字符串、备注或 passport 猜测。匹配已保存候选 message_id 的真实审核反馈可确认原不确定申请已被处理：delivery_status 变为 published，停止发送重试；迟到的发送结果不能回退审核终态。
 
+`DeletionReviewService.submit()` 和兼容保存入口 `save()` 都在创建申请时复制正式元数据的 `file_level`。等级属于不可变快照，申请 ID 重试不得更改。初始化幂等增列，旧记录保持 NULL，不依据同 document_id 的当前合同补填；合同删除或重新入库不影响历史等级。存储编解码复用 `app/core/file_level.py`，不限制整数范围，不将 0 当作缺失；该字段用于本地历史展示，不增加中间件删除申请参数。
+
 服务重复保存时先读取已有申请，不因正式合同后续变化而重新构造快照。数据库缺失记录抛出 LookupError；首次保存的正式合同不存在或状态不可用时使用现有合同元数据错误类型。消息 ID、姓名和摘要不采用字符串插值拼接 SQL，所有业务值使用参数化语句。
 
 发送存储另提供 `claim_next_publication()`、`finish_publication()` 和 `recover_interrupted_publications()`，分别负责原子领取、结果落盘和启动恢复延迟重试。旧库迁移补齐发送字段，已绑定回执的记录标记 published；不确定结果按原 source_id 重试，409合法重复回执关联原消息并进入待审核。细则见[删除送审发布服务](../../capability/application/deletion-review-publisher.md)。
 
 存储层额外提供 `claim_next_deletion()` 原子领取并增加尝试次数、`finish_deletion()` 保存成功或延迟重试结果，以及 `recover_interrupted_deletions()` 恢复上次进程遗留的执行状态。成功删除时同事务保存 review_processed_at；拒绝后由 `mark_rejection_processed()` 在标志协调成功后首次保存。`list_cleanup_candidates()` 与 `cleanup_completed()` 复核处理状态及保留期，清理索引覆盖完成时间、审核状态和删除状态。完整规则见[删除审核定时清理](../../capability/application/deletion-review-cleanup.md)。
 
-只读接口使用 `list_ids_for_user(user_name)` 与 `get_for_user(submission_id, user_name)`，在 SQL 中以 `requested_by=? OR uploader=?` 限定相同人员范围。两个角色分别建立查询索引；同一用户兼任两个角色不产生重复记录。过滤基于冻结的人员快照，不要求正式合同仍存在。
+只读接口使用 `list_ids_for_user(userid)` 与 `get_for_user(submission_id, userid)`，在 SQL 中以 `requested_by_userid=? OR uploader_userid=?` 限定相同人员范围。两个角色分别建立查询索引；同一用户兼任两个角色不产生重复记录。过滤基于冻结的人员快照，不要求正式合同仍存在。
 
 ---
 

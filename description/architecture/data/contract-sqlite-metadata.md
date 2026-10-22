@@ -19,7 +19,7 @@ SQLite 是文件选择和文件管理的权威目录。普通业务只读取 `re
 | Elasticsearch | 完整分类、Core、Clause、向量和入库审计。 |
 | Neo4j | 合同 ID 节点及后续人工维护的关联边，见[合同关联图存储契约](contract-graph.md)。 |
 
-[已入库合同元数据接口](../../api/contract.md#获取所有已入库合同元数据)复用 `list_ready()`，向所有已登录上传人提供共享正式目录，只投影八个公开字段，不暴露内部入库状态与尝试标识。
+[已入库合同元数据接口](../../api/contract.md#获取所有已入库合同元数据)复用 `list_ready()`，向通过统一认证与平台资格验证的用户提供共享正式目录，投影公开元数据（包含通行证和文件等级），不暴露内部入库状态与尝试标识。
 
 `document_id` 是处理版 PDF 字节的 64 位小写 SHA-256，同时作为 SQLite 主键、`data/contract/<document_id>.pdf` 文件名和 Elasticsearch `_id`。
 
@@ -27,7 +27,7 @@ SQLite 是文件选择和文件管理的权威目录。普通业务只读取 `re
 
 ## 表结构
 
-SQLite 使用 `contracts`、`contract_category_metadata`、`contract_category_assignments` 和 `contract_notes` 四张表。每个连接都开启 `PRAGMA foreign_keys = ON`，使合同删除时能同事务级联清理类别关联及注意事项。
+SQLite 使用 `contracts`、`contract_category_metadata`、`contract_category_assignments`、`contract_notes` 和 `contract_file_level_history`。每个连接都开启 `PRAGMA foreign_keys = ON`，合同删除同事务级联清理类别关联及注意事项；等级变更历史独立保留，不级联删除。
 
 ### 合同目录
 
@@ -42,6 +42,8 @@ SQLite 使用 `contracts`、`contract_category_metadata`、`contract_category_as
 | `contract_time` | `TEXT NULL` | 最终 Core `signing_date` 规范化后的 `YYYY-MM-DD`；缺失时为 `NULL`。 |
 | `file_uri` | `TEXT` | 唯一的根相对地址 `/<document_id>.pdf`。 |
 | `uploader` | `TEXT` | 本平台提交待审申请的上传人，取自快照 submitted_by；不写外部审核员。 |
+| `uploader_userid` | `TEXT NULL` | 上传人的稳定中间件 userid，从入库快照传入；旧数据不按姓名回填。 |
+| `file_level` | `TEXT NULL` | 审核反馈的严格整数等级，以十进制文本无损保存，对外返回 integer；历史未知为 NULL，不补默认值。 |
 | `ingested_at` | `TEXT` | 带时区的 ISO 8601 入库时间。 |
 | `status` | `TEXT` | `ingesting`、`ready` 或 `deleting`。 |
 | `can_delete` | `INTEGER` | 非空，默认 `1`，仅允许 `0/1`；表示是否允许发起删除申请，对外返回布尔值。详见[删除申请标志](#删除申请标志)。 |
@@ -51,6 +53,35 @@ SQLite 使用 `contracts`、`contract_category_metadata`、`contract_category_as
 `category` 使用“多类别 code 以 ` / ` 连接，未映射时保存类型描述”的投影规则，前端可通过类别列表接口将 code 映射为中文名称。类别筛选必须使用关联表，不对该文本做模糊匹配。完整分类场景仍只保存在 Elasticsearch。`contract_time` 不从文件名推断；入库边界仅接受完整且合法的年月日，并将 `YYYY-M-D`、`YYYY/M/D`、`YYYY.M.D` 或中文年月日统一为 `YYYY-MM-DD`。SQLite 与 Elasticsearch 写入同一标准值。
 
 类别同步后会按关联表的 `position` 顺序，将已有合同摘要幂等更新为 code 拼接；也可调用 `normalize_category_summaries()` 单独迁移。无关联的历史记录先尝试按已知名称或 code 完整回填关联，无法识别时保持原值，不猜测。新写入只要包含类别关联，就从关联 code 生成摘要。ES 仍保留原有分类对象的 code/name 字段；启动对账从其中的 code 生成摘要，无需改写 ES 文档。
+
+### 文件等级
+
+`file_level` 初值来自入库审核反馈，后续由[等级调整消费者](../../capability/application/file-permission-adjustments.md)更新，不由前端提交申请时指定。等级属于整份文件，不按通行证拆分，与用户等级无关。上游不限制整数范围，SQLite 使用十进制 TEXT 无损保存，服务与 HTTP Schema 使用严格整数；旧记录未知时保留 NULL。等级不写 ES。入库回执重试核对初始审核等级，不覆盖后续已调整等级；当前不据此新增访问过滤。
+
+### 文件等级变更历史
+
+`contract_file_level_history` 记录中间件权限调整消息，不记录初次入库赋值或为旧数据伪造历史。
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `history_id` | `INTEGER` | 自增主键，按本地处理顺序排序。 |
+| `message_id` | `TEXT UNIQUE NOT NULL` | 调整消息 ID，重复交付幂等键。 |
+| `target_platform_code` | `TEXT` | 已核验的目标平台。 |
+| `document_id` | `TEXT` | 消息 source_id，本平台为完整合同哈希。 |
+| `ingestion_id` | `TEXT NULL` | 调整时的入库实例，目标不存在时为空。 |
+| `previous_level` | `TEXT NULL` | 原等级十进制文本，历史未知或文件不存在时为空。 |
+| `new_level` | `TEXT NOT NULL` | 消息要求的新等级十进制文本。 |
+| `reviewer` / `note` | `TEXT` | 注册中心操作人及备注，备注允许空字符串。 |
+| `status` | `TEXT` | applied 已更新；skipped_missing 文件不存在，跳过更新并允许 ack。 |
+| `created_at` | `TEXT` | 远端消息的带时区创建时间。 |
+| `processed_at` | `TEXT` | 本地处理时间，UTC。 |
+| `acknowledged_at` | `TEXT NULL` | 本地收到远端 ack 成功响应的时间，UTC。 |
+| `last_delivery_offset` | `INTEGER` | 最近交付位置，仅用于核验 ack，不传入 ack 请求体。 |
+| `payload_sha256` | `TEXT` | 规范化消息哈希，拒绝同 ID 冲突内容。 |
+
+索引 `(document_id, history_id)` 支持倒序查询。历史不级联关联 contracts，合同删除后保留审计及幂等凭据。当前等级更新与历史插入共用事务，失败一起回滚；确认时间在远端 ack 成功后补写。完整流程、失败恢复及配置见[文件等级调整消费与历史](../../capability/application/file-permission-adjustments.md)。
+
+[全部文件等级变更记录接口](../../api/contract.md#获取全部文件等级变更记录)通过 `list_file_level_history()` 直接读取本表，无合同 ID 参数、无分页，按 history_id 倒序返回公开投影；包含已删除合同与 skipped_missing 记录。接口不执行中间件拉取、确认或等级更新。
 
 ### 合同内容摘要
 
@@ -69,24 +100,22 @@ SQLite 使用 `contracts`、`contract_category_metadata`、`contract_category_as
 | --- | --- | --- |
 | `summary_embedding` | `BLOB` | 摘要的 L2 归一化向量，小端 float32。 |
 | `summary_embedding_model` | `TEXT` | 编码模型名称。 |
-| `summary_embedding_version` | `TEXT` | 指令版本 `contract-summary-v1`。 |
+| `summary_embedding_version` | `TEXT` | 指令版本 `generic-text-retrieval-en-v1`。 |
 | `summary_embedding_dimensions` | `INTEGER` | 向量维度；BLOB 长度为维度乘以 4。 |
 
 `app/service/contract_summary_embedding.py` 的 `embed_contract_summary(summary, settings)` 只接收摘要。ChatML 的 user 部分为去除首尾空白的摘要正文，不加 `summary:`；system 指令为：
 
 ```text
-Represent this contract summary for retrieval. Emphasize the contract identity,
-transaction subject, purpose and key terms. Preserve conditions, negation and uncertainty.
-Use only the supplied information; do not add unstated facts.
+Represent this text for semantic retrieval. Preserve its topic, entities, relationships, actions, conditions, negation and uncertainty. Use only information explicitly present.
 ```
 
-指令强调合同身份、交易标的、用途及关键约定，保留条件、否定和不确定性。复用现有模型配置和全局配额，校验模型、数量、维度、有限数值和非零范数后归一化。编码失败时不开始持久化。
+指令由 `app/core/embedding_prompt.py` 统一提供，摘要与其查询侧共用通用文本指令，保留主题、实体、关系、动作、条件、否定和不确定性。复用现有模型配置和全局配额，校验模型、数量、维度、有限数值和非零范数后归一化。编码失败时不开始持久化。
 
 `begin_ingestion(metadata, summary_embedding=...)` 在同一事务保存原文和摘要向量；不带编码的底层写入清除旧摘要向量，避免内容错配。`get_summary_embedding(document_id)` 只读取 ready 合同，未编码返回 `None`。普通 HTTP 返回不公开向量。
 
-初始化增加摘要向量字段，并移除旧 `overview_embedding*` 和 `file_name_embedding*` 字段。旧合并向量不能视为摘要向量，名称和摘要原文保留，新摘要向量留空；启动不调用模型回填。已有独立摘要向量原样保留。删除合同同时删除向量。后端加载代码并初始化后才更新实际数据库；本次未直接迁移运行中数据库。
+初始化增加摘要向量字段，并移除旧 `overview_embedding*` 和 `file_name_embedding*` 字段。旧合并向量不能视为摘要向量，名称和摘要原文保留，新摘要向量留空；启动不调用模型回填。已有独立摘要向量原样保留。删除合同同时删除向量。后端加载代码并初始化后才更新实际数据库；启动不会自动改写历史向量；本次通用指令切换的显式重建见[通用指令与迁移](../../capability/infrastructure/embedding-instruction-selection.md)。
 
-测试覆盖仅摘要输入、非法编码响应、旧字段清理、独立摘要向量保留、原子替换和正式入库链路；未执行真实模型召回质量实验。
+测试覆盖仅摘要输入、非法编码响应、旧字段清理、独立摘要向量保留、原子替换和正式入库链路；真实通用指令对照及边界见[通用指令选择](../../capability/infrastructure/embedding-instruction-selection.md)。
 
 ---
 

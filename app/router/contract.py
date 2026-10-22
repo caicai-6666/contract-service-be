@@ -29,7 +29,7 @@ from app.agent.contract_extraction.subgraph.field_extraction.definition import (
     FieldDefinitionCatalog,
 )
 from app.router.dependency import (
-    ReviewerUserDependency,
+    UserNameDependency, UserIdDependency, PlatformUserDependency,
 )
 from app.infrastructure.contract_metadata_store import (
     SQLiteContractMetadataStore, ContractMetadataNotFoundError, ContractMetadataStateError,
@@ -47,6 +47,7 @@ from app.schema.contract import (
     ContractIngestionRequest,
     ContractIngestionResponse,
     ContractMetadataResponse,
+    ContractFileLevelHistoryResponse,
     ContractSummaryResponse,
     ContractNoteRequest,
     ContractNoteResponse,
@@ -134,7 +135,7 @@ def get_contract_relation_service(request: Request) -> ContractRelationService:
 async def list_contract_relations(
     document_id: Annotated[str, Path(pattern=r"^[0-9a-f]{64}$", description="起点合同完整 document_id，仅查询深度为 1 的直接关联。")],
     service: Annotated[ContractRelationService, Depends(get_contract_relation_service)],
-    reviewer: ReviewerUserDependency,
+    reviewer: UserNameDependency,
 ) -> list[ContractNeighborResponse]:
     try:
         neighbors = await service.list_relations(document_id)
@@ -158,7 +159,7 @@ async def list_contract_relations(
 async def delete_contract_relation(
     relation_id: Annotated[UUID, Path(description="创建关联接口返回的关系 UUID，只删除该边，不删除两端合同。")],
     service: Annotated[ContractRelationService, Depends(get_contract_relation_service)],
-    reviewer: ReviewerUserDependency,
+    reviewer: UserNameDependency,
 ) -> Response:
     """所有已登录用户均可删除共享关系，不按原创建人限制。"""
     try:
@@ -179,7 +180,7 @@ async def delete_contract_relation(
 async def create_contract_relation(
     payload: ContractRelationRequest,
     service: Annotated[ContractRelationService, Depends(get_contract_relation_service)],
-    reviewer: ReviewerUserDependency,
+    reviewer: UserNameDependency,
 ) -> ContractRelationResponse:
     try:
         relation = await service.create(payload, reviewer=reviewer)
@@ -212,11 +213,11 @@ async def delete_contract_document(
     document_id: Annotated[str, Path(pattern=r"^[0-9a-f]{64}$", description="合同 document_id，即处理版 PDF 的 SHA-256。")],
     payload: DeletionReviewSubmissionRequest,
     service: Annotated[DeletionReviewService, Depends(get_deletion_review_service)],
-    reviewer_user_name: ReviewerUserDependency,
+    user: PlatformUserDependency,
 ) -> DeletionReviewSubmissionResponse:
     """提交人来自登录身份；保存审核申请并锁定标志，不直接清理正式存储。"""
     try:
-        record = await service.submit(document_id=document_id, requested_by=reviewer_user_name, note=payload.note)
+        record = await service.submit(document_id=document_id, requested_by=user.username, requested_by_userid=user.userid, note=payload.note)
     except ContractMetadataNotFoundError as exc:
         raise HTTPException(status_code=404, detail="合同不存在或已删除") from exc
     except (ContractMetadataStateError, DeletionReviewConflictError) as exc:
@@ -225,6 +226,26 @@ async def delete_contract_document(
         logging.getLogger(__name__).exception("删除申请保存失败：document_id=%s", document_id)
         raise HTTPException(status_code=503, detail='删除申请暂时无法保存，请查询申请列表或稍后重试') from None
     return DeletionReviewSubmissionResponse(submission_id=record.submission_id, document_id=record.document_id)
+
+
+@router.get('/file-level-history', response_model=list[ContractFileLevelHistoryResponse],
+            summary='获取全部文件等级变更记录',
+            responses={503: {'description': '文件等级变更记录暂时无法查询'}})
+def get_contract_file_level_history(
+    store: ContractMetadataStoreDependency,
+    response: Response,
+) -> list[ContractFileLevelHistoryResponse]:
+    """共享审计列表包含已删除文件与跳过记录，不能以当前正式合同目录过滤。"""
+    try:
+        records = store.list_file_level_history()
+        result = [ContractFileLevelHistoryResponse(**{
+            field: getattr(record, field) for field in ContractFileLevelHistoryResponse.model_fields
+        }) for record in records]
+    except Exception:
+        logging.getLogger(__name__).exception('文件等级变更历史查询失败')
+        raise HTTPException(status_code=503, detail='文件等级变更记录暂时无法查询，请稍后重试') from None
+    response.headers['Cache-Control'] = 'no-store'
+    return result
 
 
 @router.get('/documents/{document_id}/summary', response_model=ContractSummaryResponse,
@@ -266,13 +287,13 @@ async def add_contract_note(
     document_id: Annotated[str, Path(pattern=r'^[0-9a-f]{64}$', description='合同PDF的SHA-256文档标识。')],
     body: ContractNoteRequest,
     store: ContractMetadataStoreDependency,
-    reviewer_user_name: ReviewerUserDependency,
+    username: UserNameDependency,
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> ContractNoteResponse:
     """已登录用户可追加共享合同意见，不修改合同正文或ES。"""
     try:
         return ContractNoteResponse.model_validate(await create_contract_note(
-            store, document_id, content=body.content, author_name=reviewer_user_name,
+            store, document_id, content=body.content, author_name=username,
             settings=settings.embedding))
     except ContractMetadataNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -325,6 +346,7 @@ def get_contract_documents(
             uploader=metadata.uploader,
             can_delete=metadata.can_delete,
             passport=metadata.passport,
+            file_level=metadata.file_level,
             ingested_at=metadata.ingested_at,
         )
         for metadata in store.list_ready()
@@ -386,12 +408,12 @@ async def create_contract_extraction_run(
         ),
     ],
     service: ContractExtractionServiceDependency,
-    reviewer_user_name: ReviewerUserDependency,
+    owner_userid: UserIdDependency,
 ) -> ContractExtractionSnapshot:
     """异步检查并渲染内存 PDF，通过后建立后台提取任务。"""
     try:
         return await service.create_run(
-            reviewer_user_name=reviewer_user_name,
+            owner_userid=owner_userid,
             file_name=file_name,
             pdf_bytes=pdf_bytes,
         )
@@ -409,11 +431,11 @@ async def create_contract_extraction_run(
 )
 async def list_contract_extraction_runs(
     service: ContractExtractionServiceDependency,
-    reviewer_user_name: ReviewerUserDependency,
+    owner_userid: UserIdDependency,
 ) -> ContractExtractionRunList:
     """列出进行中或因等待人工操作而阻塞的可恢复 run_id。"""
     return await service.list_unpersisted_runs(
-        reviewer_user_name=reviewer_user_name
+        owner_userid=owner_userid
     )
 
 
@@ -425,13 +447,13 @@ async def list_contract_extraction_runs(
 async def get_contract_extraction_run(
     run_id: str,
     service: ContractExtractionServiceDependency,
-    reviewer_user_name: ReviewerUserDependency,
+    owner_userid: UserIdDependency,
 ) -> ContractExtractionSnapshot:
     """获取当前状态、可恢复建议名称与 Core/Clause 结果。"""
     try:
         return await service.get_snapshot(
             run_id,
-            reviewer_user_name=reviewer_user_name,
+            owner_userid=owner_userid,
         )
     except RunNotFoundError as exc:
         raise HTTPException(
@@ -448,13 +470,13 @@ async def get_contract_extraction_run(
 async def cancel_contract_extraction_run(
     run_id: str,
     service: ContractExtractionServiceDependency,
-    reviewer_user_name: ReviewerUserDependency,
+    owner_userid: UserIdDependency,
 ) -> Response:
     """取消当前用户的任务，并立即释放 PDF、中间结果和后台协程。"""
     try:
         await service.cancel_run(
             run_id,
-            reviewer_user_name=reviewer_user_name,
+            owner_userid=owner_userid,
         )
     except RunNotFoundError as exc:
         raise HTTPException(
@@ -473,13 +495,13 @@ async def cancel_contract_extraction_run(
 async def continue_contract_extraction_run(
     run_id: str,
     service: ContractExtractionServiceDependency,
-    reviewer_user_name: ReviewerUserDependency,
+    owner_userid: UserIdDependency,
 ) -> ContractExtractionSnapshot:
     """消费查重暂停点；前端的候选处理动作通过其他接口独立完成。"""
     try:
         return await service.continue_run(
             run_id,
-            reviewer_user_name=reviewer_user_name,
+            owner_userid=owner_userid,
         )
     except RunNotFoundError as exc:
         raise HTTPException(
@@ -508,7 +530,7 @@ async def stream_contract_extraction_events(
     run_id: str,
     request: Request,
     service: ContractExtractionServiceDependency,
-    reviewer_user_name: ReviewerUserDependency,
+    owner_userid: UserIdDependency,
     last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
 ) -> Response:
     """回放断线后的缓冲事件，并持续发送实时事件和心跳。"""
@@ -516,7 +538,7 @@ async def stream_contract_extraction_events(
     try:
         subscription = service.subscribe_events(
             run_id,
-            reviewer_user_name=reviewer_user_name,
+            owner_userid=owner_userid,
             after_sequence=after_sequence,
         )
         # 在返回 200 之前进入上下文，确保未知任务得到正常的 404，且注册与回放原子。
@@ -581,14 +603,14 @@ async def retry_contract_extraction_stage(
     run_id: str,
     stage_code: StageCode,
     service: ContractExtractionServiceDependency,
-    reviewer_user_name: ReviewerUserDependency,
+    owner_userid: UserIdDependency,
 ) -> ContractExtractionSnapshot:
     """从失败阶段断点续跑，并复用此前已经成功的处理结果。"""
     try:
         return await service.retry_stage(
             run_id,
             stage_code,
-            reviewer_user_name=reviewer_user_name,
+            owner_userid=owner_userid,
         )
     except RunNotFoundError as exc:
         raise HTTPException(
@@ -617,14 +639,16 @@ async def retry_contract_extraction_stage(
 async def ingest_contract_extraction_run(
     run_id: str,
     payload: ContractIngestionRequest,
+    user: PlatformUserDependency,
     service: ContractExtractionServiceDependency,
-    reviewer_user_name: ReviewerUserDependency,
+    owner_userid: UserIdDependency,
 ) -> ContractIngestionResponse:
     """按运行身份补齐快照，保存待审申请；不在请求内调用中间件或正式入库。"""
     try:
         result = await service.ingest_run(
             run_id,
-            reviewer_user_name=reviewer_user_name,
+            owner_userid=owner_userid,
+            submitted_by=user.username,
             file_name=payload.file_name,
             summary=payload.summary,
             note=payload.note,

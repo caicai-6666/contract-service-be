@@ -38,6 +38,21 @@ class ContractMetadataResponse(ContractSchemaModel):
     ingested_at: datetime = Field(description="带时区的 ISO 8601 入库时间。")
     can_delete: bool = Field(description="是否允许发起删除申请；等待删除审核时为 false。")
     passport: Passports | None = Field(description="合同关联的完整通行证数组，保留原值、顺序和重复项；历史未绑定时为 null。")
+    file_level: int | None = Field(strict=True, description='注册中心审核确定的文件等级，不限制整数范围；历史未记录时为 null。')
+
+
+class ContractFileLevelHistoryResponse(ContractSchemaModel):
+    """文件等级调整历史的公开投影，不暴露消费 offset 和内部入库实例。"""
+    history_id: int = Field(description='本地历史记录序号，列表按此值降序排列。')
+    message_id: str = Field(description='中间件等级调整消息 ID，同消息重复交付不会新增记录。')
+    document_id: str = Field(description='调整目标文件的完整合同 ID；文件删除后仍保留。')
+    previous_level: int | None = Field(strict=True, description='调整前等级；原等级未知或文件不存在时为 null。')
+    new_level: int = Field(strict=True, description='消息要求的新等级，为严格整数。')
+    reviewer: str = Field(description='注册中心执行本次等级调整的操作人姓名或代号。')
+    note: str = Field(description='本次等级调整备注，允许空字符串。')
+    status: Literal['applied', 'skipped_missing'] = Field(description='applied 表示已更新；skipped_missing 表示目标文件不存在，已跳过修改。')
+    created_at: datetime = Field(description='中间件生成本次调整消息的带时区时间。')
+    processed_at: datetime = Field(description='本平台保存处理结果的带时区时间。')
 
 
 class ContractSummaryResponse(ContractSchemaModel):

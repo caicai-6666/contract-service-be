@@ -17,7 +17,7 @@
 | `app/router/communication.py` | 当前用户注入、HTTP 错误映射、SSE 编码及断连释放。 |
 | `app/bootstrap.py` | 每个应用生命周期创建并关闭事件服务。 |
 
-事件层复用 FastAPI、Pydantic 和 Python 异步能力，表单解析新增 `python-multipart`，无新增环境变量。服务不解析 PDF、不依赖模型，不直接把原始模型输出当作正式事件。应用启动时 bind_history 接入[统一驻留轨迹](communication-history.md)，注册需传入服务端认证取得的 secret_key；事件提交同步更新公开轨迹，SQLite 备份由历史服务负责。
+事件层复用 FastAPI、Pydantic 和 Python 异步能力，表单解析新增 `python-multipart`，无新增环境变量。服务不解析 PDF、不依赖模型，不直接把原始模型输出当作正式事件。应用启动时 bind_history 接入[统一驻留轨迹](communication-history.md)，注册需传入服务端认证取得的 owner_userid；事件提交同步更新公开轨迹，SQLite 备份由历史服务负责。
 
 业务门禁保留独立子图，但不占用专属事件、任务阶段状态或快照字段。执行层通过通用进度报告校验动作，通过普通消息报告结论；内部文件筛选数据不能从展示文案反推。对外协议与前端迁移要求见 [SSE 事件契约](../../api/communication.md#sse-事件契约)。
 
@@ -35,7 +35,7 @@ from app.schema.communication import (
 )
 
 # service 来自 application.state.communication_event_service。
-await service.register_turn("c1", "t1", owner="alice", secret_key=authenticated_user.secret_key)
+await service.register_turn("c1", "t1", owner="alice", owner_userid=authenticated_user.owner_userid)
 # 生产中由前端调用 GET events 触发；示例显式订阅激活后才能发布。
 stream = await service.subscribe("c1", "t1", owner="alice")
 await service.publish("c1", "t1", owner="alice",

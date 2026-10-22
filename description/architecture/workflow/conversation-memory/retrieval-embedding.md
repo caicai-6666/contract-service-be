@@ -34,7 +34,7 @@
 | payload.input.contracts[i].file_name | 文件名： | 正式合同引用快照中的文件名 |
 | payload.input.contracts[i].summary | 文件摘要： | 正式合同引用快照中的摘要原文 |
 
-原始结构的key为英文；当前存储及编码文本标签为中文，使用全角冒号。文件字段顺序固定为file_name、display_name、summary。区块顺序为用户文字、上传附件、引用合同；两类文件各自保持输入列表顺序。合同与附件共用文件模板和 `file` 编码指令，每份分别并发编码后参与等权融合；合同没有 display_name，不补造该字段。合同 document_id 不进入检索文本或向量，仍完整保留在原任务中。附件保持输入列表顺序，缺失字段直接省略，不生成空标签、null或占位说明；一份文件三字段均无内容则整个文件区块省略。不根据文件名、摘要内容对附件去重。
+原始结构的key为英文；当前存储及编码文本标签为中文，使用全角冒号。文件字段顺序固定为file_name、display_name、summary。区块顺序为用户文字、上传附件、引用合同；两类文件各自保持输入列表顺序。合同与附件共用文件模板和统一文本指令，`file` 仅保留审计类型，每份分别并发编码后参与等权融合；合同没有 display_name，不补造该字段。合同 document_id 不进入检索文本或向量，仍完整保留在原任务中。附件保持输入列表顺序，缺失字段直接省略，不生成空标签、null或占位说明；一份文件三字段均无内容则整个文件区块省略。不根据文件名、摘要内容对附件去重。
 
 原文及字段先去除首尾空白，保留内部换行。用户文字中明确以file_id=或file_id:标记的规范UUID/64位十六进制值会从检索投影去除，不删除其他一般数字；附件的file_id、page_count从不作为模板字段加入。非法非字符串正文报错，不强转字符串。
 
@@ -106,13 +106,13 @@
 
 ```text
 <|im_start|>system
-{该类型的指令}<|im_end|>
+{统一文本指令}<|im_end|>
 <|im_start|>user
 {单个编码单元正文}<|im_end|>
 <|im_start|>assistant
 ```
 
-指令用于生成向量表示，不要求模型先生成改写文本。下面各节给出实际指令全文和版本。
+指令用于生成向量表示，不要求模型先生成改写文本。当前统一指令见下文；历史专用指令及实验单独归档。
 
 对用户输入和中途输出的每个非空单元并发调用Embedding，受局部Semaphore和进程级全局请求额度约束。设原始向量为e_i：
 
@@ -145,27 +145,21 @@ file_name: 服务协议.pdf
 summary: 分阶段交付及验收
 ```
 
-可选key为file_name、display_name、summary。用户问题查询则由检索模型改写为用户口吻。这是后续查询构造约定，正式检索工具尚未实现；当前文档侧文件文本仍为中文标签，不能把上述英文查询模板误当成已上线的存储模板。
+可选key为file_name、display_name、summary。用户问题查询则由检索模型改写为用户口吻。正式记忆检索工具按选定字段构造查询；文档侧文件文本仍为中文标签，不能把英文查询模板误当成存储模板。
 
-最近的对照实验使用自然语言查询，未验证上述英文单字段/多字段格式。是否在查询编码前统一标签、如何选择查询指令及融合多路召回，仍需查询端实现与实验确认。本次文档完善不改变已有编码代码或数据库内容。
+通用指令的冻结确认集已包含英文单字段/多字段查询、仅摘要文件及多附件融合；样本较小，结论见[通用指令选择](../../../capability/infrastructure/embedding-instruction-selection.md)。
 
 ---
 
-## 配对指令
+## 统一文本指令
 
-文档指令版本：`three-view-excerpt-v2-readable-input`。
-
-```text
-Represent this excerpt of a past contract-business interaction for retrieval, preserving its topic, entities, user intent, key facts, constraints, and planned actions.
-```
-
-查询指令保留用于向量召回实验；正式检索工具尚未接入：
+所有文本编码入口及查询统一采用 `generic-text-retrieval-en-v1`，权威指令与ChatML渲染函数位于 `app/core/embedding_prompt.py`：
 
 ```text
-Retrieve past interactions with a contract business assistant that are relevant to the user's current question, including prior requirements, decisions, findings, and planned actions.
+Represent this text for semantic retrieval. Preserve its topic, entities, relationships, actions, conditions, negation and uncertainty. Use only information explicitly present.
 ```
 
-`prompt/embedding.py` 将指令和正文渲染为system/user聊天序列并追加assistant前缀。原文为空时拒绝编码；不注入record_id、任务序号、模型推理或审计。
+`prompt/embedding.py` 保留 `excerpt`、`user_question`、`file`、`final_output` 类型校验及审计分类，各类返回同一指令与版本。分块、文件标签、空值规则、并发及融合方式不变，`MEMORY_QUERY_INSTRUCTION` 同样引用该指令。正式查询端复用同一个渲染函数。
 
 ---
 
@@ -179,7 +173,13 @@ EmbeddingClient校验响应数量与索引；编码层进一步校验模型名�
 
 ---
 
-## 用户输入指令实验
+## 历史专用指令与实验记录
+
+> 下列章节记录切换前各轮实验和当时的接入状态，用于追溯，不是当前生产指令。现行指令以上面的统一契约为准，原始实验产物不改写。
+
+---
+
+### 用户输入指令实验
 
 独立[三指令实验](../../../../experiment/user-input-instruction/README.md)比较当前通用英文、意图优先英文和对应中文，仅改变用户输入的文档侧指令。44任务、58查询中，用户意图主集首位命中分别22/24、24/24、24/24；诊断集分别25/31、22/31、21/31。中英文主集持平，输出事实类查询有退化，尚不能确定普遍最优方案。完整证据见[实验分析](../../../../experiment/user-input-instruction/output/20260916T062011.354683Z/analysis.md)。该实验当时生产仍使用通用指令；当前用户输入已切换为下述两份专用指令，未据旧实验宣称其质量更优。
 
@@ -190,7 +190,7 @@ EmbeddingClient校验响应数量与索引；编码层进一步校验模型名�
 
 ---
 
-## 用户问题与文件专用指令
+### 用户问题与文件专用指令
 
 版本为 `user-input-question-file-v1`。程序在任务建模时记录区块类型，用户文字使用 `user_question`，每份附件使用 `file`；不根据正文标签推测类型。`embed_task_text(text, audit, kind=...)` 将对应指令送入实际Embedding请求，并在审计中记录content_kind与prompt_version。默认excerpt继续用于中途输出；最终输出显式使用final_output。
 
@@ -213,28 +213,28 @@ Represent this file for retrieval using the supplied file name, display name, an
 
 ---
 
-## 分块专用指令复测
+### 分块专用指令复测
 
 相同68任务、48正例和12误导题下，新方案正例Top1为48/48，误导来源平均名次6.42，Top3进入7/12；同轮旧英文指令分别48/48、3.33、10/12。误导Top1仍5/12，未完全抑制。分块通用消融为47/48、4.08、10/12。详见[完整分析](../../../../experiment/user-input-instruction/output/20260916T065422.939064Z/analysis.md)。本集无多附件任务，查询未改为格式化字段，结论不覆盖这些后续场景。
 
 
 ---
 
-## 中途输出指令实验
+### 中途输出指令实验
 
 [中途输出指令对照](../../../../experiment/intermediate-instruction/README.md)比较通用指令与强调发现、进度、待确认和下一步动作的新英文指令。41候选、38正例、12误导题下，正例Top1由33/38降为30/38，Top3同为37/38；误导来源平均名次4.75→5.50，Top1进入数5/12→4/12。优先正确字段召回，保留原通用指令。详见[分析与逐题证据](../../../../experiment/intermediate-instruction/output/20260916T071350.472742Z/analysis.md)。
 
 
 ---
 
-## 最终结论指令实验
+### 最终结论指令实验
 
 [结论指令对照](../../../../experiment/final-instruction/README.md)包含41候选、31正例和12误导题。结论专用候选Top1为23/31，原版20/31，Top3均31/31；6份约1000字符长答复的18条局部查询Top1由7/18增至10/18。误导来源排序无变化。详见[分析及长文位置指标](../../../../experiment/final-instruction/output/20260916T072633.494975Z/analysis.md)。现已按用户确认将该候选接入最终输出编码；中途输出仍保留原通用指令。
 
 
 ---
 
-## 最终输出专用指令
+### 最终输出专用指令
 
 `FINAL_OUTPUT_INSTRUCTION` 对应 `final-response-v1`，生产节点通过 `kind='final_output'` 显式选择。整份最终答复只编码一次，正文存储模板、向量维度和空值规则保持不变。指令全文与已验证候选一致：
 

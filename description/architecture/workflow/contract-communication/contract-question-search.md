@@ -25,7 +25,7 @@
 
 ## 编码与 ES 查询
 
-实现位于 `agent_core/subgraph/contract_retrieval/tool/contract_question_search.py`。查询调用 `render_user_query_embedding_input()`，与入库问题编码共用 `contract-question-retrieval-en-v1` 成对指令中的 `USER_QUERY_EMBEDDING_INSTRUCTION`。只对问题编码一次，不重写后另行生成问题列表；使用既有 ChatML 边界、Embedding 客户端、模型配置和全局并发限制。
+实现位于 `agent_core/subgraph/contract_retrieval/tool/contract_question_search.py`。查询调用 `render_user_query_embedding_input()`，与入库问题编码共用 `generic-text-retrieval-en-v1` 统一文本指令（`app/core/embedding_prompt.py`）。只对问题编码一次，不重写后另行生成问题列表；使用既有 ChatML 边界、Embedding 客户端、模型配置和全局并发限制。
 
 校验响应模型、数量、维度、有限值与非零范数后，执行 L2 归一化。查询 ES `vectors.question_fusion`，范围 ID 放入 kNN 的预过滤条件；另检查返回项仍在范围内，按 SQLite `ready` 状态过滤、去重并稳定排序。分数由 cosine mapping 的 `_score` 转换为原始余弦值。
 

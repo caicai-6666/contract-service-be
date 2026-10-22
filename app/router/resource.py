@@ -14,7 +14,7 @@ from app.infrastructure.ingestion_review_store import IngestionReviewFileError
 
 from app.router.contract import ContractExtractionServiceDependency
 from app.router.communication import HistoryDependency
-from app.router.dependency import ReviewerUserDependency, AuthenticatedUserDependency
+from app.router.dependency import UserIdDependency, PlatformUserDependency
 from app.service.communication_history import ConversationFileNotFoundError
 from app.service.contract_extraction.registry import RunNotFoundError
 
@@ -102,12 +102,12 @@ async def get_contract_file(
 async def get_extraction_pdf(
     file_id: UUID,
     service: ContractExtractionServiceDependency,
-    reviewer_user_name: ReviewerUserDependency,
+    owner_userid: UserIdDependency,
 ) -> StreamingResponse:
     """UUID 仅定位资源，归属仍由服务端校验；不向前端暴露页面缓存或服务器路径。"""
     try:
         metadata, content = await service.get_processed_pdf(
-            str(file_id), reviewer_user_name=reviewer_user_name,
+            str(file_id), owner_userid=owner_userid,
         )
     except RunNotFoundError as exc:
         raise HTTPException(status_code=404, detail="处理版 PDF 不存在或已经释放") from exc
@@ -141,11 +141,11 @@ async def get_extraction_pdf(
 async def get_communication_pdf(
     conversation_id: Annotated[str, Path(min_length=1, max_length=128, description='文件所属会话 ID，须属于当前用户且已驻留；不自动加载历史。')],
     file_id: Annotated[UUID, Path(description='会话任务轨迹 input.files 中的 file_id；所属任务必须已驻留且附件已获准使用。')],
-    history: HistoryDependency, user: AuthenticatedUserDependency,
+    history: HistoryDependency, user: PlatformUserDependency,
 ) -> StreamingResponse:
     """文件 UUID 只定位资源，密钥归属及驻留准入状态由服务端检查。"""
     try:
-        name, content = await history.read_file(conversation_id, str(file_id), secret_key=user.secret_key)
+        name, content = await history.read_file(conversation_id, str(file_id), owner_userid=user.userid)
     except ConversationFileNotFoundError as exc:
         raise HTTPException(status_code=404, detail='会话附件不存在或不可用') from exc
 

@@ -1,34 +1,14 @@
-"""审核用户登录接口。"""
+"""查询统一登录后的当前用户；本平台不再提供凭据登录或令牌签发。"""
+from fastapi import APIRouter, Response
+from app.router.dependency import PlatformUserDependency
+from app.schema.auth import AuthenticatedUser
 
-from fastapi import APIRouter, HTTPException, status
-
-from app.router.dependency import AuthServiceDependency
-from app.schema.auth import LoginRequest, LoginResponse
-from app.service.auth import InvalidReviewerSecretError
-
-router = APIRouter(prefix="/auth", tags=["auth"])
-
-@router.post(
-    "/login",
-    response_model=LoginResponse,
-    summary="使用审核用户密钥获取免登码",
-)
-async def login(
-    payload: LoginRequest,
-    service: AuthServiceDependency,
-) -> LoginResponse:
-    """校验唯一审核用户密钥并返回审核人名称与限时免登码。"""
-    try:
-        result = await service.login(payload.secret_key.get_secret_value())
-    except InvalidReviewerSecretError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="审核用户密钥无效",
-        ) from exc
-    return LoginResponse(
-        login_code=result.login_code,
-        user_name=result.user_name,
-    )
+router = APIRouter(prefix='/auth', tags=['auth'])
 
 
-__all__ = ["router"]
+@router.get('/me', response_model=AuthenticatedUser, summary='查询当前登录用户及本平台访问资格',
+    responses={401:{'description':'用户令牌缺失或登录失效'},403:{'description':'不属于本平台管理员'},
+               503:{'description':'平台会话或中间件认证服务不可用'}})
+async def current_user(user: PlatformUserDependency, response: Response) -> AuthenticatedUser:
+    response.headers['Cache-Control'] = 'no-store'
+    return user

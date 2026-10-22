@@ -3,7 +3,7 @@ from typing import Literal
 from datetime import datetime
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, StrictStr, model_validator, field_validator, model_serializer
 from app.core.passport import Passports
 
 
@@ -66,6 +66,9 @@ class MiddlewareClient:
     async def pull_deletion_result(self, *, token):
         return await self._pull_result('deletion-results', token=token, model=MiddlewareDeletionReviewDelivery)
 
+    async def pull_file_permission_adjustment(self, *, token):
+        return await self._pull_result('file-permission-adjustments', token=token, model=MiddlewareFilePermissionDelivery)
+
     async def _pull_result(self, stream, *, token, model):
         response = await self._http.post(f'middleware-service/api/{stream}/pull',
             headers={'Authorization': f'Bearer {token.get_secret_value()}'})
@@ -82,6 +85,9 @@ class MiddlewareClient:
     async def ack_deletion_result(self, *, token, message_id, offset):
         return await self._ack_result('deletion-results', token=token, message_id=message_id, offset=offset)
 
+    async def ack_file_permission_adjustment(self, *, token, message_id, offset):
+        return await self._ack_result('file-permission-adjustments', token=token, message_id=message_id, offset=offset)
+
     async def _ack_result(self, stream, *, token, message_id, offset):
         response = await self._http.post(f'middleware-service/api/{stream}/ack',
             headers={'Authorization': f'Bearer {token.get_secret_value()}'},
@@ -93,6 +99,26 @@ class MiddlewareClient:
         if result.message_id != message_id or result.offset != offset:
             raise ValueError('审核反馈确认身份与当前消息不一致')
         return result
+
+    async def query_user_login(self, *, token, user_token):
+        response = await self._http.post('middleware-service/api/user/login-cache',
+            headers={'Authorization': f'Bearer {token.get_secret_value()}'},
+            json={'access_token': user_token.get_secret_value()})
+        response.raise_for_status()
+        if response.status_code != 200:
+            raise ValueError('用户登录查询必须返回 200')
+        return MiddlewareUserLogin.model_validate(response.json())
+
+    async def list_platform_admins(self, *, token):
+        response = await self._http.get('middleware-service/api/platform/admins/list',
+            headers={'Authorization': f'Bearer {token.get_secret_value()}'})
+        response.raise_for_status()
+        if response.status_code != 200:
+            raise ValueError('平台管理员查询必须返回 200')
+        admins = TypeAdapter(list[StrictStr]).validate_python(response.json())
+        if any(not userid.strip() for userid in admins):
+            raise ValueError('管理员 userid 不能为空白')
+        return admins
 
     async def close(self):
         await self._http.aclose()
@@ -195,6 +221,32 @@ async def _publish_request(client: MiddlewareClient, *, path: str, token: Secret
     return MiddlewarePublishOutcome(state='uncertain', message_id=message_id, error_code='publish_unconfirmed')
 
 
+class MiddlewareFilePermissionMessage(BaseModel):
+    """source_id 在本平台映射为完整 document_id，不从备注推断目标或等级。"""
+    model_config = ConfigDict(frozen=True, extra='ignore')
+    message_id: str = Field(min_length=1, max_length=128, strict=True)
+    target_platform_code: str = Field(pattern=r'^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$')
+    source_id: str = Field(pattern=r'^[0-9a-f]{64}$', strict=True)
+    file_level: int = Field(strict=True)
+    reviewer: str = Field(min_length=1, max_length=200, strict=True)
+    note: str = Field(max_length=10000, strict=True)
+    created_at: datetime
+
+    @model_validator(mode='after')
+    def valid_adjustment(self):
+        if not self.message_id.strip() or not self.reviewer.strip():
+            raise ValueError('等级调整消息标识和操作人不得为空白')
+        if self.created_at.utcoffset() is None:
+            raise ValueError('等级调整时间必须带时区')
+        return self
+
+
+class MiddlewareFilePermissionDelivery(BaseModel):
+    model_config = ConfigDict(frozen=True, extra='ignore')
+    offset: int = Field(ge=0, strict=True)
+    message: MiddlewareFilePermissionMessage
+
+
 class MiddlewareReviewMessage(BaseModel):
     """空通行证数组表示未签发；兼容旧标量，缺失或null不得猜测为拒绝。"""
     model_config = ConfigDict(frozen=True, extra='ignore')
@@ -205,6 +257,22 @@ class MiddlewareReviewMessage(BaseModel):
     reviewer: str = Field(min_length=1, strict=True)
     passport: Passports
     created_at: datetime
+    file_level: int | None = Field(default=None, strict=True, description='注册中心给出的整份文件等级；仅历史消息允许缺失，不接受显式 null。')
+
+    @field_validator('file_level', mode='before')
+    @classmethod
+    def strict_file_level(cls, value):
+        if type(value) is not int:
+            raise ValueError('审核文件等级必须为严格整数')
+        return value
+
+    @model_serializer(mode='wrap')
+    def preserve_legacy_feedback(self, handler):
+        payload = handler(self)
+        # 缺失不补 null，确保升级前已保存的反馈正文和清理回执哈希仍能校验重投。
+        if 'file_level' not in self.model_fields_set:
+            payload.pop('file_level', None)
+        return payload
 
     @model_validator(mode='after')
     def valid_feedback(self):
@@ -252,3 +320,21 @@ class MiddlewareReviewAck(BaseModel):
     message_id: str = Field(min_length=1, max_length=128, strict=True)
     status: Literal['acknowledged']
     offset: int = Field(ge=0, strict=True)
+
+
+class MiddlewareUserLogin(BaseModel):
+    """只接受自洽的登录查询响应，HTTP 200 本身不代表用户登录有效。"""
+    model_config = ConfigDict(frozen=True, extra='ignore')
+    userid: StrictStr | None
+    username: StrictStr | None
+    is_logged_in: bool = Field(strict=True)
+    ttl: int = Field(ge=0, strict=True)
+
+    @model_validator(mode='after')
+    def valid_state(self):
+        if self.is_logged_in:
+            if not self.userid or not self.userid.strip() or not self.username or not self.username.strip() or self.ttl <= 0:
+                raise ValueError('有效登录必须包含用户身份和正数 TTL')
+        elif self.userid is not None or self.username is not None or self.ttl != 0:
+            raise ValueError('失效登录不得携带有效身份或 TTL')
+        return self

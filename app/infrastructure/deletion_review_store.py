@@ -11,6 +11,7 @@ import math
 from uuid import UUID
 
 from app.infrastructure.passport_storage import encode_passports, decode_passports, migrate_passport_storage
+from app.core.file_level import encode_file_level, decode_file_level
 from app.schema.deletion_review import (
     DeletionReviewFeedback, DeletionReviewRecord, DeletionReviewSnapshot,
     ProcessedDeletionReviewReceipt,
@@ -59,10 +60,6 @@ CREATE INDEX IF NOT EXISTS deletion_reviews_status_created
     ON deletion_reviews(review_status, created_at, submission_id);
 CREATE INDEX IF NOT EXISTS deletion_reviews_document
     ON deletion_reviews(document_id);
-CREATE INDEX IF NOT EXISTS deletion_reviews_requested_by
-    ON deletion_reviews(requested_by,created_at,submission_id);
-CREATE INDEX IF NOT EXISTS deletion_reviews_uploader
-    ON deletion_reviews(uploader,created_at,submission_id);
 CREATE TABLE IF NOT EXISTS processed_deletion_review_receipts (
     submission_id TEXT PRIMARY KEY NOT NULL,
     request_id TEXT NOT NULL UNIQUE,
@@ -109,6 +106,8 @@ class SQLiteDeletionReviewStore:
             connection.executescript('BEGIN IMMEDIATE;\n' + migration + _SCHEMA)
             columns = {row['name'] for row in connection.execute('PRAGMA table_info(deletion_reviews)')}
             additions = {
+                'requested_by_userid': 'TEXT', 'uploader_userid': 'TEXT',
+                'file_level': 'TEXT',
                 'delivery_status': "TEXT NOT NULL DEFAULT 'pending' CHECK(delivery_status IN ('pending','publishing','published','uncertain','blocked'))",
                 'publish_attempts': 'INTEGER NOT NULL DEFAULT 0 CHECK(publish_attempts>=0)',
                 'next_publish_at': 'REAL', 'last_publish_error': 'TEXT',
@@ -121,6 +120,11 @@ class SQLiteDeletionReviewStore:
             for name, definition in additions.items():
                 if name not in columns:
                     connection.execute(f'ALTER TABLE deletion_reviews ADD COLUMN {name} {definition}')
+            # 人员范围按稳定 ID 查询；旧姓名索引不再承担授权过滤。
+            connection.execute('DROP INDEX IF EXISTS deletion_reviews_requested_by')
+            connection.execute('DROP INDEX IF EXISTS deletion_reviews_uploader')
+            connection.execute('CREATE INDEX IF NOT EXISTS deletion_reviews_requester_userid ON deletion_reviews(requested_by_userid,created_at,submission_id)')
+            connection.execute('CREATE INDEX IF NOT EXISTS deletion_reviews_uploader_userid ON deletion_reviews(uploader_userid,created_at,submission_id)')
             # 成功删除的历史申请只用于审核留存，不再占用同哈希文件下一次入库的申请资格。
             # 必须在补齐执行字段后重建，兼容尚无 deletion_status 的旧表，并原子替换旧索引。
             connection.execute('DROP INDEX IF EXISTS deletion_reviews_active_document')
@@ -144,7 +148,10 @@ class SQLiteDeletionReviewStore:
     def _record(row):
         if row is None:
             raise LookupError('删除待审申请不存在')
-        return DeletionReviewRecord.model_validate(dict(row) | {'passport': decode_passports(row['passport'])})
+        return DeletionReviewRecord.model_validate(dict(row) | {
+            'passport': decode_passports(row['passport']),
+            'file_level': decode_file_level(row['file_level']),
+        })
 
     @staticmethod
     def _message_id(value):
@@ -197,6 +204,7 @@ class SQLiteDeletionReviewStore:
             fields = (*DeletionReviewSnapshot.model_fields, 'submission_id', 'note', 'created_at', 'updated_at')
             data = record.model_dump(mode='json')
             data['passport'] = encode_passports(record.passport)
+            data['file_level'] = encode_file_level(record.file_level)
             try:
                 connection.execute(
                     f"INSERT INTO deletion_reviews ({','.join(fields)}) VALUES ({','.join('?' for _ in fields)})",
@@ -215,21 +223,21 @@ class SQLiteDeletionReviewStore:
             return tuple(UUID(row['submission_id']) for row in connection.execute(
                 'SELECT submission_id FROM deletion_reviews ORDER BY created_at DESC,submission_id ASC'))
 
-    def list_ids_for_user(self, user_name: str) -> tuple[UUID, ...]:
+    def list_ids_for_user(self, userid: str) -> tuple[UUID, ...]:
         """人员范围按 OR 计算，同一人兼任两个角色也只返回一条申请。"""
         with self._connection() as connection:
             return tuple(UUID(row['submission_id']) for row in connection.execute(
                 '''SELECT submission_id FROM deletion_reviews
-                   WHERE requested_by=? OR uploader=?
-                   ORDER BY created_at DESC,submission_id ASC''', (user_name, user_name)))
+                   WHERE requested_by_userid=? OR uploader_userid=?
+                   ORDER BY created_at DESC,submission_id ASC''', (userid, userid)))
 
-    def get_for_user(self, submission_id: UUID, user_name: str):
+    def get_for_user(self, submission_id: UUID, userid: str):
         # 详情与列表使用相同条件，不能仅凭 UUID 绕过人员范围。
         with self._connection() as connection:
             return self._record(connection.execute(
                 '''SELECT * FROM deletion_reviews WHERE submission_id=?
-                   AND (requested_by=? OR uploader=?)''',
-                (str(UUID(str(submission_id))), user_name, user_name)).fetchone())
+                   AND (requested_by_userid=? OR uploader_userid=?)''',
+                (str(UUID(str(submission_id))), userid, userid)).fetchone())
 
     def get_latest_for_document(self, document_id: str):
         with self._connection() as connection:

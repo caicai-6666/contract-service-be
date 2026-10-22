@@ -376,8 +376,8 @@ class CommunicationWorkflowService(CommunicationEventService):
                     from app.agent.contract_communication.agent_core.tool.memory_viewer import MemoryQueryViewer, build_memory_view_registration
                     async with self._condition:
                         self._get(conversation_id, turn_id, owner)
-                        secret_key = self._history._owners[conversation_id]
-                    memory_pool = await self._history.memory_query_pool(conversation_id, secret_key=secret_key)
+                        owner_userid = self._history._owners[conversation_id]
+                    memory_pool = await self._history.memory_query_pool(conversation_id, owner_userid=owner_userid)
                     memory_viewer = self._memory_viewers.get(conversation_id)
                     if memory_viewer is None or memory_viewer.pool is not memory_pool:
                         memory_viewer = MemoryQueryViewer(memory_pool)
@@ -437,7 +437,7 @@ class CommunicationWorkflowService(CommunicationEventService):
                         tools.extend(build_contract_relation_search_registrations(relation_search_pool,search_settings))
                     file_resolver = None
                     if self._file_tools is not None:
-                        file_entries, file_resolver = await self._file_tools.prepare(conversation_id, secret_key)
+                        file_entries, file_resolver = await self._file_tools.prepare(conversation_id, owner_userid)
                         tools.extend(file_entries)
                     async def resolve_page(reference):
                         if reference.resource_id.startswith('contract-passport:') and passport_viewer is not None:

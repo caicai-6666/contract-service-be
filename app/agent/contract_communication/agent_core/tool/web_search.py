@@ -50,7 +50,7 @@ class WebSearchResult(SearchModel):
 class SearchWebArguments(BaseModel):
     """当你需要从公开网络寻找资料、事实依据或候选网页时，使用这个工具。说明要查的对象及所需资料，获得结果集ID和条数后，调用view_web_search_results查看候选；搜索摘要不代表已读取或核实网页正文。"""
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
-    query: str = Field(min_length=1, max_length=1000, description='完整简洁的搜索需求，说明检索对象、所需资料及时间、地域、来源等限制；例如“某公司 官网 最近公告”。保留实体名称和排除条件，不附加答案排版要求。')
+    query: str = Field(min_length=1, max_length=128, description='1至128字符的简短检索词，包含准确对象名称、主题及必要时间或来源限制；例如“某公司 官网 最近公告”。可使用 site: 指定站点、双引号限定词组、after: 或 before: 限定日期。保留关键实体和排除条件，不附加答案排版要求；复杂需求拆成多次搜索。')
 
 
 class ViewWebSearchResultsArguments(BaseModel):
@@ -198,22 +198,17 @@ def _search_error(code: str, hint: str) -> WebSearchResult:
 
 
 def _parse_web_results(payload: object) -> WebSearchResult:
-    """兼容直接对象和 code/data 信封，严格区分空召回与损坏响应。"""
+    """规范化 DeepSeek Search 的 results，保持供应商排序，不把正文当作摘要。"""
     if not isinstance(payload, dict):
         raise ValueError('搜索响应不是对象')
-    code = payload.get('code')
-    if code is not None and str(code) != '200':
-        return _provider_failure(code)
-    body = payload.get('data', payload)
-    pages = body.get('webPages') if isinstance(body, dict) else None
-    rows = pages.get('value') if isinstance(pages, dict) else None
+    rows = payload.get('results')
     if not isinstance(rows, list):
         raise ValueError('缺少网页结果数组')
     entries = []
     for row in rows:
         if not isinstance(row, dict):
             raise ValueError('网页条目不是对象')
-        title, url = row.get('name'), row.get('url')
+        title, url = row.get('title'), row.get('url')
         if not isinstance(title, str) or not title.strip() or not isinstance(url, str) or not url.strip():
             raise ValueError('网页缺少标题或链接')
         summary, snippet = row.get('summary'), row.get('snippet')
@@ -227,17 +222,17 @@ def _parse_web_results(payload: object) -> WebSearchResult:
 def _provider_failure(code) -> WebSearchResult:
     # 不回显服务商原始消息，避免将敏感请求或不可信正文传给模型。
     mapping = {
-        '401': ('bocha_unauthorized', '网页搜索服务鉴权失败，请检查服务配置。'),
-        '403': ('bocha_forbidden', '网页搜索服务未获授权，请检查接口权限。'),
-        '402': ('bocha_payment_required', '网页搜索服务额度或支付状态异常，请检查账户。'),
-        '429': ('bocha_rate_limited', '网页搜索服务请求过于频繁，请稍后重试。'),
+        '401': ('deepseek_search_unauthorized', '网页搜索服务鉴权失败，请检查服务配置。'),
+        '403': ('deepseek_search_forbidden', '网页搜索服务未获授权，请检查接口权限。'),
+        '402': ('deepseek_search_payment_required', '网页搜索服务额度或支付状态异常，请检查账户。'),
+        '429': ('deepseek_search_rate_limited', '网页搜索服务请求过于频繁，请稍后重试。'),
     }
-    error_code, hint = mapping.get(str(code), ('bocha_provider_error', '网页搜索服务返回错误，请稍后重试。'))
+    error_code, hint = mapping.get(str(code), ('deepseek_search_provider_error', '网页搜索服务返回错误，请稍后重试。'))
     return WebSearchResult(status='error', error_code=error_code, hint=hint)
 
 
 class WebSearchService:
-    """直接异步请求博查，共享并发额度；无模型路由和子图调度。"""
+    """直接异步请求 DeepSeek Search；与专家生成分开执行，无模型路由。"""
     def __init__(self, *, settings=None, concurrency=2, transport=None):
         if concurrency < 1:
             raise ValueError('搜索并发数必须为正数')
@@ -251,33 +246,35 @@ class WebSearchService:
 
     async def _request(self, query, *, audit=None) -> WebSearchResult:
         request = SearchWebArguments(query=query)
-        config = (self.settings or get_settings()).bocha
-        key = config.api_key.get_secret_value().strip()
+        config = (self.settings or get_settings()).deepseek
+        key = config.api_key.get_secret_value().strip() if config.api_key else ''
         if not key:
-            return _search_error('bocha_not_configured', '网页搜索服务尚未配置，请联系管理员。')
-        payload = {'query': request.query, 'summary': True,
-                   'freshness': 'noLimit', 'count': config.web_search_count}
-        event = {'stage': 'general_search', 'request': payload}
+            return _search_error('deepseek_search_not_configured', '网页搜索服务尚未配置，请联系管理员。')
+        payload = {'query': request.query, 'count': config.search_count, 'need_content': False}
+        event = {'stage': 'general_search', 'provider': 'deepseek', 'request': payload}
         if audit is not None:
             audit.append(event)
         try:
             # 总截止时间覆盖整个请求；禁止重定向，避免鉴权头被转发至其他站点。
-            async with asyncio.timeout(config.timeout_seconds):
-                async with httpx.AsyncClient(timeout=config.timeout_seconds, trust_env=config.trust_env,
+            async with asyncio.timeout(config.search_timeout_seconds):
+                async with httpx.AsyncClient(timeout=config.search_timeout_seconds, trust_env=config.search_trust_env,
                                              follow_redirects=False, transport=self._transport) as client:
-                    response = await client.post(config.base_url + '/v1/web-search', json=payload,
+                    # 兼容已配置为 /v1 的 OpenAI 兼容地址，避免拼成 /v1/v1。
+                    base_url = config.base_url.rstrip('/')
+                    endpoint = '/tools/search' if base_url.endswith('/v1') else '/v1/tools/search'
+                    response = await client.post(base_url + endpoint, json=payload,
                         headers={'Authorization': 'Bearer ' + key})
             event['http_status'] = response.status_code
-            if not response.is_success:
+            if response.status_code != 200:
                 return _provider_failure(response.status_code)
             event['response'] = response.text.replace(key, '[REDACTED]')
             return _parse_web_results(response.json())
         except (TimeoutError, httpx.TimeoutException):
-            return _search_error('bocha_timeout', '网页搜索服务响应超时，请稍后重试。')
+            return _search_error('deepseek_search_timeout', '网页搜索服务响应超时，请稍后重试。')
         except httpx.RequestError:
-            return _search_error('bocha_connection_failed', '网页搜索服务连接失败，请稍后重试。')
+            return _search_error('deepseek_search_connection_failed', '网页搜索服务连接失败，请稍后重试。')
         except (ValueError, TypeError):
-            return _search_error('bocha_invalid_response', '网页搜索服务返回的数据格式异常，请稍后重试。')
+            return _search_error('deepseek_search_invalid_response', '网页搜索服务返回的数据格式异常，请稍后重试。')
 
 
 def build_web_search_registrations(*, pool, service, authorize):

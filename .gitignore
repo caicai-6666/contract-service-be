@@ -1,7 +1,90 @@
+# 仅允许部署必需内容、正式文档和必要目录占位；新增交付资源须显式放行。
+/*
+!/.gitignore
+!/.dockerignore
+!/.env.example
+!/Dockerfile
+!/requirements.txt
+!/README.md
+!/AGENTS.md
+
+# 应用当前只依赖 Python 源码，不放行目录中可能产生的其他文件。
+!/app/
+/app/**
+!/app/**/
+!/app/**/*.py
+
+!/config/
+/config/**
+!/config/lindera-jieba.yml
+!/config/lindera-Cargo.lock
+
+!/description/
+/description/**
+!/description/**/
+!/description/**/*.md
+
+# data 默认属于运行数据，只有权威配置、模型模板及目录占位允许入库。
+# 不放行整个 data，避免合同、会话、原生动态库及备份进入源码仓库。
+!/data/
+/data/**
+
+# 启动时读取的业务定义；允许各层目录及 YAML，其他内容仍忽略。
+!/data/definition/
+!/data/definition/**/
+!/data/definition/**/*.yaml
+!/data/definition/**/*.yml
+
+# 新增模型沿用同一规则，不再逐个登记文件名。
+!/data/template/
+!/data/template/*.jinja
+!/data/tool-tag/
+!/data/tool-tag/*.txt
+
+# 目录占位仅用于展示布局；实际目录和数据库由程序按需创建。
+!/data/contract/
+!/data/contract/.gitkeep
+!/data/abstract/
+!/data/abstract/.gitkeep
+!/data/ingestion-review/
+!/data/ingestion-review/.gitkeep
+!/data/ingestion-review/files/
+!/data/ingestion-review/files/.gitkeep
+!/data/deletion-review/
+!/data/deletion-review/.gitkeep
+
+# 本地辅助脚本不纳入 Git；Dockerfile 独立完成原生扩展构建。
+/scripts/
+
+# 通用私有文件与缓存规则最后执行，避免被上面的资源白名单重新放行。
+# 本机环境与凭据不入库；环境变量模板属于部署契约，必须保留。
 .env
-.venv/
+.env.*
+!/.env.example
+
+# Python 虚拟环境、编译缓存及开发检查产物。
+/.venv/
+/venv/
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+/htmlcov/
+/build/
+/dist/
+*.egg-info/
+
+# 操作系统、编辑器临时文件与执行日志。
+.DS_Store
+._*
+Thumbs.db
+*.swp
+*.swo
+*~
+*.log
 
 # JetBrains IDE 配置仅在本地保留。
 .idea/
@@ -18,48 +101,3 @@ __pycache__/
 
 # 测试代码与产物不纳入 Git。
 /tests/
-
-# 运行数据不纳入 Git；Core 字段定义作为启动配置进入版本控制。
-/data/**
-!/data/input/
-!/data/input/.gitkeep
-!/data/contract/
-!/data/contract/.gitkeep
-!/data/abstract/
-/data/abstract/*
-!/data/abstract/.gitkeep
-!/data/template/
-!/data/template/qwen3.8-tools-placement.jinja
-!/data/tool-tag/
-!/data/tool-tag/qwen3.8-flash-next-nvfp4.txt
-!/data/definition/
-!/data/definition/field/
-!/data/definition/field/core/
-!/data/definition/field/core/*.yaml
-!/data/definition/contract-category/
-!/data/definition/contract-category/**
-!/data/definition/retrieval-view/
-!/data/definition/retrieval-view/**
-!/data/user/
-!/data/user/users.yaml
-
-!/data/template/deepseek-v4.1-flash.jinja
-!/data/tool-tag/deepseek-v4.1-flash.txt
-!/data/template/glm-5.3-flash.jinja
-!/data/tool-tag/glm-5.3-flash.txt
-
-# 本地辅助脚本不纳入 Git。
-/scripts/
-
-# 待审区仅跟踪目录占位；数据库、PDF、临时文件均为运行数据。
-!/data/ingestion-review/
-/data/ingestion-review/*
-!/data/ingestion-review/.gitkeep
-!/data/ingestion-review/files/
-/data/ingestion-review/files/*
-!/data/ingestion-review/files/.gitkeep
-
-# 删除临时区只跟踪目录占位，SQLite 与其日志均为运行数据。
-!/data/deletion-review/
-/data/deletion-review/*
-!/data/deletion-review/.gitkeep

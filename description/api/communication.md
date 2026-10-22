@@ -1,6 +1,6 @@
 # 多轮对话 API
 
-> 本文按接口组织。每个接口章节独立提供方法与完整路径、认证、参数、响应、错误码及请求示例；示例中的 login_code、c1、t1、文件路径须替换为实际值。
+> 本文按接口组织。每个接口章节独立提供方法与完整路径、认证、参数、响应、错误码及请求示例；示例中的用户 access_token、c1、t1、文件路径须替换为实际值。
 
 正式激活后已执行文件可读性、文件摘要、文件与文字业务相关性及文件文字整体判断，并将拒绝提示、任务终态同步至 SSE 与历史；上下文相关性及服务端历史选择已接入，完整门禁放行后进入正式 Agent Core，继续同一轮 SSE。
 
@@ -8,16 +8,16 @@
 
 | 接口 | 方法 | 完整路径 |
 | --- | --- | --- |
-| [获取当前用户会话列表](#获取当前用户会话列表) | `GET` | `/contract/api/communication/conversations` |
-| [打开会话](#打开会话) | `POST` | `/contract/api/communication/conversations/{conversation_id}/open` |
-| [向前刷新会话历史](#向前刷新会话历史) | `POST` | `/contract/api/communication/conversations/{conversation_id}/refresh` |
-| [修改会话名称](#修改会话名称) | `PATCH` | `/contract/api/communication/conversations/{conversation_id}` |
-| [删除会话](#删除会话) | `DELETE` | `/contract/api/communication/conversations/{conversation_id}` |
-| [创建会话及首轮](#创建会话及首轮) | `POST` | `/contract/api/communication/conversations` |
-| [创建或替换轮次](#创建或替换轮次) | `POST` | `/contract/api/communication/conversations/{conversation_id}/turns` |
-| [订阅轮次事件流](#订阅轮次事件流) | `GET` | `/contract/api/communication/conversations/{conversation_id}/turns/{turn_id}/events` |
-| [获取轮次快照](#获取轮次快照) | `GET` | `/contract/api/communication/conversations/{conversation_id}/turns/{turn_id}` |
-| [取消轮次](#取消轮次) | `POST` | `/contract/api/communication/conversations/{conversation_id}/turns/{turn_id}/cancel` |
+| [获取当前用户会话列表](#获取当前用户会话列表) | `GET` | `/knowledge-accumulation/contract/api/communication/conversations` |
+| [打开会话](#打开会话) | `POST` | `/knowledge-accumulation/contract/api/communication/conversations/{conversation_id}/open` |
+| [向前刷新会话历史](#向前刷新会话历史) | `POST` | `/knowledge-accumulation/contract/api/communication/conversations/{conversation_id}/refresh` |
+| [修改会话名称](#修改会话名称) | `PATCH` | `/knowledge-accumulation/contract/api/communication/conversations/{conversation_id}` |
+| [删除会话](#删除会话) | `DELETE` | `/knowledge-accumulation/contract/api/communication/conversations/{conversation_id}` |
+| [创建会话及首轮](#创建会话及首轮) | `POST` | `/knowledge-accumulation/contract/api/communication/conversations` |
+| [创建或替换轮次](#创建或替换轮次) | `POST` | `/knowledge-accumulation/contract/api/communication/conversations/{conversation_id}/turns` |
+| [订阅轮次事件流](#订阅轮次事件流) | `GET` | `/knowledge-accumulation/contract/api/communication/conversations/{conversation_id}/turns/{turn_id}/events` |
+| [获取轮次快照](#获取轮次快照) | `GET` | `/knowledge-accumulation/contract/api/communication/conversations/{conversation_id}/turns/{turn_id}` |
+| [取消轮次](#取消轮次) | `POST` | `/knowledge-accumulation/contract/api/communication/conversations/{conversation_id}/turns/{turn_id}/cancel` |
 
 共用说明：[请求中的合同引用](#请求中的合同引用)。
 
@@ -31,15 +31,15 @@
 
 ### 方法与用途
 
-`GET /contract/api/communication/conversations`
+`GET /knowledge-accumulation/contract/api/communication/conversations`
 
 返回当前登录用户在 SQLite 中保留的全部会话，用于会话列表展示。不依赖内存中是否仍存在轮次，不触发工作流。
 
-请求头：`Authorization: Bearer <login_code>`。所有已登录用户均可查看自己的会话，登录方式见[审核用户登录 API](auth.md)。
+请求头：`Authorization: Bearer <用户 access_token>`。所有已通过本平台访问验证的用户均可查看自己的会话，登录方式见[用户访问认证 API](auth.md)。
 
 ### 请求参数
 
-无路径参数、查询参数或请求体。用户归属由服务端从已认证用户密钥取得，客户端不提交用户标识或密钥。本接口暂不分页、不按任务状态筛选。
+无路径参数、查询参数或请求体。用户归属由服务端从已认证用户 userid 取得，客户端不提交用户标识或密钥。本接口暂不分页、不按任务状态筛选。
 
 ### 成功响应
 
@@ -67,14 +67,14 @@
 
 | 状态码 | 条件 |
 | --- | --- |
-| 401 | 免登码无效或过期。 |
+| 401 | 用户访问令牌无效或过期。 |
 | 503 | 会话数据库暂时不可用；不返回内部数据库异常详情。 |
 
 ### 请求示例
 
 ```bash
-curl 'http://127.0.0.1:20000/contract/api/communication/conversations' \
-  -H 'Authorization: Bearer <login_code>'
+curl 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations' \
+  -H 'Authorization: Bearer <用户 access_token>'
 ```
 
 ### 行为与边界
@@ -87,11 +87,11 @@ curl 'http://127.0.0.1:20000/contract/api/communication/conversations' \
 
 ### 方法与用途
 
-`POST /contract/api/communication/conversations/{conversation_id}/open`
+`POST /knowledge-accumulation/contract/api/communication/conversations/{conversation_id}/open`
 
 首次打开时读取最新摘要（包含）及其后的历史，加载到会话驻留缓存。没有摘要则加载全部已有记录。重复打开保留已向前加载的历史，并合并数据库中的新增尾部记录，不将范围重置为最新摘要。
 
-请求头：`Authorization: Bearer <login_code>`。所有已登录用户均可打开自己的会话，缓存命中仍校验密钥归属。
+请求头：`Authorization: Bearer <用户 access_token>`。所有已通过本平台访问验证的用户均可打开自己的会话，缓存命中仍校验 userid 归属。
 
 ### 请求参数
 
@@ -168,7 +168,7 @@ model_context_start_sequence 仍表示内部模型窗口起点，可能指向未
 
 | 状态码 | 条件 |
 | --- | --- |
-| 401 | 免登码无效或过期。 |
+| 401 | 用户访问令牌无效或过期。 |
 | 404 | 会话不存在或不属于当前用户。 |
 | 409 | 历史无法通过加载结构校验，或持久化内容与已冻结驻留记录冲突。 |
 | 422 | 路径参数不合法。 |
@@ -177,8 +177,8 @@ model_context_start_sequence 仍表示内部模型窗口起点，可能指向未
 ### 请求示例
 
 ```bash
-curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations/c1/open' \
-  -H 'Authorization: Bearer <login_code>'
+curl -X POST 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations/c1/open' \
+  -H 'Authorization: Bearer <用户 access_token>'
 ```
 
 ### 行为与边界
@@ -195,11 +195,11 @@ curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations/c1
 
 ### 方法与用途
 
-`POST /contract/api/communication/conversations/{conversation_id}/refresh`
+`POST /knowledge-accumulation/contract/api/communication/conversations/{conversation_id}/refresh`
 
 从当前驻留历史的最早记录向前扩展，遇到更早的一条摘要（包含）即停止；若前面没有摘要，则读取至会话起点。新旧记录按 sequence 组成完整顺序轨迹，不重复追加。
 
-请求头：`Authorization: Bearer <login_code>`。所有已登录用户均可刷新自己的会话。
+请求头：`Authorization: Bearer <用户 access_token>`。所有已通过本平台访问验证的用户均可刷新自己的会话。
 
 ### 请求参数
 
@@ -241,7 +241,7 @@ model_context_start_sequence 仍表示内部模型窗口起点，可能指向未
 
 | 状态码 | 条件 |
 | --- | --- |
-| 401 | 免登码无效或过期。 |
+| 401 | 用户访问令牌无效或过期。 |
 | 404 | 会话不存在或越权，优先于未驻留判断。 |
 | 409 | 会话尚未 open、进程重启或空闲驱逐后驻留已清空，或历史记录冲突。 |
 | 422 | 路径参数不合法。 |
@@ -250,8 +250,8 @@ model_context_start_sequence 仍表示内部模型窗口起点，可能指向未
 ### 请求示例
 
 ```bash
-curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations/c1/refresh' \
-  -H 'Authorization: Bearer <login_code>'
+curl -X POST 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations/c1/refresh' \
+  -H 'Authorization: Bearer <用户 access_token>'
 ```
 
 ### 行为与边界
@@ -268,9 +268,9 @@ curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations/c1
 
 ### 方法与用途
 
-`PATCH /contract/api/communication/conversations/{conversation_id}`
+`PATCH /knowledge-accumulation/contract/api/communication/conversations/{conversation_id}`
 
-修改当前用户的会话名称。请求头：`Authorization: Bearer <login_code>`，所有已登录用户均可修改本人会话。
+修改当前用户的会话名称。请求头：`Authorization: Bearer <用户 access_token>`，所有已通过本平台访问验证的用户均可修改本人会话。
 
 ### 请求参数
 
@@ -303,7 +303,7 @@ curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations/c1
 
 | 状态码 | 条件 |
 | --- | --- |
-| 401 | 免登码无效或过期。 |
+| 401 | 用户访问令牌无效或过期。 |
 | 404 | 会话不存在或不属于当前用户。 |
 | 422 | 名称为空、纯空白、过长，或请求结构不合法。 |
 | 503 | 会话数据库暂时不可用。 |
@@ -311,8 +311,8 @@ curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations/c1
 ### 请求示例
 
 ```bash
-curl -X PATCH 'http://127.0.0.1:20000/contract/api/communication/conversations/c1' \
-  -H 'Authorization: Bearer <login_code>' \
+curl -X PATCH 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations/c1' \
+  -H 'Authorization: Bearer <用户 access_token>' \
   -H 'Content-Type: application/json' \
   -d '{"name":"采购合同分析"}'
 ```
@@ -327,9 +327,9 @@ curl -X PATCH 'http://127.0.0.1:20000/contract/api/communication/conversations/c
 
 ### 方法与用途
 
-`DELETE /contract/api/communication/conversations/{conversation_id}`
+`DELETE /knowledge-accumulation/contract/api/communication/conversations/{conversation_id}`
 
-删除本人会话及 SQLite 中关联的全部任务、摘要和工作区记录。请求头：`Authorization: Bearer <login_code>`。所有已登录用户均可删除自己的会话。
+删除本人会话及 SQLite 中关联的全部任务、摘要和工作区记录。请求头：`Authorization: Bearer <用户 access_token>`。所有已通过本平台访问验证的用户均可删除自己的会话。
 
 ### 请求参数
 
@@ -347,7 +347,7 @@ curl -X PATCH 'http://127.0.0.1:20000/contract/api/communication/conversations/c
 
 | 状态码 | 条件 |
 | --- | --- |
-| 401 | 免登码无效或过期。 |
+| 401 | 用户访问令牌无效或过期。 |
 | 404 | 会话不存在、不属于当前用户，或已被删除后再次请求。 |
 | 422 | 路径参数不合法。 |
 | 503 | 会话数据库暂时不可用；事务回滚，不部分删除关联条目。 |
@@ -355,8 +355,8 @@ curl -X PATCH 'http://127.0.0.1:20000/contract/api/communication/conversations/c
 ### 请求示例
 
 ```bash
-curl -i -X DELETE 'http://127.0.0.1:20000/contract/api/communication/conversations/c1' \
-  -H 'Authorization: Bearer <login_code>'
+curl -i -X DELETE 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations/c1' \
+  -H 'Authorization: Bearer <用户 access_token>'
 ```
 
 ### 行为与边界
@@ -369,7 +369,7 @@ curl -i -X DELETE 'http://127.0.0.1:20000/contract/api/communication/conversatio
 
 ## 请求中的合同引用
 
-创建会话及提交新轮次均支持 `contract_ids`。前端只提交 ID，例如 `formData.append("contract_ids", documentId)`；多份合同重复追加字段，不提交 JSON 数组字符串。所有已登录用户可引用正式合同，已有会话仍须校验归属。
+创建会话及提交新轮次均支持 `contract_ids`。前端只提交 ID，例如 `formData.append("contract_ids", documentId)`；多份合同重复追加字段，不提交 JSON 数组字符串。所有已通过本平台访问验证的用户可引用正式合同，已有会话仍须校验归属。
 
 服务端在读取上传内容、创建会话、注册任务或替代原任务之前，先从合同 SQLite 查找全部引用，只接受 `ready` 合同，读取 `document_id`、`file_name`、`summary`。此过程不查询 ES、不读取 PDF，也不调用模型。任一引用无效则整次请求失败：ID 格式错误或数量超限返回 422，不存在或未就绪返回 404，数据库不可用返回 503；不创建新会话，不中断被替代任务。
 
@@ -395,11 +395,11 @@ curl -i -X DELETE 'http://127.0.0.1:20000/contract/api/communication/conversatio
 
 ### 方法与用途
 
-`POST /contract/api/communication/conversations`
+`POST /knowledge-accumulation/contract/api/communication/conversations`
 
 创建 SQLite 会话及专属空工作区，同时注册首轮待激活任务。会话和轮次 ID 均由服务端生成，不要求前端先创建标识。
 
-请求头：`Authorization: Bearer <login_code>`。登录方式见[审核用户登录 API](auth.md)。
+请求头：`Authorization: Bearer <用户 access_token>`。登录方式见[用户访问认证 API](auth.md)。
 
 ### 请求参数
 
@@ -414,7 +414,7 @@ curl -i -X DELETE 'http://127.0.0.1:20000/contract/api/communication/conversatio
 
 文字、上传文件和 `contract_ids` 至少一项非空。文件名去除目录部分后须以 `.pdf` 结尾且不超过 512 字符，内容不得为空。这里只做上传约束，不验证 PDF 可打开、加密、渲染或合同属性，不代表业务门禁已通过。
 
-首轮不支持 `supersedes_turn_id`，会话归属从已认证用户的密钥取得，客户端不提交密钥或用户标识。
+首轮不支持 `supersedes_turn_id`，会话归属从已认证用户的 userid 取得，客户端不提交密钥或用户标识。
 
 ### 成功响应
 
@@ -445,7 +445,7 @@ curl -i -X DELETE 'http://127.0.0.1:20000/contract/api/communication/conversatio
 | 状态码 | 条件 |
 | --- | --- |
 | 400 | multipart 格式无法解析。 |
-| 401 | 免登码无效或过期。 |
+| 401 | 用户访问令牌无效或过期。 |
 | 413 | PDF 数量、单文件大小或合计大小超限。 |
 | 422 | 首次输入为空、文件不合法、名称或字段格式不合法。 |
 | 503 | 内存容量已满或数据库暂时不可用。 |
@@ -453,8 +453,8 @@ curl -i -X DELETE 'http://127.0.0.1:20000/contract/api/communication/conversatio
 ### 请求示例
 
 ```bash
-curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations' \
-  -H 'Authorization: Bearer <login_code>' \
+curl -X POST 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations' \
+  -H 'Authorization: Bearer <用户 access_token>' \
   -F 'name=采购合同分析' \
   -F 'text=请查看这些合同' \
   -F 'files=@/path/to/contract.pdf'
@@ -474,11 +474,11 @@ curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations' \
 
 ### 方法与用途
 
-`POST /contract/api/communication/conversations/{conversation_id}/turns`
+`POST /knowledge-accumulation/contract/api/communication/conversations/{conversation_id}/turns`
 
 在已有会话中提交后续问题，或用新问题替代执行中的旧轮次；不会隐式创建会话。
 
-请求头：`Authorization: Bearer <login_code>`。登录方式见[审核用户登录 API](auth.md)。
+请求头：`Authorization: Bearer <用户 access_token>`。登录方式见[用户访问认证 API](auth.md)。
 
 ### 请求参数
 
@@ -531,7 +531,7 @@ curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations' \
 | 状态码 | 条件 |
 | --- | --- |
 | 400 | multipart 格式无法解析。 |
-| 401 | 免登码无效或过期。 |
+| 401 | 用户访问令牌无效或过期。 |
 | 404 | 会话或被替代轮次不存在、跨用户或跨会话。 |
 | 409 | 已有活跃轮次但未正确指定替代、被替代轮次尚未开放中断，或被替代轮次已结束。 |
 | 413 | PDF 数量或大小超限。 |
@@ -543,16 +543,16 @@ curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations' \
 普通后续问题：
 
 ```bash
-curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations/c1/turns' \
-  -H 'Authorization: Bearer <login_code>' \
+curl -X POST 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations/c1/turns' \
+  -H 'Authorization: Bearer <用户 access_token>' \
   -F 'text=进一步分析付款条件'
 ```
 
 调整执行中的方向：
 
 ```bash
-curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations/c1/turns' \
-  -H 'Authorization: Bearer <login_code>' \
+curl -X POST 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations/c1/turns' \
+  -H 'Authorization: Bearer <用户 access_token>' \
   -F 'text=先只分析验收条款' \
   -F 'supersedes_turn_id=t1'
 ```
@@ -569,11 +569,11 @@ curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations/c1
 
 ### 方法与用途
 
-`GET /contract/api/communication/conversations/{conversation_id}/turns/{turn_id}/events`
+`GET /knowledge-accumulation/contract/api/communication/conversations/{conversation_id}/turns/{turn_id}/events`
 
 首次有效订阅激活轮次，后续订阅用于回放和断线恢复。
 
-请求头：`Authorization: Bearer <login_code>`。登录方式见[审核用户登录 API](auth.md)。
+请求头：`Authorization: Bearer <用户 access_token>`。登录方式见[用户访问认证 API](auth.md)。
 
 ### 请求参数
 
@@ -590,8 +590,8 @@ curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations/c1
 `200 text/event-stream`，持续返回事件帧；不是普通 JSON 响应。
 
 ```bash
-curl -N 'http://127.0.0.1:20000/contract/api/communication/conversations/c1/turns/t1/events' \
-  -H 'Authorization: Bearer <login_code>' \
+curl -N 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations/c1/turns/t1/events' \
+  -H 'Authorization: Bearer <用户 access_token>' \
   -H 'Last-Event-ID: 0'
 ```
 
@@ -708,8 +708,8 @@ data: {"turn_id":"t1","message_id":"m1","message_kind":"intermediate","delta":"�
 订阅示例（事件源须先通过创建接口或内部服务注册）：
 
 ```http
-GET /contract/api/communication/conversations/c1/turns/t1/events
-Authorization: Bearer <login_code>
+GET /knowledge-accumulation/contract/api/communication/conversations/c1/turns/t1/events
+Authorization: Bearer <用户 access_token>
 Last-Event-ID: 0
 ```
 
@@ -721,11 +721,11 @@ Last-Event-ID: 0
 
 ### 方法与用途
 
-`GET /contract/api/communication/conversations/{conversation_id}/turns/{turn_id}`
+`GET /knowledge-accumulation/contract/api/communication/conversations/{conversation_id}/turns/{turn_id}`
 
 获取当前轮次展示状态，用于刷新、计时和断线恢复；读取不会激活任务。
 
-请求头：`Authorization: Bearer <login_code>`。登录方式见[审核用户登录 API](auth.md)。
+请求头：`Authorization: Bearer <用户 access_token>`。登录方式见[用户访问认证 API](auth.md)。
 
 ### 请求参数
 
@@ -788,7 +788,7 @@ Last-Event-ID: 0
 
 | 状态码 | 条件 |
 | --- | --- |
-| 401 | 免登码无效或过期。 |
+| 401 | 用户访问令牌无效或过期。 |
 | 404 | 会话或轮次不存在、越权、轮次已清理或因进程重启丢失。 |
 | 422 | 路径参数格式不合法。 |
 | 503 | 会话数据库暂时不可用。 |
@@ -798,8 +798,8 @@ Last-Event-ID: 0
 ### 请求示例
 
 ```bash
-curl 'http://127.0.0.1:20000/contract/api/communication/conversations/c1/turns/t1' \
-  -H 'Authorization: Bearer <login_code>'
+curl 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations/c1/turns/t1' \
+  -H 'Authorization: Bearer <用户 access_token>'
 ```
 
 ---
@@ -808,11 +808,11 @@ curl 'http://127.0.0.1:20000/contract/api/communication/conversations/c1/turns/t
 
 ### 方法与用途
 
-`POST /contract/api/communication/conversations/{conversation_id}/turns/{turn_id}/cancel`
+`POST /knowledge-accumulation/contract/api/communication/conversations/{conversation_id}/turns/{turn_id}/cancel`
 
 主动停止当前轮次，释放暂存输入并向已连接 SSE 发布终态。
 
-请求头：`Authorization: Bearer <login_code>`。登录方式见[审核用户登录 API](auth.md)。
+请求头：`Authorization: Bearer <用户 access_token>`。登录方式见[用户访问认证 API](auth.md)。
 
 ### 请求参数
 
@@ -854,7 +854,7 @@ curl 'http://127.0.0.1:20000/contract/api/communication/conversations/c1/turns/t
 
 | 状态码 | 条件 |
 | --- | --- |
-| 401 | 免登码无效或过期。 |
+| 401 | 用户访问令牌无效或过期。 |
 | 404 | 会话或轮次不存在、跨用户、跨会话或已清理。 |
 | 409 | `can_interrupt=false` 的非终态任务，或已处于 completed、superseded、rejected、failed、expired 终态。 |
 | 422 | 路径参数格式不合法。 |
@@ -863,8 +863,8 @@ curl 'http://127.0.0.1:20000/contract/api/communication/conversations/c1/turns/t
 ### 请求示例
 
 ```bash
-curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations/c1/turns/t1/cancel' \
-  -H 'Authorization: Bearer <login_code>'
+curl -X POST 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations/c1/turns/t1/cancel' \
+  -H 'Authorization: Bearer <用户 access_token>'
 ```
 
 ### 状态转换与边界
@@ -883,8 +883,8 @@ curl -X POST 'http://127.0.0.1:20000/contract/api/communication/conversations/c1
 认证失败返回 `401`。激活超时已经生效时，取消按 `expired` 返回 `409`；保留期结束后返回 `404`。中断权限更新与取消、替代、完成共用锁：权限尚未开放时拒绝用户操作；开放后与其他终态竞争时先提交者生效。终态后禁止旧事件继续发布。已取消任务重复取消仍幂等返回原快照。
 
 ```http
-POST /contract/api/communication/conversations/c1/turns/t1/cancel
-Authorization: Bearer <login_code>
+POST /knowledge-accumulation/contract/api/communication/conversations/c1/turns/t1/cancel
+Authorization: Bearer <用户 access_token>
 ```
 
 取消不删除正式合同或回滚工具副作用。当前输入暂存会释放，但展示快照可保留标记中断的文本；它不是后续模型上下文。用户原问题和“已终止”标记的长期保留须在历史存储与上下文层实现，不能据本接口推断已完成。

@@ -275,7 +275,7 @@ Core 标量 mapping 由[模型提取对象定义结构](field-definition.md#elas
 
 正式入库要求两个融合向量同时存在、维度与 `ELASTICSEARCH_VECTOR_DIMENSIONS` 一致，并拒绝非有限数值或零向量。历史文档仍可通过 `exists` 查询判断是否具有页面融合向量。
 
-页面融合直接复用 PDF 准备服务已经生成的逐页 PNG。单页多模态 Embedding 使用 `contract-near-duplicate-v2` 对称输入契约，全部页面并发向量化后采用尾页 `1.5` 倍加权融合；具体规则见 [PDF 查重 Agent 工作流](../workflow/pdf-deduplication/readme.md)。
+页面融合直接复用 PDF 准备服务已经生成的逐页 PNG。单页多模态 Embedding 使用 `generic-image-retrieval-zh-v1` 对称输入契约，全部页面并发向量化后采用尾页 `1.5` 倍加权融合；具体规则见 [PDF 查重 Agent 工作流](../workflow/pdf-deduplication/readme.md)。
 
 ---
 

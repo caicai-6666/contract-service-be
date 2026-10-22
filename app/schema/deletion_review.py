@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 from app.core.passport import Passports
+from app.schema.auth import UserId
 
 NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 MessageId = Annotated[str, StringConstraints(min_length=1, max_length=128)]
@@ -30,10 +31,13 @@ class DeletionReviewSnapshot(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True)
     document_id: str = Field(pattern=r'^[0-9a-f]{64}$')
     passport: Passports | None = None
+    file_level: int | None = Field(default=None, strict=True, description='发起删除申请时从正式合同元数据冻结的文件等级；历史未知时为空。')
     file_name: NonEmptyText
     summary: NonEmptyText | None = None
     uploader: NonEmptyText
-    requested_by: NonEmptyText = Field(description='本平台发起删除申请的登录用户。')
+    requested_by: NonEmptyText = Field(description='本平台发起删除申请的用户名快照。')
+    requested_by_userid: UserId | None = Field(default=None, description="申请人的稳定中间件 userid；历史未知值为空。")
+    uploader_userid: UserId | None = Field(default=None, description="原合同上传人的稳定 userid，从正式元数据冻结。")
     file_uri: str = Field(description='正式合同 PDF 的根相对地址，不是删除临时区文件地址。')
     contract_ingested_at: datetime
 
@@ -160,6 +164,7 @@ class DeletionReviewDetailResponse(BaseModel):
     document_id: str
     passport: Passports | None = Field(description='冻结的完整通行证数组，历史未绑定时为 null。')
     file_name: str
+    file_level: int | None = Field(strict=True, description='申请删除时冻结的合同文件等级，删除后仍保留；历史未记录时为 null。')
     summary: str | None
     uploader: str
     requested_by: str

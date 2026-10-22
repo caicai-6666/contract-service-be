@@ -1,20 +1,15 @@
-"""检索问题与用户查询成对 Embedding instruction。"""
+"""检索问题与查询共用领域无关的文本向量指令。"""
 
 from typing import Final
-
-RETRIEVAL_EMBEDDING_PROMPT_VERSION: Final = "contract-question-retrieval-en-v1"
-
-CONTRACT_QUESTION_EMBEDDING_INSTRUCTION: Final = (
-    "Represent this contract-generated question as a retrieval facet of its source "
-    "contract. Preserve the specific contractual fact being asked about and the "
-    "transaction context needed to distinguish the contract."
+from app.core.embedding_prompt import (
+    TEXT_EMBEDDING_VERSION, TEXT_EMBEDDING_INSTRUCTION, render_text_embedding_input,
 )
 
-USER_QUERY_EMBEDDING_INSTRUCTION: Final = (
-    "Represent this user's contract question as a retrieval query for finding "
-    "contracts whose generated question facets cover the same contractual fact and "
-    "transaction context."
-)
+RETRIEVAL_EMBEDDING_PROMPT_VERSION: Final = TEXT_EMBEDDING_VERSION
+
+CONTRACT_QUESTION_EMBEDDING_INSTRUCTION: Final = TEXT_EMBEDDING_INSTRUCTION
+
+USER_QUERY_EMBEDDING_INSTRUCTION: Final = TEXT_EMBEDDING_INSTRUCTION
 
 
 def render_contract_question_embedding_input(question: str) -> str:
@@ -22,22 +17,14 @@ def render_contract_question_embedding_input(question: str) -> str:
     normalized = question.strip()
     if not normalized:
         raise ValueError("待向量化的合同问题不能为空")
-    return (
-        f"<|im_start|>system\n{CONTRACT_QUESTION_EMBEDDING_INSTRUCTION}"
-        "<|im_end|>\n"
-        f"<|im_start|>user\n{normalized}<|im_end|>\n"
-        "<|im_start|>assistant\n"
-    )
+    return render_text_embedding_input(normalized)
 
 
 def render_user_query_embedding_input(query: str) -> str:
     """使用与入库问题配对的查询侧指令，不补造答案或新的检索问题。"""
     if not isinstance(query, str) or not query.strip():
         raise ValueError("合同检索问题不能为空")
-    return (
-        f"<|im_start|>system\n{USER_QUERY_EMBEDDING_INSTRUCTION}<|im_end|>\n"
-        f"<|im_start|>user\n{query.strip()}<|im_end|>\n<|im_start|>assistant\n"
-    )
+    return render_text_embedding_input(query.strip())
 
 
 __all__ = [

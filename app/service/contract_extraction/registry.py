@@ -107,7 +107,7 @@ class RunAggregate:
     """一次处理的状态、结果、事件和并发控制聚合。"""
 
     run_id: str
-    reviewer_user_name: str
+    owner_userid: str
     source: SourceDocument
     prepared_pdf: PreparedPDF
     created_at: datetime

@@ -14,9 +14,10 @@ from llama_index.core.schema import TextNode, NodeWithScore
 from sqlite_vec import serialize_float32
 
 from app.core.config import get_settings
+from app.core.embedding_prompt import render_text_embedding_input
 from app.infrastructure.embedding import EmbeddingClient
 from app.infrastructure.sqlite_fts import connect_memory_database
-from app.agent.conversation_memory.prompt.embedding import MEMORY_QUERY_INSTRUCTION, MEMORY_EMBEDDING_MODEL
+from app.agent.conversation_memory.prompt.embedding import MEMORY_EMBEDDING_MODEL
 from app.schema.communication import ConversationHistoryRecord
 from .schema import MemoryRetrievalResult, RankedTask
 
@@ -25,7 +26,7 @@ async def embed_query(text):
     settings = get_settings().embedding
     if settings.model != MEMORY_EMBEDDING_MODEL or settings.dimensions != 4096:
         raise ValueError('查询向量模型必须与记忆存储一致')
-    prompt = f'<|im_start|>system\n{MEMORY_QUERY_INSTRUCTION}<|im_end|>\n<|im_start|>user\n{text}<|im_end|>\n<|im_start|>assistant\n'
+    prompt = render_text_embedding_input(text)
     async with EmbeddingClient(settings) as client:
         result = await client.create_embeddings(inputs=[prompt])
     if result.model != settings.model or len(result.vectors) != 1:

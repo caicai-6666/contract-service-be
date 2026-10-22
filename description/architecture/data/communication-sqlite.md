@@ -17,7 +17,7 @@
 | 字段 | 含义 |
 | --- | --- |
 | `conversation_id` | 会话主键。 |
-| `secret_key` | 当前用户配置密钥原值，作为所属用户标识，不增加用户表。 |
+| `owner_userid` | 中间件认证的稳定 userid；新会话非空，旧归属未映射时为 NULL，不保存登录 token。 |
 | `created_at` | UTC Unix 毫秒时间戳。 |
 | `name` | 用户可修改的展示名称，默认按创建时间生成北京时间 `YYYY-MM-DD HH:mm:ss`；自定义名称去除首尾空白后为 1 至 200 个字符。 |
 
@@ -25,15 +25,15 @@
 
 `rename_conversation` 只允许所有者改名，`read_conversation` 返回 ID、名称和创建时间，不返回密钥。改名不改变创建时间、所有权或任务顺序。启动时会为尚无名称列的已有库补列并按原创建时间生成名称；已有名称（包括旧的“新会话”）不覆盖。已接入 [PATCH 改名接口](../../api/communication.md#修改会话名称)。
 
-`delete_conversation` 已接入 [DELETE 会话接口](../../api/communication.md#删除会话)，按当前密钥校验所有权后事务性级联删除会话、任务/摘要和工作区。清理 SQLite 后同步驱逐会话轨迹和运行时轮次，并与在途备份串行；不删除附件或正式合同数据。
+`delete_conversation` 已接入 [DELETE 会话接口](../../api/communication.md#删除会话)，按当前 userid 校验所有权后事务性级联删除会话、任务/摘要和工作区。清理 SQLite 后同步驱逐会话轨迹和运行时轮次，并与在途备份串行；不删除附件或正式合同数据。
 
-索引 `(secret_key, created_at, conversation_id)` 支持按用户和时间查询。标识由后端从已认证的用户对象取得，不能信任模型或前端自报的归属。读取结果不返回密钥，错误不回显密钥。
+索引 `(owner_userid, created_at, conversation_id)` 支持按用户和时间查询。标识由后端从已认证的用户对象取得，不能信任模型或前端自报的归属。读取结果不返回密钥，错误不回显密钥。
 
-`list_conversations(secret_key=...)` 按创建时间降序、同时间按会话 ID 降序返回该用户全部会话，仅包含 ID、名称、创建时间。已接入 [GET 会话列表接口](../../api/communication.md#获取当前用户会话列表)，不依赖内存轮次或后台轨迹备份状态。
+`list_conversations(owner_userid=...)` 按创建时间降序、同时间按会话 ID 降序返回该用户全部会话，仅包含 ID、名称、创建时间。已接入 [GET 会话列表接口](../../api/communication.md#获取当前用户会话列表)，不依赖内存轮次或后台轨迹备份状态。
 
-**身份约定：** 密钥长期固定、全局唯一且永不分配给其他人。停用用户不会自动删除历史；新增不同密钥的用户不影响旧记录。不因用户名称变化改变归属，也不按名称迁移历史。系统只校验当前配置的密钥唯一性，无法自动识别停用密钥被分配给另一人的情况；运维必须保证不复用。
+**身份约定：** userid 是唯一稳定所有者；更换用户 token 或用户名不改变归属。旧会话缺少可信 userid 时保留内容并隔离，不能按同名用户自动认领，见[用户身份迁移](user-identity.md#历史数据迁移)。
 
-数据库保存的是登录凭据原值，不是密码哈希。新建数据库在 POSIX 上使用 `0600` 权限；既有库权限不自动修改。数据库、日志侧文件和备份必须按敏感数据保护，不能进入 Git、模型上下文或 API 响应。若以后改变密钥，必须另行迁移会话归属，不能期待自动关联。
+旧密钥列已迁移为 owner_userid=NULL 与 legacy_owner_fingerprint，再移除原明文列；指纹仅供受控归属核对，不用于认证。新建数据库在 POSIX 上使用0600权限；备份包含合同和会话敏感内容，仍不能进入 Git 或模型上下文。
 
 ### conversation_records：任务与摘要
 
@@ -84,7 +84,7 @@
 
 `archive_tasks_with_workspace(..., records, memories, workspace, expected_workspace_revision)` 的 memories 现为 `TaskRetrievalRecord` 字典列表，与 records 逐条同序配对。原轨迹、检索投影、加工标记和工作区在同一事务提交；原记录身份/冻结内容由备份接口校验。若编码期间插入摘要导致sequence重排，按record_id读取当前序号，仅调整位置，不改变其余原始字段。相同内容重试幂等，不同检索投影报冲突，任何失败整批回滚。旧 `MemoryPendingRecord` 综合摘要结构明确拒绝，不映射到某个入口。
 
-`read_task_retrieval(conversation_id, secret_key, record_id)` 校验会话所有权和任务归属，返回三组文本/解码后的向量及写入时间；任务未加工返回None，任务不存在或不属于该会话时报不存在。此接口不是语义检索，普通会话历史加载不读取检索表。
+`read_task_retrieval(conversation_id, owner_userid, record_id)` 校验会话所有权和任务归属，返回三组文本/解码后的向量及写入时间；任务未加工返回None，任务不存在或不属于该会话时报不存在。此接口不是语义检索，普通会话历史加载不读取检索表。
 
 ### 旧库迁移与分阶段边界
 
@@ -279,16 +279,16 @@
 
 ```python
 from pathlib import Path
-from pydantic import SecretStr
+from pydantic import str
 from app.infrastructure.communication_store import SQLiteCommunicationStore
 
 store = SQLiteCommunicationStore(Path("data/communication/communication.db"))
 store.initialize()
-# 实际调用应从认证依赖取得 SecretStr，不能硬编码生产密钥。
-owner = SecretStr("example-only")
-store.create_conversation("example-conversation", secret_key=owner)
+# 实际调用应从认证依赖取得 userid，不使用用户或平台 token。
+owner = str("example-only")
+store.create_conversation("example-conversation", owner_userid=owner)
 store.append_task(
-    "example-conversation", secret_key=owner, turn_id="example-turn",
+    "example-conversation", owner_userid=owner, turn_id="example-turn",
     status="completed", payload={"input": "示例问题", "trace": []},
 )
 ```

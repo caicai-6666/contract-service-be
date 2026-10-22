@@ -35,7 +35,7 @@ flowchart LR
 - 根据通用提问指南和全部领域提问指南发现适用于当前合同的问题关注点。
 - 允许一个问题规划组合多个紧密相关的关注点。
 - 按规划精确选择相关指南，并为每份规划建立隔离会话并发生成正式问题。
-- 使用稳定的问题侧检索指令，按配置分批、并发地为每个正式问题生成独立向量。
+- 使用统一通用文本检索指令，按配置分批、并发地为每个正式问题生成独立向量。
 - 对全部成功问题向量取算术平均并重新 L2 归一化，形成合同级检索向量。
 - 保留问题证据、简洁推理、关注点稳定标识、顺序和工具审计。
 - 使用后台 `RETRIEVAL_VIEW_MAX_QUESTIONS` 作为最大问题数量，不向模型暴露目标数量。
@@ -147,7 +147,7 @@ YAML 是机器权威来源，但不原样注入模型：
 
 向量输出键为 `retrieval_question_embeddings`。每个条目只保存 `question_id`、`order` 和独立向量；结果包络同时记录模型、提示词版本、维度、归一化状态、请求数、token 用量与失败问题标识。问题文本及证据仍以 `retrieval_questions` 为权威来源，避免在向量结果中重复。
 
-合同级输出键为 `contract_retrieval_vector`，采用版本化的 `arithmetic_mean_l2_normalized` 融合方法。逐问题向量仍予保留，以便审计和后续对照实验；正式索引默认消费合同级融合向量。问题侧与未来的用户查询侧使用版本绑定的英文成对 Embedding instruction，上线前仍需同领域硬负例和真实用户查询验证。
+合同级输出键为 `contract_retrieval_vector`，采用版本化的 `arithmetic_mean_l2_normalized` 融合方法。逐问题向量仍予保留，以便审计和后续对照实验；正式索引默认消费合同级融合向量。问题侧与已接入的查询侧统一使用 `generic-text-retrieval-en-v1`，指令权威定义在 `app/core/embedding_prompt.py`；实验选择及验证边界见[通用 Embedding 指令选择](../../../capability/infrastructure/embedding-instruction-selection.md)。
 
 ---
 

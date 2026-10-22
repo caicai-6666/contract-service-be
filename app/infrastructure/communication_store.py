@@ -3,13 +3,13 @@
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import json
+import hashlib
 import os
 from pathlib import Path
 import sqlite3
 from typing import Iterator
 from uuid import uuid4
 
-from pydantic import SecretStr
 
 from app.infrastructure.sqlite_vector import connect_vector_database
 from app.schema.communication import TERMINAL_STATUSES
@@ -57,12 +57,10 @@ CREATE TABLE IF NOT EXISTS conversation_task_retrievals (
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS conversations (
     conversation_id TEXT PRIMARY KEY NOT NULL CHECK(length(conversation_id) > 0),
-    secret_key TEXT NOT NULL CHECK(length(trim(secret_key)) > 0),
+    owner_userid TEXT CHECK(owner_userid IS NULL OR length(trim(owner_userid)) > 0),
     created_at INTEGER NOT NULL,
     name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 200)
 );
-CREATE INDEX IF NOT EXISTS conversations_owner_time
-    ON conversations(secret_key, created_at, conversation_id);
 
 {_RECORD_TABLE_SQL}
 CREATE INDEX IF NOT EXISTS records_summary_boundary
@@ -104,7 +102,7 @@ class CommunicationStoreConflict(ValueError):
 
 
 class SQLiteCommunicationStore:
-    """同步短事务存储接口；调用方须先认证，传入服务端取得的 SecretStr。"""
+    """同步短事务存储接口；调用方须先认证，传入服务端验证过的 userid。"""
 
     def __init__(self, database_path: Path) -> None:
         self.database_path = Path(database_path)
@@ -120,6 +118,20 @@ class SQLiteCommunicationStore:
             os.close(descriptor)
         with self._connection() as connection:
             connection.executescript("BEGIN IMMEDIATE;\n" + _SCHEMA)
+            # 在统一建索引前升级旧列；事务内去除密钥列，旧归属需要显式的身份映射才能恢复。
+            columns = {row['name'] for row in connection.execute('PRAGMA table_info(conversations)')}
+            if 'secret_key' in columns:
+                connection.execute('DROP INDEX IF EXISTS conversations_owner_time')
+                if 'owner_userid' not in columns:
+                    connection.execute('ALTER TABLE conversations ADD COLUMN owner_userid TEXT')
+                if 'legacy_owner_fingerprint' not in columns:
+                    connection.execute('ALTER TABLE conversations ADD COLUMN legacy_owner_fingerprint TEXT')
+                for row in connection.execute('SELECT conversation_id,secret_key FROM conversations').fetchall():
+                    fingerprint = hashlib.sha256(row['secret_key'].encode('utf-8')).hexdigest()
+                    connection.execute('UPDATE conversations SET legacy_owner_fingerprint=? WHERE conversation_id=?',
+                        (fingerprint, row['conversation_id']))
+                connection.execute('ALTER TABLE conversations DROP COLUMN secret_key')
+            connection.execute('CREATE INDEX IF NOT EXISTS conversations_owner_time ON conversations(owner_userid,created_at,conversation_id)')
             # 老记录没有可靠计时来源，保持 NULL，不用落库时间推算任务耗时。
             record_columns = {row["name"] for row in connection.execute("PRAGMA table_info(conversation_records)")}
             if "activated_at" not in record_columns:
@@ -195,15 +207,15 @@ class SQLiteCommunicationStore:
             connection.close()
 
     @staticmethod
-    def _owner(connection: sqlite3.Connection, conversation_id: str, secret_key: SecretStr) -> None:
-        if not isinstance(secret_key, SecretStr) or not secret_key.get_secret_value().strip():
-            raise ValueError("必须提供已认证用户的非空密钥")
+    def _owner(connection: sqlite3.Connection, conversation_id: str, owner_userid: str) -> None:
+        if not isinstance(owner_userid, str) or not owner_userid.strip():
+            raise ValueError("必须提供已认证用户的非空 userid")
         row = connection.execute(
-            "SELECT 1 FROM conversations WHERE conversation_id = ? AND secret_key = ?",
-            (conversation_id, secret_key.get_secret_value()),
+            "SELECT 1 FROM conversations WHERE conversation_id = ? AND owner_userid = ?",
+            (conversation_id, owner_userid),
         ).fetchone()
         if row is None:
-            # 不向调用方区分不存在和属于其他用户，不回显密钥。
+            # 不向调用方区分不存在和属于其他用户，不回显用户标识。
             raise LookupError("会话不存在")
 
     @staticmethod
@@ -212,12 +224,12 @@ class SQLiteCommunicationStore:
             raise ValueError("会话名称必须为 1 至 200 个字符")
         return value.strip()
 
-    def create_conversation(self, conversation_id: str, *, secret_key: SecretStr,
+    def create_conversation(self, conversation_id: str, *, owner_userid: str,
                             name: str | None = None) -> None:
         if not conversation_id.strip():
             raise ValueError("会话标识不能为空")
-        if not isinstance(secret_key, SecretStr) or not secret_key.get_secret_value().strip():
-            raise ValueError("必须提供已认证用户的非空密钥")
+        if not isinstance(owner_userid, str) or not owner_userid.strip():
+            raise ValueError("必须提供已认证用户的非空 userid")
         from app.schema.communication_workspace import empty_workspace_payload
 
         now = _now()
@@ -225,29 +237,29 @@ class SQLiteCommunicationStore:
         name = _default_name(now) if name is None else self._name(name)
         with self._connection(write=True) as connection:
             connection.execute(
-                "INSERT INTO conversations (conversation_id, secret_key, created_at, name) VALUES (?, ?, ?, ?)",
-                (conversation_id, secret_key.get_secret_value(), now, name),
+                "INSERT INTO conversations (conversation_id, owner_userid, created_at, name) VALUES (?, ?, ?, ?)",
+                (conversation_id, owner_userid, now, name),
             )
             connection.execute(
                 "INSERT INTO conversation_workspaces VALUES (?, ?, 0, ?)",
                 (conversation_id, _json(empty_workspace_payload()), now),
             )
 
-    def rename_conversation(self, conversation_id: str, *, secret_key: SecretStr, name: str) -> dict:
+    def rename_conversation(self, conversation_id: str, *, owner_userid: str, name: str) -> dict:
         """只修改本人会话的展示名称，不改变创建时间、归属或任务顺序。"""
         name = self._name(name)
         with self._connection(write=True) as connection:
-            self._owner(connection, conversation_id, secret_key)
+            self._owner(connection, conversation_id, owner_userid)
             connection.execute("UPDATE conversations SET name = ? WHERE conversation_id = ?", (name, conversation_id))
             return dict(connection.execute(
                 "SELECT conversation_id, name, created_at FROM conversations WHERE conversation_id = ?",
                 (conversation_id,),
             ).fetchone())
 
-    def rollback_empty_conversation(self, conversation_id: str, *, secret_key: SecretStr) -> None:
+    def rollback_empty_conversation(self, conversation_id: str, *, owner_userid: str) -> None:
         """仅补偿首轮注册失败的新会话；已有轨迹或更新过的工作区禁止删除。"""
         with self._connection(write=True) as connection:
-            self._owner(connection, conversation_id, secret_key)
+            self._owner(connection, conversation_id, owner_userid)
             result = connection.execute(
                 "DELETE FROM conversations WHERE conversation_id = ? "
                 "AND NOT EXISTS (SELECT 1 FROM conversation_records WHERE conversation_id = ?) "
@@ -257,33 +269,33 @@ class SQLiteCommunicationStore:
             if result.rowcount != 1:
                 raise CommunicationStoreConflict("会话已经产生内容，不能补偿删除")
 
-    def read_conversation(self, conversation_id: str, *, secret_key: SecretStr) -> dict:
+    def read_conversation(self, conversation_id: str, *, owner_userid: str) -> dict:
         with self._connection() as connection:
-            self._owner(connection, conversation_id, secret_key)
+            self._owner(connection, conversation_id, owner_userid)
             return dict(connection.execute(
                 "SELECT conversation_id, name, created_at FROM conversations WHERE conversation_id = ?",
                 (conversation_id,),
             ).fetchone())
 
-    def list_conversations(self, *, secret_key: SecretStr) -> list[dict]:
-        """返回当前密钥的全部会话；不读取轨迹，也不向外返回凭据。"""
-        if not isinstance(secret_key, SecretStr) or not secret_key.get_secret_value().strip():
-            raise ValueError("必须提供已认证用户的非空密钥")
+    def list_conversations(self, *, owner_userid: str) -> list[dict]:
+        """返回当前 userid 的全部会话；不读取轨迹，不使用登录 token 作为所有者。"""
+        if not isinstance(owner_userid, str) or not owner_userid.strip():
+            raise ValueError("必须提供已认证用户的非空 userid")
         with self._connection() as connection:
             rows = connection.execute(
                 "SELECT conversation_id, name, created_at FROM conversations "
-                "WHERE secret_key = ? ORDER BY created_at DESC, conversation_id DESC",
-                (secret_key.get_secret_value(),),
+                "WHERE owner_userid = ? ORDER BY created_at DESC, conversation_id DESC",
+                (owner_userid,),
             ).fetchall()
             return [dict(row) for row in rows]
 
-    def delete_conversation(self, conversation_id: str, *, secret_key: SecretStr) -> None:
+    def delete_conversation(self, conversation_id: str, *, owner_userid: str) -> None:
         """仅删除本人会话；外键在同一事务级联删除任务、摘要和工作区。"""
         with self._connection(write=True) as connection:
-            self._owner(connection, conversation_id, secret_key)
+            self._owner(connection, conversation_id, owner_userid)
             connection.execute("DELETE FROM conversations WHERE conversation_id = ?", (conversation_id,))
 
-    def append_task(self, conversation_id: str, *, secret_key: SecretStr,
+    def append_task(self, conversation_id: str, *, owner_userid: str,
                     turn_id: str, status: str, payload: dict,
                     processing_duration_ms: int | None = None) -> int:
         """追加完整终态轮次；活动轮次继续由事件运行时管理，不保存为已完成历史。"""
@@ -293,36 +305,36 @@ class SQLiteCommunicationStore:
             type(processing_duration_ms) is not int or processing_duration_ms < 0
         ):
             raise ValueError("处理时间必须为非负整数毫秒或空值")
-        return self._append(conversation_id, secret_key=secret_key, kind="task",
+        return self._append(conversation_id, owner_userid=owner_userid, kind="task",
                             turn_id=turn_id, status=status, payload=payload,
                             processing_duration_ms=processing_duration_ms)
 
-    def append_topic_summary(self, conversation_id: str, *, secret_key: SecretStr,
+    def append_topic_summary(self, conversation_id: str, *, owner_userid: str,
                              summary: dict, expected_sequence: int) -> int:
         """保存最新版累计主题摘要；复用有序记录和乐观尾部检查，不另建摘要表。"""
         from app.agent.contract_communication.agent_core.subgraph.fifo_management.fifo_summary.schema import FIFOTopicSummary
         payload = FIFOTopicSummary.model_validate(summary).model_dump(mode='json')
         if type(expected_sequence) is not int or expected_sequence < 1:
             raise ValueError('摘要覆盖尾部必须为正整数')
-        return self._append(conversation_id, secret_key=secret_key, kind='summary',
+        return self._append(conversation_id, owner_userid=owner_userid, kind='summary',
                             payload=payload, expected_sequence=expected_sequence)
 
-    def append_summary(self, conversation_id: str, *, secret_key: SecretStr,
+    def append_summary(self, conversation_id: str, *, owner_userid: str,
                        text: str, expected_sequence: int) -> int:
         """摘要须覆盖此前摘要和其后全部任务；拒绝对过期尾部追加摘要。"""
         if not text.strip() or expected_sequence < 1:
             raise ValueError("摘要和覆盖边界不能为空")
-        return self._append(conversation_id, secret_key=secret_key, kind="summary",
+        return self._append(conversation_id, owner_userid=owner_userid, kind="summary",
                             payload={"text": text, "covers_through_sequence": expected_sequence},
                             expected_sequence=expected_sequence)
 
-    def _append(self, conversation_id: str, *, secret_key: SecretStr, kind: str,
+    def _append(self, conversation_id: str, *, owner_userid: str, kind: str,
                 payload: dict, turn_id: str | None = None, status: str | None = None,
                 expected_sequence: int | None = None,
                 processing_duration_ms: int | None = None) -> int:
         content = _json(payload)
         with self._connection(write=True) as connection:
-            self._owner(connection, conversation_id, secret_key)
+            self._owner(connection, conversation_id, owner_userid)
             last = connection.execute(
                 "SELECT COALESCE(MAX(sequence), 0) FROM conversation_records WHERE conversation_id = ?",
                 (conversation_id,),
@@ -338,10 +350,10 @@ class SQLiteCommunicationStore:
             )
             return sequence
 
-    def read_context_records(self, conversation_id: str, *, secret_key: SecretStr) -> list[dict]:
+    def read_context_records(self, conversation_id: str, *, owner_userid: str) -> list[dict]:
         """读取最新摘要（包含）及其后任务并正序返回；不是最终模型上下文。"""
         with self._connection() as connection:
-            self._owner(connection, conversation_id, secret_key)
+            self._owner(connection, conversation_id, owner_userid)
             rows = connection.execute(
                 "SELECT record_id, sequence, kind, turn_id, status, payload, created_at, activated_at, processing_duration_ms "
                 "FROM conversation_records WHERE conversation_id = ? AND sequence >= "
@@ -352,13 +364,13 @@ class SQLiteCommunicationStore:
             return [dict(row) | {"payload": json.loads(row["payload"])} for row in rows]
 
     def read_history_window(
-        self, conversation_id: str, *, secret_key: SecretStr,
+        self, conversation_id: str, *, owner_userid: str,
         start_sequence: int | None = None, extend: bool = False, include_workspace: bool = False,
     ) -> dict:
         """首次从最新摘要读取；刷新向前跨一个摘要边界，查询在同一读事务内完成。"""
         with self._connection() as connection:
             connection.execute("BEGIN")
-            self._owner(connection, conversation_id, secret_key)
+            self._owner(connection, conversation_id, owner_userid)
             conversation = dict(connection.execute(
                 "SELECT conversation_id, name, created_at FROM conversations WHERE conversation_id = ?",
                 (conversation_id,),
@@ -393,10 +405,10 @@ class SQLiteCommunicationStore:
                 result['workspace'] = self._read_workspace(connection, conversation_id)
             return result
 
-    def backup_task(self, conversation_id: str, *, secret_key: SecretStr, record: dict) -> None:
+    def backup_task(self, conversation_id: str, *, owner_userid: str, record: dict) -> None:
         """按注册时分配的身份与序号复制冻结任务；重试只接受完全相同的内容。"""
         with self._connection(write=True) as connection:
-            self._owner(connection, conversation_id, secret_key)
+            self._owner(connection, conversation_id, owner_userid)
             self._backup_task(connection, conversation_id, record)
 
     @staticmethod
@@ -428,7 +440,7 @@ class SQLiteCommunicationStore:
         )
 
     def backup_tasks_with_workspace(
-        self, conversation_id: str, *, secret_key: SecretStr, records: list[dict],
+        self, conversation_id: str, *, owner_userid: str, records: list[dict],
         workspace: dict, expected_workspace_revision: int, positions: dict[str, int] | None = None,
     ) -> None:
         """原子复制同会话冻结轨迹与工作区；任一冲突则整批回滚。"""
@@ -438,7 +450,7 @@ class SQLiteCommunicationStore:
         if type(expected_workspace_revision) is not int or not 0 <= expected_workspace_revision <= snapshot.revision:
             raise ValueError('工作区备份版本无效')
         with self._connection(write=True) as connection:
-            self._owner(connection, conversation_id, secret_key)
+            self._owner(connection, conversation_id, owner_userid)
             if positions:
                 if (len(set(positions.values())) != len(positions)
                         or any(type(n) is not int or n <= 0 for n in positions.values())):
@@ -471,11 +483,11 @@ class SQLiteCommunicationStore:
             (_json(snapshot.payload.model_dump()), snapshot.revision, snapshot.updated_at, conversation_id),
         )
 
-    def read_memory_backlog(self, conversation_id: str, *, secret_key: SecretStr) -> dict:
+    def read_memory_backlog(self, conversation_id: str, *, owner_userid: str) -> dict:
         """归档专用读取：补充摘要边界之前尚未加工的任务，不读取已有检索正文/向量。"""
         with self._connection() as connection:
             connection.execute('BEGIN')
-            self._owner(connection, conversation_id, secret_key)
+            self._owner(connection, conversation_id, owner_userid)
             rows = connection.execute(
                 'SELECT record_id, sequence, kind, turn_id, status, payload, created_at, activated_at, processing_duration_ms '
                 "FROM conversation_records WHERE conversation_id = ? AND kind = 'task' AND memory_processed_at IS NULL ORDER BY sequence",
@@ -489,7 +501,7 @@ class SQLiteCommunicationStore:
                     'processed_ids': {row['record_id'] for row in processed}}
 
     def archive_tasks_with_workspace(
-        self, conversation_id: str, *, secret_key: SecretStr, records: list[dict],
+        self, conversation_id: str, *, owner_userid: str, records: list[dict],
         memories: list[dict], workspace: dict, expected_workspace_revision: int,
     ) -> None:
         """原轨迹、三入口检索行、加工标记及工作区原子提交；拒绝旧综合摘要结构。"""
@@ -520,7 +532,7 @@ class SQLiteCommunicationStore:
         if len({r.record_id for r, _ in pairs}) != len(pairs):
             raise ValueError('归档任务重复')
         with self._connection(write=True) as connection:
-            self._owner(connection, conversation_id, secret_key)
+            self._owner(connection, conversation_id, owner_userid)
             for record, values in pairs:
                 # 编码期间可能插入FIFO摘要并重排sequence。以稳定record_id回连，只更新位置，
                 # 其余冻结内容仍由_backup_task完整校验，不能用旧序号覆盖新排序。
@@ -546,12 +558,12 @@ class SQLiteCommunicationStore:
                                    (now, record.record_id))
             self._backup_workspace(connection, conversation_id, snapshot, expected_workspace_revision)
 
-    def read_task_retrieval(self, conversation_id: str, *, secret_key: SecretStr, record_id: str) -> dict | None:
+    def read_task_retrieval(self, conversation_id: str, *, owner_userid: str, record_id: str) -> dict | None:
         """授权后按稳定记录ID读检索投影；历史加载仍不携带检索数据。"""
         import struct
         with self._connection() as connection:
             connection.execute('BEGIN')
-            self._owner(connection, conversation_id, secret_key)
+            self._owner(connection, conversation_id, owner_userid)
             record = connection.execute('SELECT kind FROM conversation_records WHERE conversation_id = ? AND record_id = ?',
                                         (conversation_id, record_id)).fetchone()
             if record is None or record['kind'] != 'task':
@@ -577,12 +589,12 @@ class SQLiteCommunicationStore:
             raise LookupError('会话工作区不存在')
         return dict(row) | {'payload': read_workspace_payload(json.loads(row['payload'])).model_dump()}
 
-    def read_workspace(self, conversation_id: str, *, secret_key: SecretStr) -> dict:
+    def read_workspace(self, conversation_id: str, *, owner_userid: str) -> dict:
         with self._connection() as connection:
-            self._owner(connection, conversation_id, secret_key)
+            self._owner(connection, conversation_id, owner_userid)
             return self._read_workspace(connection, conversation_id)
 
-    def update_workspace(self, conversation_id: str, *, secret_key: SecretStr,
+    def update_workspace(self, conversation_id: str, *, owner_userid: str,
                          payload: dict, expected_revision: int) -> int:
         """写入已校验的工作区；版本比较避免并发任务覆盖较新的结果。"""
         from app.schema.communication_workspace import WorkspacePayload
@@ -591,7 +603,7 @@ class SQLiteCommunicationStore:
         if type(expected_revision) is not int or expected_revision < 0:
             raise ValueError('工作区版本必须为非负整数')
         with self._connection(write=True) as connection:
-            self._owner(connection, conversation_id, secret_key)
+            self._owner(connection, conversation_id, owner_userid)
             result = connection.execute(
                 "UPDATE conversation_workspaces SET payload = ?, revision = revision + 1, updated_at = ? "
                 "WHERE conversation_id = ? AND revision = ?",
@@ -602,20 +614,20 @@ class SQLiteCommunicationStore:
             return expected_revision + 1
 
 
-    def read_reasoning_window(self, conversation_id, *, secret_key):
+    def read_reasoning_window(self, conversation_id, *, owner_userid):
         from app.schema.reasoning_window import ReasoningWindow
         with self._connection() as connection:
-            self._owner(connection, conversation_id, secret_key)
+            self._owner(connection, conversation_id, owner_userid)
             row = connection.execute('SELECT payload FROM conversation_reasoning_windows WHERE conversation_id = ?',
                                      (conversation_id,)).fetchone()
             return ReasoningWindow.model_validate_json(row['payload']) if row else ReasoningWindow()
 
-    def save_reasoning_window(self, conversation_id, *, secret_key, window, expected_position):
+    def save_reasoning_window(self, conversation_id, *, owner_userid, window, expected_position):
         """独立短事务保存窗口；旧副本不得覆盖新思考，删除会话时级联清理。"""
         from app.schema.reasoning_window import ReasoningWindow
         value = ReasoningWindow.model_validate(window)
         with self._connection(write=True) as connection:
-            self._owner(connection, conversation_id, secret_key)
+            self._owner(connection, conversation_id, owner_userid)
             row = connection.execute('SELECT payload FROM conversation_reasoning_windows WHERE conversation_id = ?',
                                      (conversation_id,)).fetchone()
             current = ReasoningWindow.model_validate_json(row['payload']) if row else ReasoningWindow()

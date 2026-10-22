@@ -1,74 +1,46 @@
-"""跨业务路由复用的 FastAPI 依赖。"""
-
+"""受保护接口统一查询中间件登录与当前平台管理员资格。"""
 from typing import Annotated
-
-from fastapi import Depends, Header, HTTPException, Request, status
-
-from app.service.auth import AuthService
-from app.user import ReviewerUser
+from fastapi import Depends, Header, HTTPException, Request
+from app.service.auth import AuthService, AuthenticationUnavailableError, PlatformAccessDeniedError
+from app.schema.auth import AuthenticatedUser
 
 
 def get_auth_service(request: Request) -> AuthService:
-    """从应用生命周期中取得进程内认证服务。"""
     return request.app.state.auth_service
 
 
 AuthServiceDependency = Annotated[AuthService, Depends(get_auth_service)]
 
 
-def _bearer_login_code(authorization: str | None) -> str | None:
-    """解析严格的 `Authorization: Bearer <免登码>` 请求头。"""
-    if authorization is None:
-        return None
-    parts = authorization.strip().split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        return None
-    return parts[1] or None
-
-
-async def require_authenticated_user(
-    service: AuthServiceDependency,
-    authorization: Annotated[
-        str | None,
-        Header(
-            alias="Authorization",
-            description="使用登录接口取得的 Bearer 免登码。",
-        ),
-    ] = None,
-) -> ReviewerUser:
-    """校验免登码，取得服务端用户身份及权限。"""
-    login_code = _bearer_login_code(authorization)
-    user = (
-        await service.resolve_user(login_code)
-        if login_code is not None
-        else None
-    )
+async def require_platform_user(service: AuthServiceDependency,
+    authorization: Annotated[str | None, Header(alias='Authorization',
+        description='统一登录平台签发的用户 access_token，格式为 Bearer <access_token>。')] = None,
+) -> AuthenticatedUser:
+    parts = authorization.strip().split() if authorization else []
+    if len(parts) != 2 or parts[0].lower() != 'bearer':
+        raise HTTPException(401, detail='用户访问令牌缺失或格式错误', headers={'WWW-Authenticate':'Bearer'})
+    try:
+        user = await service.resolve_user(parts[1])
+    except AuthenticationUnavailableError as exc:
+        raise HTTPException(503, detail=str(exc)) from None
+    except PlatformAccessDeniedError as exc:
+        raise HTTPException(403, detail=str(exc)) from None
     if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="免登码无效或已过期",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise HTTPException(401, detail='用户未登录或登录已失效', headers={'WWW-Authenticate':'Bearer'})
     return user
 
 
-AuthenticatedUserDependency = Annotated[
-    ReviewerUser, Depends(require_authenticated_user)
-]
+PlatformUserDependency = Annotated[AuthenticatedUser, Depends(require_platform_user)]
 
 
-async def require_reviewer_user(user: AuthenticatedUserDependency) -> str:
-    """保持原有所有者隔离接口的名称注入契约。"""
-    return user.name
+async def require_username(user: PlatformUserDependency) -> str:
+    """操作人名称只用于展示，不作为用户所有权标识。"""
+    return user.username
 
 
-ReviewerUserDependency = Annotated[str, Depends(require_reviewer_user)]
+async def require_userid(user: PlatformUserDependency) -> str:
+    return user.userid
 
-__all__ = [
-    "AuthenticatedUserDependency",
-    "AuthServiceDependency",
-    "ReviewerUserDependency",
-    "get_auth_service",
-    "require_reviewer_user",
-    "require_authenticated_user",
-]
+
+UserNameDependency = Annotated[str, Depends(require_username)]
+UserIdDependency = Annotated[str, Depends(require_userid)]

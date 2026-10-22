@@ -101,12 +101,12 @@ num_queries=1关闭额外查询扩写；每个检索器绑定本字段查询文�
 
 执行查询成功且非空时生成UUID query_id，结果池仅保存record_id与RRF分数的有序列表。execute_query回执为success、query_id、total和total_pages，tasks为空；查询会话自身也不再保留任务正文。没有命中时返回成功、total=0、total_pages=0，不生成查询标识、不占用结果池。
 
-正式装配时通过 `await history.memory_query_pool(conversation_id, secret_key=owner)` 获取已鉴权驻留会话的共享池，并注入 `MemoryRetrievalSession(..., result_pool=pool)`。默认容量10、每页3条，添加第11项驱逐最久未访问项。有效查询标识被访问即更新LRU；非法页不推进游标。历史服务在会话驱逐、删除和关闭时调用close，清空并撤销旧实例。池不落盘，重启后旧标识失效。
+正式装配时通过 `await history.memory_query_pool(conversation_id, owner_userid=owner)` 获取已鉴权驻留会话的共享池，并注入 `MemoryRetrievalSession(..., result_pool=pool)`。默认容量10、每页3条，添加第11项驱逐最久未访问项。有效查询标识被访问即更新LRU；非法页不推进游标。历史服务在会话驱逐、删除和关闭时调用close，清空并撤销旧实例。池不落盘，重启后旧标识失效。
 
 独立调用未注入池时创建当前实例专属池，适合独立测试；多次任务共享10项容量必须使用上述会话装配入口。主模型生成循环已注册search_memory和view_memory_query。
 
 ```python
-pool = await history.memory_query_pool(conversation_id, secret_key=owner)
+pool = await history.memory_query_pool(conversation_id, owner_userid=owner)
 session = MemoryRetrievalSession(request, result_pool=pool)
 # 设置查询条件后执行：
 result = await session.execute_query()
