@@ -3,10 +3,10 @@
 !app/**
 
 # Docker 的目录例外会递归放行后代，只对白名单文件设例外。
-!data/definition/**/*.yaml
-!data/definition/**/*.yml
-!data/tool-tag/*.txt
-!data/template/*.jinja
+!assets/definition/**/*.yaml
+!assets/definition/**/*.yml
+!assets/tool-tag/*.txt
+!assets/template/*.jinja
 
 # Dockerfile 内直接构建 Lindera，只放行配置与依赖锁，不包含本地 scripts。
 !config/lindera-Cargo.lock

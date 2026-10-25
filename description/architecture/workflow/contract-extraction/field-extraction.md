@@ -51,7 +51,7 @@ flowchart TD
 - `prefill_context`：已追加分类结果的最终公共消息前缀。
 - `field_definition_catalog`：应用启动时一次性加载并严格校验的 Core 不可变定义快照。
 
-`select_core_definitions` 只从 `FieldDefinitionCatalog.core` 选择按文件名稳定排序的定义及目录指纹，不执行文件 I/O。`data/definition/field` 只允许包含非空的 `core` 目录；运行期间修改 YAML 不影响当前进程，需要重新加载应用才能形成新快照。
+`select_core_definitions` 只从 `FieldDefinitionCatalog.core` 选择按文件名稳定排序的定义及目录指纹，不执行文件 I/O。`assets/definition/field` 只允许包含非空的 `core` 目录；运行期间修改 YAML 不影响当前进程，需要重新加载应用才能形成新快照。
 
 字段父子图最终只写入 `FieldExtractionResult.core`，不能改写其他并行分支的状态。
 

@@ -18,7 +18,7 @@
 | 修改 PDF 准备、页面事实或文档结构理解 | [PDF 准备服务与文档结构理解子图](architecture/workflow/contract-extraction/document-understanding.md) |
 | 设计合同主题与内容单元 | [文档结构发现节点](architecture/workflow/contract-extraction/document-structure.md) |
 | 定义供模型读取的动态提取对象 | [模型提取对象定义结构](architecture/data/field-definition.md) |
-| 新增或修改 `data/definition` 下的 YAML | 按用途阅读[模型提取对象定义结构](architecture/data/field-definition.md)、[合同交易类别定义结构](architecture/data/contract-category-definition.md)或[检索问题指南定义结构](architecture/data/retrieval-view-definition.md) |
+| 新增或修改 `assets/definition` 下的 YAML | 按用途阅读[模型提取对象定义结构](architecture/data/field-definition.md)、[合同交易类别定义结构](architecture/data/contract-category-definition.md)或[检索问题指南定义结构](architecture/data/retrieval-view-definition.md) |
 | 进行代码开发或功能扩展 | 先阅读项目根目录的 [`AGENTS.md`](../AGENTS.md)，再阅读[项目说明](project.md) |
 | 查找服务入口、全局约定或业务接口 | [API 参考](api/readme.md) |
 | 对接 Core 表单定义、未入库运行恢复、合同上传、查重暂停/继续、SSE 进度、Core/Clause 查询、失败阶段重试或正式入库 | [合同 API](api/contract.md) |

@@ -1,6 +1,6 @@
 # 检索问题指南定义结构
 
-> **用途：** 本文是 `data/definition/retrieval-view/question` 的用户配置契约，说明通用提问指南与领域提问指南的 YAML 结构、字段含义和扩展方式。
+> **用途：** 本文是 `assets/definition/retrieval-view/question` 的用户配置契约，说明通用提问指南与领域提问指南的 YAML 结构、字段含义和扩展方式。
 
 本目录只定义模型如何规划和生成适合合同召回的问题，不保存模型输出、问题答案、向量或 Elasticsearch 文档。工作流位置与问题生成状态见[检索问题生成子图](../workflow/contract-extraction/retrieval-view-generation.md)。
 
@@ -9,7 +9,7 @@
 ## 目录结构
 
 ```text
-data/definition/retrieval-view/
+assets/definition/retrieval-view/
   question/
     common.yaml
     category/

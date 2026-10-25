@@ -8,8 +8,8 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| [deepseek-v4.1-flash.jinja](../../../data/template/deepseek-v4.1-flash.jinja) | 将消息、工具定义和工具历史渲染为 V4.1 原生文本协议。版本 `deepseek-v4.1-flash-template-v3`。 |
-| [deepseek-v4.1-flash.txt](../../../data/tool-tag/deepseek-v4.1-flash.txt) | 注入节点提示词的工具调用格式说明。版本 `deepseek-v4.1-tool-tag-v1`，版本不写入正文。 |
+| [deepseek-v4.1-flash.jinja](../../../assets/template/deepseek-v4.1-flash.jinja) | 将消息、工具定义和工具历史渲染为 V4.1 原生文本协议。版本 `deepseek-v4.1-flash-template-v3`。 |
+| [deepseek-v4.1-flash.txt](../../../assets/tool-tag/deepseek-v4.1-flash.txt) | 注入节点提示词的工具调用格式说明。版本 `deepseek-v4.1-tool-tag-v1`，版本不写入正文。 |
 
 官方编码器及所复用工具说明的 MIT 许可保留在 Jinja 文件末尾注释中，不进入模型输入。
 

@@ -50,8 +50,8 @@ with closing(connect_memory_database(':memory:')) as connection:
         raise RuntimeError('Lindera 中文 BM25 校验失败')
     print('Lindera 中文 BM25 与 sqlite-vec 验证通过：', connection.execute('SELECT vec_version()').fetchone()[0])
 PY_CHECK
-COPY data/definition ./data/definition
-COPY data/tool-tag ./data/tool-tag
+COPY assets/definition ./assets/definition
+COPY assets/tool-tag ./assets/tool-tag
 RUN mkdir -p data/contract data/abstract data/ingestion-review/files data/deletion-review
 EXPOSE 20000
 # 登录会话和提取任务驻留内存，必须单 worker，部署环境不启用 reload。

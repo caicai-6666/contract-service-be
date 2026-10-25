@@ -29,4 +29,4 @@ def build_memory_search_registration(*, pool, reference_time, audit=None, **agen
             'total':result.total,'total_pages':result.total_pages,
             'message':'查询已完成，请调用view_memory_query查看第一页。' if result.total else '本次查询未召回任务。'})
     return RegisteredTool('search_memory',SearchMemoryArguments.__doc__,SearchMemoryArguments,execute,
-                          progress=ToolProgress(type='local-search',message='正在检索历史记忆'))
+                          progress=ToolProgress(type='thinking',message='正在检索历史记忆'))

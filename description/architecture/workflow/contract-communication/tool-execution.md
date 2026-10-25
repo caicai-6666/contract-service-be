@@ -153,7 +153,7 @@ search_registration = RegisteredTool(
 
 ## 工具执行状态
 
-每个 `RegisteredTool` 都有不可变 `progress: ToolProgress`，默认 `type=thinking`、`message=正在思考`，无需在每个注册点重复填写。工作区增删改及两个用户输出工具均使用默认值。文件查找等扩展工具可以覆盖为 `local-search`，联网检索可以覆盖为 `online-search`，外部专家咨询使用 `external-expert`；当前允许类型复用 `TaskProgressData`，新增类型须同步前端契约。
+每个 `RegisteredTool` 都有不可变 `progress: ToolProgress`，默认 `type=thinking`、`message=正在思考`，无需在每个注册点重复填写。工作区增删改及两个用户输出工具均使用默认值。本地合同库检索使用 `local-search`，记忆检索与查看使用 `thinking`，联网检索使用 `online-search`，外部专家咨询使用 `external-expert`；当前允许类型复用 `TaskProgressData`，新增类型须同步前端契约。
 
 状态文案必须采用“正在＋动作”，由 `ToolProgress` 在注册时校验；旧展示历史仍可读取，不回写既有事件。状态切换仅说明当前展示步骤变化，不是前一步成功的凭证。
 
@@ -213,7 +213,7 @@ month_end_clamped只表示年月步骤是否截断日期，最终结果还会继
 
 ## 历史记忆结果查看
 
-view_memory_query由正式Communication主循环按会话注册，接收query_id和可选page，省略表示下一页；成功为foldable文本页，失败为普通提示，默认thinking状态。复用会话10项LRU结果池，详见[记忆检索与查看](memory-retrieval.md#主助手查看工具)。search_memory也已注册，接收自然语言query，调用多轮检索子Agent并返回query_id；执行状态为local-search，结果为ordinary，之后使用view_memory_query读取。
+view_memory_query由正式Communication主循环按会话注册，接收query_id和可选page，省略表示下一页；成功为foldable文本页，失败为普通提示，默认thinking状态。复用会话10项LRU结果池，详见[记忆检索与查看](memory-retrieval.md#主助手查看工具)。search_memory也已注册，接收自然语言query，调用多轮检索子Agent并返回query_id；执行状态为thinking“正在检索历史记忆”，结果为ordinary，之后使用view_memory_query读取。
 
 
 ---

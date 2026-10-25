@@ -2,10 +2,10 @@
 
 > **用途：** 本文定义合同分类节点可读取的权威交易类别 YAML 契约。类别目录只描述“什么交易属于该类别”，不保存模型输出、RAG 示例或分类运行状态。
 
-合同类别位于[类别定义目录](../../../data/definition/contract-category)。每个类别使用一个以 kebab-case `code` 命名的独立子目录，子目录中的 `definition.yaml` 是该类别唯一权威定义；专家确认的正例和反例卡片分别存入 `positive/` 与 `negative/`。
+合同类别位于[类别定义目录](../../../assets/definition/contract-category)。每个类别使用一个以 kebab-case `code` 命名的独立子目录，子目录中的 `definition.yaml` 是该类别唯一权威定义；专家确认的正例和反例卡片分别存入 `positive/` 与 `negative/`。
 
 ```text
-data/definition/contract-category/
+assets/definition/contract-category/
   sale/
     definition.yaml
     positive/
@@ -140,7 +140,7 @@ reasoning_summary: 只有承揽结构，没有独立买卖结构，因此不命�
 
 加载器实现位于 `app.agent.contract_extraction.subgraph.classification.catalog`，对象契约位于同包的 `definition` 模块。`ContractCategoryDefinition`、`ExpertExampleCard` 和 `ContractCategory` 分别表示权威定义、单张卡片和一个类别的完整资料；`ContractCategoryCatalog` 表示整个只读内存快照，并保存根目录、按 `code` 排序的类别对象和 `content_sha256` 内容指纹。
 
-目录路径由 `CONTRACT_CATEGORY_DEFINITION_DIR` 配置，默认指向 `data/definition/contract-category`，相对路径统一按项目根目录解析。FastAPI 生命周期在创建共享外部客户端前完成加载，并将对象保存为 `application.state.contract_category_catalog`。缺少目录、布局异常、文件不是 YAML、Schema 不匹配、正反例不足三张、目录名与 `code` 不一致、重复 `code` 或未知跨类别引用都会阻止应用启动；运行期间不重新扫描目录，也不原地修改快照。
+目录路径由 `CONTRACT_CATEGORY_DEFINITION_DIR` 配置，默认指向 `assets/definition/contract-category`，相对路径统一按项目根目录解析。FastAPI 生命周期在创建共享外部客户端前完成加载，并将对象保存为 `application.state.contract_category_catalog`。缺少目录、布局异常、文件不是 YAML、Schema 不匹配、正反例不足三张、目录名与 `code` 不一致、重复 `code` 或未知跨类别引用都会阻止应用启动；运行期间不重新扫描目录，也不原地修改快照。
 
 分类节点和上下文位置见[合同分类子图](../workflow/contract-extraction/classification.md)，提示词顺序与缓存边界见[提示词工程规范](../../standard/prompt-engineering.md)。
 

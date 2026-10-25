@@ -68,7 +68,7 @@ class MLLMSettings(BaseModel):
     tool_tag_enabled: bool = Field(default=True, description="是否向模型消息注入工具调用格式说明；关闭不影响 tools、部署端模板及推理档位映射。")
     tool_tag_file: str = Field(
         default="qwen3.8-flash-next-nvfp4.txt",
-        description="data/tool-tag 下的工具调用模板文件名；启动时读取，不允许目录路径。",
+        description="assets/tool-tag 下的工具调用模板文件名；启动时读取，不允许目录路径。",
     )
     endpoint: str = "chat_completions"
     timeout_seconds: int = Field(default=300, gt=0)
@@ -130,8 +130,8 @@ class MLLMSettings(BaseModel):
 
     @property
     def tool_tag_path(self) -> Path:
-        """模板位置固定于项目 data/tool-tag，不受启动工作目录影响。"""
-        return _PROJECT_ROOT / "data" / "tool-tag" / self.tool_tag_file
+        """模板位置固定于项目 assets/tool-tag，不受启动工作目录影响。"""
+        return _PROJECT_ROOT / "assets" / "tool-tag" / self.tool_tag_file
 
     @model_validator(mode="after")
     def validate_token_budget(self) -> Self:
@@ -298,10 +298,10 @@ class Settings(BaseModel):
     communication_contract_question_search_top_k: int = Field(default=10, ge=1, le=50, description='问题向量检索最多返回的合同数。')
     communication_contract_question_search_minimum_similarity: float | None = Field(default=None, ge=-1, le=1, allow_inf_nan=False, description='问题检索余弦下限，未配置则不设置门槛。')
     contract_category_definition_dir: Path = Path(
-        "data/definition/contract-category"
+        "assets/definition/contract-category"
     )
-    field_definition_dir: Path = Path("data/definition/field")
-    retrieval_view_guide_dir: Path = Path("data/definition/retrieval-view")
+    field_definition_dir: Path = Path("assets/definition/field")
+    retrieval_view_guide_dir: Path = Path("assets/definition/retrieval-view")
     ingestion_review_retention_seconds: float = Field(default=604800, gt=0, allow_inf_nan=False)
     ingestion_review_cleanup_interval_seconds: float = Field(default=3600, gt=0, allow_inf_nan=False)
     ingestion_review_cleanup_batch_size: int = Field(default=100, gt=0)
@@ -495,15 +495,15 @@ def get_settings() -> Settings:
         communication_contract_question_search_minimum_similarity=_env("COMMUNICATION_CONTRACT_QUESTION_SEARCH_MINIMUM_SIMILARITY", "").strip() or None,
         contract_category_definition_dir=_env(
             "CONTRACT_CATEGORY_DEFINITION_DIR",
-            "data/definition/contract-category",
+            "assets/definition/contract-category",
         ),
         field_definition_dir=_env(
             "FIELD_DEFINITION_DIR",
-            "data/definition/field",
+            "assets/definition/field",
         ),
         retrieval_view_guide_dir=_env(
             "RETRIEVAL_VIEW_GUIDE_DIR",
-            "data/definition/retrieval-view",
+            "assets/definition/retrieval-view",
         ),
         ingestion_review_retention_seconds=_env("INGESTION_REVIEW_RETENTION_SECONDS", "604800"),
         ingestion_review_cleanup_interval_seconds=_env("INGESTION_REVIEW_CLEANUP_INTERVAL_SECONDS", "3600"),

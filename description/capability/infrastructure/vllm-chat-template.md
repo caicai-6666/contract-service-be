@@ -8,7 +8,7 @@ DeepSeek V4.1 Flash 已支持相同的 before_task/after_task 与 tool_task_inde
 
 ## 模板定位
 
-模板位于 [`data/template/qwen3.8-tools-placement.jinja`](../../../data/template/qwen3.8-tools-placement.jinja)，当前用于 `Qwen3.8-Flash-Next-NVFP4`。模板最初以 `Qwen3.6-35B-A3B-FP8` 附带的 `chat_template.jinja` 为基线，当前版本 `qwen3.8-tools-placement-v2` 保留多模态占位符、工具前后置布局及历史格式，并按照 Qwen3.8 官方模板补齐推理强度指令。
+模板位于 [`assets/template/qwen3.8-tools-placement.jinja`](../../../assets/template/qwen3.8-tools-placement.jinja)，当前用于 `Qwen3.8-Flash-Next-NVFP4`。模板最初以 `Qwen3.6-35B-A3B-FP8` 附带的 `chat_template.jinja` 为基线，当前版本 `qwen3.8-tools-placement-v2` 保留多模态占位符、工具前后置布局及历史格式，并按照 Qwen3.8 官方模板补齐推理强度指令。
 
 vLLM 使用 Jinja chat template 将 OpenAI `messages`、`tools` 和特殊 token 转换为模型输入。官方服务支持通过 `--chat-template` 指定文件路径，并通过 `chat_template_kwargs` 向服务器拥有的模板传递扩展变量；本项目不启用客户端提交任意模板的 `--trust-request-chat-template`。完整接口见 [vLLM Chat Template](https://docs.vllm.ai/en/stable/serving/openai_compatible_server/#chat-template) 和 [vLLM Serve 参数](https://docs.vllm.ai/en/latest/cli/serve/)。
 
@@ -16,9 +16,9 @@ vLLM 使用 Jinja chat template 将 OpenAI `messages`、`tools` 和特殊 token 
 
 ## 模型工具调用格式资产
 
-当前 `.env` 与 `.env.example` 的生成模型为 `qwen38-flash-next`，对应独立提示词模板为 [`data/tool-tag/qwen3.8-flash-next-nvfp4.txt`](../../../data/tool-tag/qwen3.8-flash-next-nvfp4.txt)。当前资产版本为 `qwen3.8-tool-tag-v1`，仅在本文记录版本，不向模板正文增加文字。Embedding 模型不生成工具调用，因此不建立对应模板。
+当前 `.env` 与 `.env.example` 的生成模型为 `qwen38-flash-next`，对应独立提示词模板为 [`assets/tool-tag/qwen3.8-flash-next-nvfp4.txt`](../../../assets/tool-tag/qwen3.8-flash-next-nvfp4.txt)。当前资产版本为 `qwen3.8-tool-tag-v1`，仅在本文记录版本，不向模板正文增加文字。Embedding 模型不生成工具调用，因此不建立对应模板。
 
-该文件是 Qwen 的工具协议说明；GLM 和 DeepSeek 使用各自的 `data/tool-tag` 文件。它不是服务端 Jinja 模板，也不是工具 JSON Schema。合同提取不再维护硬编码的 Qwen 协议常量。
+该文件是 Qwen 的工具协议说明；GLM 和 DeepSeek 使用各自的 `assets/tool-tag` 文件。它不是服务端 Jinja 模板，也不是工具 JSON Schema。合同提取不再维护硬编码的 Qwen 协议常量。
 
 模板说明 XML 标签结构、必填参数和调用结束后不得追加文本的要求。单轮必须且只能调用一个工具等规则继续由节点任务提示词和程序校验承担；实际工具名称及参数定义通过 OpenAI `tools` 提供。提示词不能保证输出合法，仍需服务端 `qwen3_xml` 解析、客户端协议及业务校验和有限次数纠错。
 
@@ -26,7 +26,7 @@ vLLM 使用 Jinja chat template 将 OpenAI `messages`、`tools` 和特殊 token 
 
 关闭时启动加载器保存空字符串且不读取模板文件，因此不要求该文件存在。`VLLM_MLLM_TOOL_TAG_FILE` 仍保留为模型协议标识，用于推理强度映射；不要因关闭注入而删除该配置。开关属于启动配置，修改后需重启后端。关闭仅影响程序附加的协议说明，不删除用户原文或已有模型历史中的标签文本。离线测试见 `tests/test_tool_tag_disabled.py`，包含关闭时的真实请求构造、协议失败恢复和工具定义保留。
 
-使用 `VLLM_MLLM_TOOL_TAG_FILE=qwen3.8-flash-next-nvfp4.txt` 指定模板文件名，对应 `settings.mllm.tool_tag_file`。只能填写文件名，不接受绝对路径或子目录；路径固定解析到项目根目录的 `data/tool-tag`，不受启动工作目录影响，也不允许符号链接指向目录之外。未设置时使用上述默认值。
+使用 `VLLM_MLLM_TOOL_TAG_FILE=qwen3.8-flash-next-nvfp4.txt` 指定模板文件名，对应 `settings.mllm.tool_tag_file`。只能填写文件名，不接受绝对路径或子目录；路径固定解析到项目根目录的 `assets/tool-tag`，不受启动工作目录影响，也不允许符号链接指向目录之外。未设置时使用上述默认值。
 
 `app.bootstrap.lifespan` 在初始化数据库和外部客户端之前调用 `initialize_mllm_tool_tag(settings.mllm)`，以 UTF-8 读取并检查非空，将文本保存到 `app.core.tool_tag` 的进程级全局变量。启用注入时，文件缺失、不可读、编码错误或空白内容均阻止启动，不静默回退。运行期间不再读盘，修改文件或配置需要重启；每个进程独立加载。公共读取方式如下：
 
@@ -107,7 +107,7 @@ CUDA_VISIBLE_DEVICES=0 vllm serve /root/autodl-tmp/model/Qwen3.8-Flash-Next-NVFP
     --reasoning-parser qwen3 \
     --enable-auto-tool-choice \
     --tool-call-parser qwen3_xml \
-    --chat-template data/template/qwen3.8-tools-placement.jinja
+    --chat-template assets/template/qwen3.8-tools-placement.jinja
 ```
 
 修改模板后必须重启 vLLM。应用继续通过 OpenAI `tools`、`tool_choice` 和 `parallel_tool_calls` 传递机器工具契约；模板只控制模型看到的 token 顺序，不替代 vLLM 的 structured outputs 或项目 Pydantic 二次校验。

@@ -8,8 +8,8 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| [glm-5.3-flash.jinja](../../../data/template/glm-5.3-flash.jinja) | 保留官方消息、工具与媒体协议，增加工具注入位置及统一档位；版本 glm-5.3-flash-template-v1。 |
-| [glm-5.3-flash.txt](../../../data/tool-tag/glm-5.3-flash.txt) | 工具调用格式提示词，版本 glm-5.3-tool-tag-v1；版本不进入正文。 |
+| [glm-5.3-flash.jinja](../../../assets/template/glm-5.3-flash.jinja) | 保留官方消息、工具与媒体协议，增加工具注入位置及统一档位；版本 glm-5.3-flash-template-v1。 |
+| [glm-5.3-flash.txt](../../../assets/tool-tag/glm-5.3-flash.txt) | 工具调用格式提示词，版本 glm-5.3-tool-tag-v1；版本不进入正文。 |
 
 依据 [官方模型卡](https://huggingface.co/zai-org/GLM-5.3-Flash) 和 [官方 Jinja](https://huggingface.co/zai-org/GLM-5.3-Flash/blob/main/chat_template.jinja)。2026-09-20 下载的官方模板 SHA-256：`0c4099f3382d6c92700dfb99725025360966fd73032f0ecf32377c0d9e6309c5`。官方 MIT 许可保存在项目模板末尾注释中，不额外创建许可文件，也不进入模型输入。
 

@@ -64,7 +64,7 @@ class TaskProgressData(CommunicationModel):
     """当前用户展示状态，不等同于工具调用或轮次生命周期。"""
 
     event_type: Literal["task.progress"] = "task.progress"
-    type: TaskProgressType = Field(description="展示类型：local-search 查阅本地资料；online-search 联网检索；external-expert 咨询外部专家；thinking 理解、规划、分析或组织答复。")
+    type: TaskProgressType = Field(description="展示类型：local-search 检索本地合同库；online-search 联网检索；external-expert 咨询外部专家；thinking 理解、规划、检索历史记忆、分析或组织答复。")
     message: str = Field(min_length=1, max_length=2000, description="新发布的状态说明统一使用“正在＋动作”，不包含内部工具名、调用 ID 或推理过程；状态切换不代表上一步成功，读取兼容旧历史文案。")
 
 

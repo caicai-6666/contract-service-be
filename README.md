@@ -78,10 +78,11 @@ app/
   core/                      配置与基础规则
   tool/                      PDF 等通用技术工具
 config/                      Lindera 分词配置与编译依赖锁
-data/
+assets/                      随源码交付的静态资源
   definition/                合同类别、Core 字段与检索问题指南
   tool-tag/                  模型工具协议说明
   template/                  模型部署侧 Jinja 模板
+data/                        运行数据，不包含静态资源
   contract/                  正式合同 PDF
   abstract/                  正式合同 SQLite
   ingestion-review/          入库审核数据库、快照与临时 PDF
@@ -217,7 +218,7 @@ SQLite 保存正式目录、摘要、上传人、完整 passport 数组、注意
 运行时还需遵守以下边界：
 
 - 后端使用单 worker。登录态、提取任务及工具缓存驻留内存；重启会使登录码失效并丢失未持久化任务。已保存的审核记录与会话数据按现有恢复机制加载。
-- 合同类别、Core 和检索指南由 `data/definition` 在启动时加载；动态工具和字段约束从这些定义编译，运行时不自由生成新 Core 字段。
+- 合同类别、Core 和检索指南由 `assets/definition` 在启动时加载；动态工具和字段约束从这些定义编译，运行时不自由生成新 Core 字段。
 - 中间件暂时不可用不阻止 API 启动；ES、Neo4j、用户或业务定义初始化失败会阻止启动。模型不可用时真实业务请求会失败。
 - 同一 platform_code 只有一个活跃中间件会话，避免本机开发服务与容器同时使用同一身份。
 - 当前部署中的 ES、Neo4j 关闭认证，按 deploy 配置限制网络访问；公网业务入口使用 HTTPS 和合适的反向代理，SSE 需关闭响应缓冲。

@@ -43,7 +43,7 @@ SQLite 是正式合同文件管理的权威目录，Elasticsearch 是完整合�
 
 ## 启动期业务定义目录
 
-应用启动时从 `CONTRACT_CATEGORY_DEFINITION_DIR` 全量读取合同类别定义及 positive、negative 专家卡片，构造不可变 `ContractCategoryCatalog` 并保存到 `application.state.contract_category_catalog`。默认目录为 `data/definition/contract-category`，相对路径按项目根目录解析。
+应用启动时从 `CONTRACT_CATEGORY_DEFINITION_DIR` 全量读取合同类别定义及 positive、negative 专家卡片，构造不可变 `ContractCategoryCatalog` 并保存到 `application.state.contract_category_catalog`。默认目录为 `assets/definition/contract-category`，相对路径按项目根目录解析。
 
 加载发生在服务开始接收请求之前；任一文件布局、Schema 或跨类别引用错误都会使启动失败。目录只在每个应用进程启动时读取一次，运行期间分类用例复用同一个内存快照。类别对象、严格校验和内容指纹的完整契约见[合同交易类别定义结构](../../architecture/data/contract-category-definition.md)。
 
@@ -110,7 +110,7 @@ python -m app.main
 
 两个本地 vLLM 服务均通过环境变量配置，API 密钥分别从 `VLLM_MLLM_API_KEY` 和 `VLLM_EMBEDDING_API_KEY` 读取。
 
-`VLLM_MLLM_TOOL_TAG_FILE` 指定 `data/tool-tag` 下的工具格式模板文件名，默认 `qwen3.8-flash-next-nvfp4.txt`。应用启动时校验并加载为进程级共享文本，文件错误会阻止启动，运行期间不热更新；读取入口及工作流接入边界见[模型工具调用格式资产](../infrastructure/vllm-chat-template.md#模型工具调用格式资产)。
+`VLLM_MLLM_TOOL_TAG_FILE` 指定 `assets/tool-tag` 下的工具格式模板文件名，默认 `qwen3.8-flash-next-nvfp4.txt`。应用启动时校验并加载为进程级共享文本，文件错误会阻止启动，运行期间不热更新；读取入口及工作流接入边界见[模型工具调用格式资产](../infrastructure/vllm-chat-template.md#模型工具调用格式资产)。
 
 | 模型 | 默认地址 | 端点 | 主要职责 |
 | --- | --- | --- | --- |

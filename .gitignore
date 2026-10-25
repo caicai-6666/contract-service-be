@@ -24,24 +24,25 @@
 !/description/**/
 !/description/**/*.md
 
-# data 默认属于运行数据，只有权威配置、模型模板及目录占位允许入库。
-# 不放行整个 data，避免合同、会话、原生动态库及备份进入源码仓库。
-!/data/
-/data/**
+# 静态交付资源与运行数据分离；assets 仅放行约定的资源类型。
+!/assets/
+/assets/**
 
 # 启动时读取的业务定义；允许各层目录及 YAML，其他内容仍忽略。
-!/data/definition/
-!/data/definition/**/
-!/data/definition/**/*.yaml
-!/data/definition/**/*.yml
+!/assets/definition/
+!/assets/definition/**/
+!/assets/definition/**/*.yaml
+!/assets/definition/**/*.yml
 
 # 新增模型沿用同一规则，不再逐个登记文件名。
-!/data/template/
-!/data/template/*.jinja
-!/data/tool-tag/
-!/data/tool-tag/*.txt
+!/assets/template/
+!/assets/template/*.jinja
+!/assets/tool-tag/
+!/assets/tool-tag/*.txt
 
 # 目录占位仅用于展示布局；实际目录和数据库由程序按需创建。
+!/data/
+/data/**
 !/data/contract/
 !/data/contract/.gitkeep
 !/data/abstract/

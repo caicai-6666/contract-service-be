@@ -54,7 +54,7 @@ flowchart LR
 
 ## 指南目录与启动加载
 
-权威定义位于 [`data/definition/retrieval-view/question`](../../../../data/definition/retrieval-view/question)：
+权威定义位于 [`assets/definition/retrieval-view/question`](../../../../assets/definition/retrieval-view/question)：
 
 ```text
 question/
@@ -155,7 +155,7 @@ YAML 是机器权威来源，但不原样注入模型：
 
 | 配置 | 默认值 | 含义 |
 | --- | ---: | --- |
-| `RETRIEVAL_VIEW_GUIDE_DIR` | `data/definition/retrieval-view` | 提问指南根目录。 |
+| `RETRIEVAL_VIEW_GUIDE_DIR` | `assets/definition/retrieval-view` | 提问指南根目录。 |
 | `RETRIEVAL_VIEW_MAX_QUESTIONS` | `8` | 单份合同最多生成的问题数；必须大于0。 |
 | `VLLM_EMBEDDING_BATCH_SIZE` | `32` | 单次 Embedding 请求包含的最大问题数。 |
 | `VLLM_EMBEDDING_MAX_CONCURRENT_REQUESTS` | `10` | 同时运行的 Embedding 批次数上限。 |

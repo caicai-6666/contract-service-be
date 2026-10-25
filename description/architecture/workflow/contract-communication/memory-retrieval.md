@@ -139,7 +139,7 @@ CommunicationWorkflowService在完整门禁通过后取得已鉴权会话的查�
 
 ## 发起检索与多轮执行
 
-主工具 `search_memory` 位于agent_core/tool/memory_search.py，SearchMemoryArguments仅暴露必填非空query。会话、结果池和参考时间由CommunicationWorkflowService按当前已鉴权会话和任务创建时间绑定；模型不能传入其他会话或覆盖时间基准。工具注册为ordinary返回，执行期间发布local-search“正在检索历史记忆”，结束后恢复thinking。
+主工具 `search_memory` 位于agent_core/tool/memory_search.py，SearchMemoryArguments仅暴露必填非空query。会话、结果池和参考时间由CommunicationWorkflowService按当前已鉴权会话和任务创建时间绑定；模型不能传入其他会话或覆盖时间基准。工具注册为ordinary返回，执行期间发布thinking“正在检索历史记忆”，结束后恢复thinking“正在思考”；记忆检索和查看均属于思考过程，不使用本地合同检索的local-search状态。
 
 入口经过统一FIFO/Executor，内部调用 `build_memory_retrieval_subgraph(result_pool=pool)`。图仅有retrieve_memory节点，该节点运行agent.py中的多轮工具循环。模型看到固定规则、注入工具格式、明确的北京时间、自然语言需求与初始条件；后续成功回执包含最新条件。使用真实MLLM客户端、配置中的采样参数与输出上限，开启思考，但长思考只保留在私有审计中，不反复注入。
 

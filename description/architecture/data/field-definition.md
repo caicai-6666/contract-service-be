@@ -4,13 +4,13 @@
 
 该契约主要表达“提取什么、允许提取几次、每个对象包含哪些属性”。`code` 服务 HTTP 结果与 Elasticsearch 的稳定机器身份，`tokenize` 和 `index_format` 只服务 Elasticsearch mapping；这些索引信息均不属于模型可见提取定义。契约不保存模型输出、证据、工具调用或节点状态。提取流程见[字段提取子图](../workflow/contract-extraction/field-extraction.md)。
 
-Core 定义位于 [Core 定义目录](../../../data/definition/field/core)。一个 YAML 文件只定义一种提取对象，顶层不使用对象列表包裹。
+Core 定义位于 [Core 定义目录](../../../assets/definition/field/core)。一个 YAML 文件只定义一种提取对象，顶层不使用对象列表包裹。
 
 ---
 
 ## 启动期内存目录
 
-应用启动时从 `FIELD_DEFINITION_DIR` 一次性读取全部 Core YAML，构造不可变 `FieldDefinitionCatalog` 并保存到 `application.state.field_definition_catalog`。默认根目录为 `data/definition/field`，其下只允许 `core` 目录。
+应用启动时从 `FIELD_DEFINITION_DIR` 一次性读取全部 Core YAML，构造不可变 `FieldDefinitionCatalog` 并保存到 `application.state.field_definition_catalog`。默认根目录为 `assets/definition/field`，其下只允许 `core` 目录。
 
 目录对象包含：
 
@@ -170,7 +170,7 @@ type 只允许四种 JSON 基本类型：
 
 ## 相关方语义
 
-Core 目录不再定义“我方名称”“我方角色”“相对方名称”和“相对方角色”，统一使用 [相关方定义](../../../data/definition/field/core/related-party.yaml) 表达客观的签约主体与原文角色。
+Core 目录不再定义“我方名称”“我方角色”“相对方名称”和“相对方角色”，统一使用 [相关方定义](../../../assets/definition/field/core/related-party.yaml) 表达客观的签约主体与原文角色。
 
 模型只负责提取合同明示的相关方，不猜测谁是“我方”。若业务后续需要识别关注主体，应使用系统配置的主体标识对结果做程序化匹配，不把主观视角重新注入提取定义。
 
