@@ -1,5 +1,14 @@
 """FastAPI 应用工厂与进程启动入口。"""
 
+# 支持 IDE 直接运行 app/main.py，与 python -m app.main 使用相同导入路径。
+if __name__ == "__main__" and not __package__:
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import os
+
 import uvicorn
 from fastapi import FastAPI
 
@@ -29,11 +38,13 @@ app = create_app()
 
 
 if __name__ == "__main__":
+    # 重载子进程继承开发前缀，API、接口文档和审核附件链接保持一致。
+    os.environ["APP_PATH_PREFIX"] = "/dev"
     # IDE 开发入口：需要调整监听地址、端口或热重载时直接修改此处。
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
-        port=20000,
+        port=17000,
         log_level="info",
-        reload=True,
+        reload=False,
     )

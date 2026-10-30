@@ -115,7 +115,7 @@ flowchart TD
 
 ## 合同分类子图
 
-`classification` 包含 `assemble_classification_context` 和 `classify_contract`。节点一复制 `ContractBaseContext` 并追加所有单类别请求共享的多标签分类规则，形成版本为 `classification-common-v8` 且带独立指纹的 `ClassificationContext`；节点二读取启动期内存目录，为每个类别并发执行独立工具循环。所有请求使用相同工具定义、`before_task` 布局和公共消息前缀；页面已经由前置结构理解请求填充 vLLM 媒体缓存，因此分类并发只发送 UUID 引用，同时继续复用模型 prefix cache。具体类别资料和工具历史只属于分类子图，不写回基础前缀。
+`classification` 包含 `assemble_classification_context` 和 `classify_contract`。节点一复制 `ContractBaseContext` 并追加所有单类别请求共享的多标签分类规则，形成版本为 `classification-common-v9` 且带独立指纹的 `ClassificationContext`；节点二读取启动期内存目录，为每个类别并发执行独立工具循环。所有请求使用相同工具定义、`before_task` 布局和公共消息前缀；页面已经由前置结构理解请求填充 vLLM 媒体缓存，因此分类并发只发送 UUID 引用，同时继续复用模型 prefix cache。具体类别资料和工具历史只属于分类子图，不写回基础前缀。
 
 分类只使用文档结构中的单元页码、文字锚点和摘要辅助导航，忽略 `unit_locations` 坐标，不按定位框裁剪页面，也不在分类证据中输出视觉位置；导航不足时必须回退完整相关页面核查。
 
@@ -125,7 +125,7 @@ flowchart TD
 
 ## 合同概览生成子图
 
-分类完成后，主图调用 `assemble_contract_overview_context → generate_contract_overview`。子图复用 `ContractBaseContext` 的页面与文档结构，并以友好 Markdown 追加紧凑分类摘要；正式结果包含建议 `file_name`、命名理由、页面证据及合同内容 `summary`；名称不包含扩展名，摘要尚未接入正式入库写入。该结果不写入 `ContractPrefillContext`，因此不会改变 Core、Clause 或 Retrieval 的任务上下文。完整规则见[合同概览生成子图](contract-overview-generation.md)。
+分类完成后，主图调用 `assemble_contract_overview_context → generate_contract_overview`。子图复用 `ContractBaseContext` 的页面与文档结构，并以友好 Markdown 追加紧凑分类摘要；正式结果包含建议 `file_name`、命名理由、页面证据及合同内容 `summary`；名称不包含扩展名，摘要作为审核初值公开，正式入库保存用户确认的最终摘要。该结果不写入 `ContractPrefillContext`，因此不会改变 Core、Clause 或 Retrieval 的任务上下文。完整规则见[合同概览生成子图](contract-overview-generation.md)。
 
 ---
 

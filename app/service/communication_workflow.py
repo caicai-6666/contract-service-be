@@ -1,6 +1,7 @@
 """订阅激活后的正式门禁执行；对外只发布展示消息，不泄漏节点审计。"""
 
 import asyncio
+from contextlib import nullcontext
 import html
 import logging
 import math
@@ -129,18 +130,15 @@ class CommunicationWorkflowService(CommunicationEventService):
         await self._history.insert_agent_summary(conversation_id, turn_id,
             expected_summary=expected_summary, summary=summary, scope=scope)
 
-    async def get_agent_core_context(self, conversation_id, turn_id, *, owner, include_reasoning=True, reasoning_max_rounds=None):
+    async def get_agent_core_context(self, conversation_id, turn_id, *, owner, include_reasoning=True):
         """读取一致快照后在锁外渲染；每次读取都取得最新权威工作区。"""
         async with self._condition:
             turn = self._get(conversation_id, turn_id, owner)
             if turn.snapshot.status != 'processing' or self._history is None or not turn.history_registered:
                 raise ValueError('Agent Core 需要仍在处理且已驻留的会话任务')
             workspace, summary, records = self._history.get_agent_core_snapshot_locked(conversation_id, turn_id)
-            reasoning = self._history._resident[conversation_id].reasoning_window.model_copy(deep=True) if include_reasoning else None
-            if reasoning is not None and reasoning_max_rounds is not None:
-                reasoning = reasoning.limited(max_rounds=reasoning_max_rounds)
         return assemble_agent_core_context(workspace=workspace, summary=summary,
-                                           records=records, current_turn_id=turn_id, reasoning_window=reasoning)
+                                           records=records, current_turn_id=turn_id, include_reasoning=include_reasoning)
 
     async def record_agent_core_exchange(self, conversation_id, turn_id, *, owner, assistant_message, result):
         """在完整动作成功后记录真实调用及反馈；失败恢复由主循环私有管理。"""
@@ -162,13 +160,6 @@ class CommunicationWorkflowService(CommunicationEventService):
             if turn.snapshot.status != 'processing' or self._history is None or not turn.history_registered:
                 raise ValueError('已结束或未驻留任务不能记录原生交互')
             self._history.accept_agent_exchange_locked(conversation_id, turn_id, messages)
-
-    async def record_agent_reasoning(self, conversation_id, turn_id, *, owner, **kwargs):
-        async with self._condition:
-            turn = self._get(conversation_id, turn_id, owner)
-            if turn.snapshot.status != 'processing' or self._history is None or not turn.history_registered:
-                raise ValueError('当前任务不能保存思考')
-            await self._history.save_agent_reasoning_locked(conversation_id, turn_id, **kwargs)
 
     async def _prepare_agent_core(self, conversation_id, turn_id, owner, opened_files):
         async with self._condition:
@@ -454,7 +445,8 @@ class CommunicationWorkflowService(CommunicationEventService):
                             return await file_resolver(reference)
                         raise ValueError('页面引用无效，请重新调用查看工具。')
                     file_kwargs = dict(additional_tools=tools, page_resolver=resolve_page)
-                    await self._agent_core_runner(self, conversation_id, turn_id, owner, context=context, **file_kwargs)
+                    with self._file_tools.web_page_task_scope(conversation_id) if self._file_tools is not None else nullcontext():
+                        await self._agent_core_runner(self, conversation_id, turn_id, owner, context=context, **file_kwargs)
                     snapshot = await self.snapshot(conversation_id, turn_id, owner=owner)
                     if snapshot.status == 'processing':
                         raise ValueError('后续执行器返回时必须已结束本轮任务')

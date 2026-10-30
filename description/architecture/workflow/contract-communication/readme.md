@@ -9,14 +9,19 @@
 
 - [网页搜索与正文读取工具](web-search.md)：搜索与列表翻页已注册主循环，支持会话 LRU、结果集引用与折叠；网页打开工具已接入，支持按关注重点精炼、缓存及分页。
 
-- [按问题检索合同](contract-question-search.md)：根据合同能够回答的问题召回，支持已有结果集限定范围，已接入主循环。
+- [按问题检索合同](contract-question-search.md)：合同候选子 Agent 内部的问题向量召回，主模型通过 search_contracts 使用。
 
 - [合同图像相似检索](contract-image-search.md)：全文件图像融合检索、结果集引用与分页查看，已接入主循环。
 
 
 - [外部专家求助工具](external-expert.md)：文字参数、专家职责、DeepSeek 联网与多轮会话池；已注册主循环，包含隔离、错误反馈与资源释放。
 
-- [记忆检索子图](memory-retrieval.md)：检索契约、规划/召回/融合占位和统一失败返回，尚未注册工具。
+- [记忆检索子图](memory-retrieval.md)：条件规划、BM25/向量召回、RRF 融合与分页查看，已注册主循环。
+
+- [网页图片阅读](web-images.md)：候选图片提取、模型看图选图、主模型原生展示与任务结束释放。
+
+- [Exploration 与 A2A 划分](agent-modes.md)：现有 SSE 探索交互与跨平台任务交付共用 Core，A2A 已接入子平台任务运行时。
+- [A2A 子平台任务运行时](a2a-runtime.md)：首次受理、内存上下文、文件过滤与中间件交付。
 
 - [主助手生成循环](agent-runtime.md)：完整请求计数、工具串行执行、工作区即时提交及摘要插入/备份。
 
@@ -39,7 +44,7 @@
 - [工作区管理工具](workspace-tools.md)：替换、新增和删除的路径、参数及提交边界。
 
 - [Agent Core 主助手设计](agent-core.md)：六部分上下文、角色定位、系统交互与工作区定义提示词初稿，执行循环已实现。
-- [轮次有序轨迹设计](turn-trace.md)：内存轮次记录、方法与阶段说明交错顺序、压缩和上下文边界，尚未实现。
+- [轮次有序轨迹设计](turn-trace.md)：已接入的内存轮次记录、交错方法与阶段说明、压缩和上下文边界。
 - [业务门禁子图](business-gate.md)：文件硬性条件、四维相关性判断与加权阈值聚合。
 - [统一拒绝与响应](business-gate.md#统一拒绝与响应)：所有门禁未放行出口统一为 rejected，基于业务日志生成友好回复，失败时兜底。
 - [文字业务相关性判定规范](text-business-relevance.md)：业务范围、文字证据边界、约束解码、纠错和私有审计，已接入模型节点。
@@ -50,11 +55,21 @@
 - [多轮对话 API](../../../api/communication.md)：创建、替换、激活、事件、快照和主动取消的契约。
 - [事件运行时](../../system/communication-events.md)：内部事件发布、单消息约束、缓存与生命周期。
 
+- [用户备注混合检索](contract-note-search.md)：BM25 与向量召回、合同归并及命中备注分页。
+
+- [合同摘要混合检索](contract-summary-search.md)：候选子 Agent 内部的向量＋BM25 召回、范围限制与排名融合。
+
+- [合同名称检索](contract-name-search.md)：候选子 Agent 内部按拟写名称执行 BM25 检索，复用范围与候选池。
+
+- [合同关系检索](contract-relation-search.md)：可选起点筛选、关系描述 BM25＋向量、边结果集及两端合同分页。
+
+- [合同候选查询子图](contract-retrieval.md)：五种文本查询及动态 Core/类型筛选已移入内部工具；主模型使用 `search_contracts` 获取最终结果集引用，再用 `view_contract_candidates` 分页查看，内部只回显池引用与数量。图片和关系工具保持独立。
+
 ---
 
 ## 用途与组织
 
-本包为面向用户的合同工作助手预留独立入口，与已有合同文档识别、PDF 查重和合同信息抽取工作流并列，不替代或改变现有提取与入库流程。
+本包提供合同工作助手的正式执行入口，与已有合同文档识别、PDF 查重和合同信息抽取工作流并列，不替代或改变现有提取与入库流程。
 
 ```text
 app/agent/contract_communication/
@@ -69,7 +84,19 @@ app/agent/contract_communication/
         __init__.py
         state.py
         node.py
-  agent_core/
+  exploration/                 # 用户 SSE、输出工具与沟通提醒
+    factory.py
+    output_stream.py
+    progress_reminder.py
+    prompt/
+    tool/
+  a2a/                         # 内部单任务输入输出与独立内存宿主
+    factory.py
+    model.py
+    task.py
+    prompt/
+    tool/
+  agent_core/                  # 模式无关执行循环与宿主契约
     __init__.py
     subgraph/
       __init__.py
@@ -90,14 +117,16 @@ app/agent/contract_communication/
       workspace.py
 ```
 
-两个子包的职责及当前状态如下：
+主要子包的职责及当前状态如下：
 
-| 子包 | 预定职责 |
+| 子包 | 当前职责 |
 | --- | --- |
 | `business_gate` | 可读性之后并发生成文件名称与摘要；四个相关性维度、服务端历史选择和加权阈值聚合已实现。 |
-| `agent_core` | 已提供角色定位、可注入工具模板的交互提示词和统一系统反馈构造方法；上下文组装、生成循环与 FIFO/工作区工具调度已实现；外部查询、规划和记忆检索工具尚未接入。 |
+| `agent_core` | 共享模型循环、上下文预算、工作区与摘要管理、工具校验及宿主提交。 |
+| `exploration` | 承接现有 Communication 用户 SSE、输出工具、沟通提醒及历史适配。 |
+| `a2a` | 提供任务执行、首次受理、内存响应链及文件过滤；中间件传输由独立 worker 承接，不做持久化。 |
 
-后续能力通过确定性程序工具或处理专一任务的子智能体接入；本次不预设工具协议或子智能体实现。门禁的状态、节点、调用方式和未实现边界见[业务门禁子图](business-gate.md)。
+后续能力通过确定性程序工具或处理专一任务的子智能体接入；当前工具协议与宿主执行契约由统一注册表管理。门禁的状态、节点、调用方式和未实现边界见[业务门禁子图](business-gate.md)。
 
 文件与文字联合判断已接入[全部有序摘要的整体判断](file-text-relevance.md)，一次处理完整文字与文件摘要，支持明确的当前或历史文件指代。
 
@@ -105,9 +134,9 @@ app/agent/contract_communication/
 
 ## 接口与依赖边界
 
-大容量页面的可配置轮数的展示与自动折叠已接入主循环（需页面解析器）；会话资源生命周期管理尚未实现，见[页面内容折叠与资源建模](page-content-management.md)。
+大容量页面的可配置轮数的展示与自动折叠已接入主循环（需页面解析器）；会话资源的持有、驱逐和释放已接入，见[页面内容折叠与资源建模](page-content-management.md)。
 
-- `business_gate` 导出 `build_business_gate_subgraph()` 和 `BusinessGateSubgraphState`；父包和 `agent_core` 尚无执行入口。HTTP 创建仅暂存，正式 `CommunicationWorkflowService` 在首次 SSE 订阅后调用门禁，取消/替代时停止旧生产者。
+- `business_gate` 导出 `build_business_gate_subgraph()` 和 `BusinessGateSubgraphState`；正式会话通过 `exploration.run_exploration` 调用通用 Core，A2A 另提供独立内部任务入口。HTTP 创建仅暂存，正式 `CommunicationWorkflowService` 在首次 SSE 订阅后调用门禁，取消/替代时停止旧生产者。
 - 门禁子图复用项目已有的 LangGraph、Pydantic、PyMuPDF 和 MLLM 客户端；视觉判断、摘要及三个已实现的相关性分支发起模型请求，不创建持久化资源，不新增环境变量或依赖。
 - 后续实现遵循 [Agent 工作流包](../../../capability/application/agent-workflow.md)的分层边界；业务门禁不替代 API 和服务层已有的认证、权限校验。
 - 后续新增模型提示词或多轮节点时，分别遵循[提示词工程规范](../../../standard/prompt-engineering.md)和[多轮 Agent 上下文与记忆管理规范](../../../standard/agent-context-management.md)。
@@ -125,14 +154,4 @@ python -B -c 'import app.agent.contract_communication; import app.agent.contract
 导入检查仅验证包结构，不代表门禁、记忆、规划或合同查询能力已经可用；子图调用验证见[业务门禁子图](business-gate.md)。
 
 
-原生思考独立保留、绝对位置回注与落盘恢复见[原生思考 FIFO 窗口](reasoning-window.md)。
-
-- [用户备注混合检索](contract-note-search.md)：BM25 与向量召回、合同归并及命中备注分页。
-
-- [合同摘要混合检索](contract-summary-search.md)：向量＋BM25、RRF 排名、范围限制与共享分页，已接入主循环。
-
-- [合同名称检索](contract-name-search.md)：以“xxx合同”式名称进行 BM25 检索，复用范围与分页，已注册进入主循环。
-
-- [合同关系检索](contract-relation-search.md)：可选起点筛选、关系描述 BM25＋向量、边结果集及两端合同分页。
-
-- [合同候选查询子图](contract-retrieval.md)：四种文本查询已移入内部工具；主模型使用 `search_contracts` 获取最终结果集引用，再用 `view_contract_candidates` 分页查看，内部只回显池引用与数量。图片和关系工具保持独立。
+原生思考完整保留、随消息备份及旧表迁移见[原生思考随消息保留](reasoning-window.md)。

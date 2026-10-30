@@ -129,7 +129,7 @@ def render_task_input(task: TaskRenderInput | dict) -> str:
     return '\n'.join(_input_lines(value))
 
 
-def render_task_section(task: TaskRenderInput | dict, *, reasoning_by_call=None, final_call_id=None) -> str:
+def render_task_section(task: TaskRenderInput | dict) -> str:
     """保留顺序和正文；当前任务不渲染最终输出标题、占位或结束分隔线。
 
     轨迹来源和终态由调用方确认。此函数不负责协议恢复清理、持久化、
@@ -142,17 +142,7 @@ def render_task_section(task: TaskRenderInput | dict, *, reasoning_by_call=None,
     lines += ['', '────────────────────────────────────────', '## 执行轨迹']
     labels = {'tool_call': '工具调用', 'tool_result': '工具反馈', 'intermediate': '中途输出',
               'system_guidence': '系统提示', 'assistant': '助手说明'}
-    reasoning_by_call = reasoning_by_call or {}
-    def thought_lines(call_id):
-        item = reasoning_by_call.get(call_id)
-        if item is None:
-            return []
-        text = '\n\n'.join(item.fields.values())
-        return ['', f'### 保留思考 · 位置 {item.position}', '',
-                '以下为当时的分析过程，不等于已核实事实。', _block(text)]
     for index, entry in enumerate(value.execution_trace, 1):
-        if entry.kind == 'tool_call':
-            lines += thought_lines(entry.call_id)
         lines += ['', f'### 步骤 {index} · {labels[entry.kind]}', '']
         if entry.call_id is not None:
             metadata = {'调用标识': entry.call_id}
@@ -161,7 +151,6 @@ def render_task_section(task: TaskRenderInput | dict, *, reasoning_by_call=None,
             lines += [_metadata(metadata), '']
         lines.append(_block(entry.content))
     if value.final_output is not None:
-        lines += thought_lines(final_call_id)
         endings = {'completed': '最终反馈', 'interrupted': '用户终止',
                    'superseded': '用户调整方向', 'failed': '执行失败'}
         lines += ['', '────────────────────────────────────────', '## 最终输出', '',

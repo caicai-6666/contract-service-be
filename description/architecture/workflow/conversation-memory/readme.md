@@ -93,7 +93,9 @@ task = ConversationHistoryRecord(
 
 新结果已通过CommunicationArchiveService及ConversationHistoryService.commit_archive接入[SQLite三入口存储契约](../../data/communication-sqlite.md)。Service在外层筛选终态任务、并发执行本图，完整校验原任务及投影关联后按原顺序整批提交。正式后台扫描及安全驱逐已恢复，具体筛选、分批、重试和生命周期见[归档与驱逐](../../system/communication-archive.md)。
 
-旧批量筛选、综合摘要节点、工具调用提示词、DTO及兼容入口已移除。历史实验原始输出保留；当前代码不再支持运行旧筛选实验。已有[三入口融合实验](../../../../experiment/memory-three-view-retrieval/README.md)和[真实归档链路实验](../../../../experiment/memory-persistence-live/README.md)继续使用当前实现。
+> **本地验证记录：** 本文列出的 `experiment/`、`tests/` 或 `output/` 路径未随源码分发，仅保留历史追溯信息；本次文档核对未重新执行这些实验或核验缺失产物。
+
+旧批量筛选、综合摘要节点、工具调用提示词、DTO及兼容入口已移除。历史实验原始输出保留；当前代码不再支持运行旧筛选实验。已有三入口融合实验（本地路径：`experiment/memory-three-view-retrieval/README.md`）和真实归档链路实验（本地路径：`experiment/memory-persistence-live/README.md`）继续使用当前实现。
 
 ---
 

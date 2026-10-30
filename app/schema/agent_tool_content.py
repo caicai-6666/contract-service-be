@@ -30,3 +30,7 @@ class FoldableToolContent(WorkspaceObject):
 
 ToolContent = Annotated[OrdinaryToolContent | FoldableToolContent, Field(discriminator='type')]
 ToolContentType = Literal['ordinary', 'foldable']
+
+
+class ToolPageUnavailable(ValueError):
+    """仅表示已签发资源被释放；展示层可提示重读，不能伪造图片。"""

@@ -112,4 +112,6 @@ content_sha256: "..."
 - 每张选中图片前具有对应物理页码标签，定位工具页码不能越出该集合。
 - 只有完成全部锚点并成功 `finish` 的定位框进入权威 `unit_locations`。
 
-当前完整流程的真实数据验证入口见[合同提取质量与推理指标实验](../../../../experiment/contract-extraction-quality/README.md)。
+> **本地验证记录：** 本文列出的 `experiment/`、`tests/` 或 `output/` 路径未随源码分发，仅保留历史追溯信息；本次文档核对未重新执行这些实验或核验缺失产物。
+
+当前完整流程的真实数据验证入口见合同提取质量与推理指标实验（本地路径：`experiment/contract-extraction-quality/README.md`）。

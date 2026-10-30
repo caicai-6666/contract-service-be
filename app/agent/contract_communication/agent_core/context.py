@@ -5,7 +5,6 @@ import json
 
 from app.schema.communication import ConversationHistoryRecord
 from app.schema.communication_workspace import WorkspaceSnapshot
-from app.schema.reasoning_window import ReasoningWindow
 from .context_rendering import render_summary_section, render_workspace_section, render_task_input, TaskRenderInput
 from .subgraph.fifo_management.fifo_summary.schema import FIFOTopicSummary
 from .native_messages import validate_native_messages, native_trace_entries, close_native_messages
@@ -82,10 +81,9 @@ def _trace_and_final(record):
 
 def assemble_agent_core_context(*, workspace: WorkspaceSnapshot, summary: dict | None,
                                 records: tuple[ConversationHistoryRecord, ...], current_turn_id: str,
-                                reasoning_window: ReasoningWindow | None = None) -> AgentCoreContext:
+                                include_reasoning: bool = True) -> AgentCoreContext:
     """历史层已选取最新摘要之后的任务；当前任务必须位于末尾且仍在处理。"""
     workspace = WorkspaceSnapshot.model_validate(workspace).model_copy(deep=True)
-    reasoning_window = ReasoningWindow.model_validate(reasoning_window) if reasoning_window is not None else ReasoningWindow()
     if not records or records[-1].turn_id != current_turn_id or records[-1].status != 'processing':
         raise ValueError('当前用户请求必须是上下文末尾的处理任务')
     sequences = [record.sequence for record in records]
@@ -129,7 +127,11 @@ def assemble_agent_core_context(*, workspace: WorkspaceSnapshot, summary: dict |
             # 历史与当前任务使用同一原生契约；历史清除程序提示，但保留真实调用和回执。
             validate = validate_native_messages if active else close_native_messages
             native = validate(record.payload['agent_messages'])
-            task_messages.extend(reasoning_window.inject(native, task_id=task.task_id))
+            if not include_reasoning:
+                for message in native:
+                    message.pop('reasoning', None)
+                    message.pop('reasoning_content', None)
+            task_messages.extend(native)
             # 兼容已有工具轨迹、但通过服务接口直接结束的旧任务，保留其真实最终正文。
             if (not active and task.final_output.content is not None and not any(
                     call['function']['name'] == 'finish_task'

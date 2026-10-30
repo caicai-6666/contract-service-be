@@ -2,11 +2,11 @@
 
 ## 用途与实现边界
 
-数据库默认位于 `data/communication/communication.db`，包含会话、任务/摘要记录、工作区、任务检索投影及独立思考窗口五张表。应用启动时幂等初始化，并通过 `application.state.communication_store` 暴露 `SQLiteCommunicationStore`。
+数据库默认位于 `data/communication/communication.db`，包含会话、任务/摘要记录、工作区及任务检索投影四张表。应用启动时幂等初始化，并通过 `application.state.communication_store` 暴露 `SQLiteCommunicationStore`。
 
 已实现建表、会话及空工作区的原子创建、终态任务追加、累计摘要追加、最近摘要边界读取、工作区版本更新和会话所有权校验；存储层已支持三入口检索投影、加工标记与工作区原子提交；自动加工与调度已接入新契约。历史不依赖 SSE 缓存过期；数据库重开后记录仍在。
 
-> **接入边界：** 会话创建、历史加载和事件运行时已接通统一驻留轨迹；任务终态后台复制至 SQLite，附件注册时仅暂存内存，明确准入后随终态备份保存至 upload。见[历史驻留与备份](../system/communication-history.md)。已支持本人已驻留任务的准入附件读取；主助手生成循环、结构化摘要及上下文装配已接入；进程重启后自动续跑活动任务与向量检索仍未实现。
+> **接入边界：** 会话创建、历史加载和事件运行时已接通统一驻留轨迹；任务终态后台复制至 SQLite，附件注册时仅暂存内存，明确准入后随终态备份保存至 upload。见[历史驻留与备份](../system/communication-history.md)。已支持本人已驻留任务的准入附件读取；主助手生成循环、结构化摘要及上下文装配已接入；三入口混合记忆检索已接入；进程重启后自动续跑活动任务仍未实现。
 
 ---
 
@@ -101,15 +101,32 @@
 | 字段 | 含义 |
 | --- | --- |
 | `conversation_id` | 同时为主键和会话外键，保证一个会话一个工作区。 |
-| `payload` | `achieved_goals`、`known_information`、`next_tasks` 三个字符串列表。 |
+| `payload` | `task_constraints`、`known_information`、`explored_directions`、`remaining_directions` 四区域工作区。 |
 | `revision` | 从 0 开始的内容版本，每次接受工作区更新加 1；批量备份可跨多个内存版本，重复备份不递增。 |
 | `updated_at` | 工作区内容最近被接受的时间，UTC Unix 毫秒；备份保留原值，不改成落库时间。 |
 
-创建会话时原子创建三个空列表。更新必须携带读取时的 `expected_revision`，过期版本抛出 `CommunicationStoreConflict`，避免并发覆盖新信息。只做结构校验，证据、权限和业务有效性必须由调用层完成。
+创建会话时原子创建空工作区：任务为 null、补充和其余三个区域为空对象。更新必须携带读取时的 `expected_revision`，过期版本抛出 `CommunicationStoreConflict`，避免并发覆盖新信息。结构、引用及状态校验不能替代证据与业务真实性核验。
 
-驻留会话通过 `ConversationHistoryService.update_workspace` 提交内存更新，不直接调用存储层的 `update_workspace`。每批轨迹备份同步保存所捕获的工作区版本，通过上次已持久化版本校验防止覆盖外部更新；一致快照可幂等确认。工作区初始化、驻留和同步落库已实现，模型自动整理尚未实现。
+驻留会话通过 `ConversationHistoryService.update_workspace` 提交内存更新，不直接调用存储层的 `update_workspace`。每批轨迹备份同步保存所捕获的工作区版本，通过上次已持久化版本校验防止覆盖外部更新；一致快照可幂等确认。工作区初始化、驻留和同步落库已实现，模型工作区工具及容量触发的自动压缩已接入主循环，详见[工作区管理](../workflow/contract-communication/workspace-management.md)。
 
-工作区保存达成的目标、已知事实和后续任务，不是对话原文、模型草稿或私有审计。写入前应遵循[上下文与记忆规范](../../standard/agent-context-management.md)，错误调用和半成品不能成为权威事实。本次没有新增模型节点或修改纠错循环。
+工作区保存用户任务、可复用信息、已尝试方向及剩余规划，不保存对话原文、模型草稿或私有审计。写入前应遵循[上下文与记忆规范](../../standard/agent-context-management.md)，错误调用和半成品不能成为权威事实。
+
+### 工作区 KV 内容
+
+权威 Schema 位于 [communication_workspace.py](../../../app/schema/communication_workspace.py)，所有区域及对象拒绝额外字段。
+
+| 区域 | 内容与约束 |
+| --- | --- |
+| `task_constraints` | `task` 为非空任务文本或 null；`supplements` 按稳定键保存用户补充，不得使用保留键 task。 |
+| `known_information` | 按信息 ID 保存 content、source、status；status 为 confirmed、user_reported、unverified 或 conflicted。confirmed 必须有非空 source。 |
+| `explored_directions` | 按方向 ID 保存 plan、outcome、conclusion、information_ids；outcome 为 succeeded、failed 或 inconclusive，引用必须唯一且指向已有信息。 |
+| `remaining_directions` | 按方向 ID 保存尚需尝试的 plan；同一方向 ID 不能同时存在于剩余和已探索区域。 |
+
+稳定键只使用小写字母、数字和下划线，且以字母开头。模型工具新增普通条目时由程序生成键；方向收束保留原 ID，在同一次提交中从剩余区移入已探索区。内容校验与路径操作见[工作区管理工具](../workflow/contract-communication/workspace-tools.md)。
+
+### 旧工作区读取兼容
+
+`read_workspace_payload` 仅在存储读取边界兼容旧三列表和第一版 goals/constraints/information/tasks KV；读取不改写磁盘内容或 revision。旧目标转为待核验信息，不猜测用户原始任务；旧约束保留为补充，已完成但缺少结论的旧任务记为 inconclusive，已取消任务不恢复成剩余方向。后续经正常版本提交时保存当前四区域结构，不伪造缺失结论。
 
 ---
 
@@ -190,7 +207,7 @@
 - delta 只更新内存累积正文及内部 trace，不逐条进入展示事件。消息正常结束保存 `message.completed(status=completed)`；中断时保存完整累积正文的 `message.completed(status=interrupted)`，随后保存任务终态。
 - 中断收束和终态在共享锁下整批验证、原子更新，不从有界 SSE 缓存事后重建；终态随整个 payload 与工作区一并备份。
 - 内部 `trace` 引用仍为 `type/location`；新 `events.data.references` 原样保留 SSE 的 `document_id/page_number`，不通过旧 trace 反推，避免丢失页码。
-- 只扩展 JSON payload，不新增数据库列或表。旧数据不回填虚构事件；返回用户时按 [用户展示 Payload](../../api/communication.md#用户展示-payload) 执行兼容投影。模型提示词仍只渲染 input/trace，不渲染 events。
+- 只扩展 JSON payload，不新增数据库列或表。旧数据不回填虚构事件；返回用户时按 [用户展示 Payload](../../api/communication.md#用户展示-payload) 执行兼容投影。模型优先使用 input 与 agent_messages 中的真实已接受原生交互；旧记录缺少原生消息时按已有 trace 兼容渲染，不渲染 events。
 
 ### 结果引用
 
@@ -218,7 +235,7 @@
 
 会话上传文件的 `location` 使用 `/{file_id}.pdf`，相对于 `data/communication/upload/`；已入库合同使用其现有文件保存地址。`contract` 类型同时涵盖两者，不额外增加展示类型。resource 层后续须明确区分存储位置，限定允许访问的根目录并校验归属或权限，不能将传入地址直接作为任意磁盘路径读取。引用必须来自实际读取或检索到的来源，不得虚构。
 
-以上是历史 payload 的已确认设计。当前 SSE、展示快照的引用仍采用既有 `document_id/page_number` 契约；本次不改动它们，也不表示 upload 文件读取已接入 resource。接口字段调整与文件地址解析规则后续单独实现并同步 API 文档。
+以上是内部 trace 的引用设计。当前 SSE、展示快照仍采用 `document_id/page_number` 契约；upload 附件读取已接入独立资源接口，按会话、已驻留任务和准入状态授权，不直接将 trace.location 作为任意磁盘路径读取。精确地址见[会话附件读取](../../api/resource.md#读取已驻留会话任务的-pdf-附件)。
 
 ### 文件引用
 
@@ -234,7 +251,7 @@
 
 摘要写入与附件准入相互独立：后续相关性拒绝时可以保留已生成的描述供用户历史展示，但附件仍不可用、不落盘；拒绝轮次仍不应进入第二层上下文。门禁返回前取消、摘要失败或未执行时保留 null，不写入部分批次或迟到结果。终态冻结后禁止更新。原有终态备份、归档和历史读取会原样保留两个字段，无需新增 SQLite 列或迁移；旧记录缺字段时保持缺省，不伪造摘要。
 
-模型历史候选可读取上述字段，但第二层提示词组装仍未实现，本次也不改变记忆加工节点的提示词渲染策略。
+模型历史候选可读取上述字段，第二层已通过上下文装配使用附件摘要和页数；记忆加工仍按独立三入口投影渲染，不复用整份 Core 消息。
 
 路径以 `data/communication/upload/` 为逻辑根，不是操作系统绝对路径，也不包含会话子目录。旧记录没有 admission 时保留原契约，不推断旧门禁结论、不迁移或删除其文件。该字段位于 JSON payload，不新增数据库列。
 
@@ -242,16 +259,24 @@
 
 ### 摘要对象
 
-`kind=summary` 时使用以下独立结构：
+正式 Agent Core 的 `kind=summary` 使用 `fifo-topic-summary-v2` 结构，由 `FIFOTopicSummary` 校验：
 
 ```json
 {
-  "text": "已分析付款比例，下一步关注验收条件。",
-  "covers_through_sequence": 12
+  "version": "fifo-topic-summary-v2",
+  "latest_coverage": {
+    "start_task_id": "task-1",
+    "end_task_id": "task-2",
+    "task_ids": ["task-1", "task-2"],
+    "tokens": 120
+  },
+  "topics": []
 }
 ```
 
-摘要对象只包含 `text` 和 `covers_through_sequence`，不设置版本号。`text` 为非空累计摘要，覆盖序号指向会话记录表的 `sequence`，不是任务内部 `trace.sequence`。
+`latest_coverage` 由程序填写本次压缩的完整任务范围；topics 按规划顺序保存成功主题及 current_memory、open_items 两区域，允许无有用主题时为空。最终结构及旧五区域输入兼容见[FIFO 工作记忆摘要](../workflow/contract-communication/fifo-summary.md)。
+
+旧独立 `append_summary` 接口仍支持 `{text, covers_through_sequence}` 纯文本累计摘要，不作为正式 Core 的主题摘要输入，也不自动编造为新主题格式。
 
 ### 与其他状态的分工
 
@@ -265,11 +290,11 @@
 
 例如顺序为 `任务 1 → 任务 2 → 摘要 3 → 任务 4 → 任务 5`，恢复读取返回 `摘要 3、任务 4、任务 5`，包含摘要，按正序返回，不删除更早历史。
 
-摘要的 `payload` 包含 `text` 和 `covers_through_sequence`。摘要必须是累计摘要：既覆盖此前摘要所代表的历史，也覆盖它之后到声明边界的全部任务。存储层校验摘要非空、覆盖边界等于当前尾部，但无法验证文字是否真的完整覆盖语义。
+正式主题摘要结合旧累计摘要和本次完整任务前缀生成，用版本与 latest_coverage 表达结构和范围；程序校验不能证明语义无损。旧纯文本摘要接口单独校验 text 非空及 covers_through_sequence 等于当前尾部，不与主题摘要混用。
 
 `append_summary(..., expected_sequence=...)` 在同一写事务中比较尾部并插入；生成摘要期间如果出现新记录，拒绝旧摘要，调用方必须重新读取并生成，防止摘要位置跳过未覆盖任务。
 
-`read_context_records` 使用索引定位最新摘要并只读取该摘要及其后记录；没有摘要时读取全部现有记录。它返回候选历史，不直接送入模型：后续仍需执行取消/替换过滤、token 预算和权限校验。频繁摘要或极长单轮的预算策略尚未实现，不承诺任意历史长度都能放进上下文。
+`read_context_records` 使用索引定位最新摘要并只读取该摘要及其后记录；没有摘要时读取全部现有记录。它返回候选历史，不直接送入模型。正式 Agent Core 已接入任务状态过滤、工作区装配、FIFO 摘要压缩及完整请求 token 校验；预算耗尽时有限终止，不承诺任意历史长度或极长单轮都能继续执行。详见[主助手生成循环](../workflow/contract-communication/agent-runtime.md)。
 
 ---
 
@@ -279,13 +304,12 @@
 
 ```python
 from pathlib import Path
-from pydantic import str
 from app.infrastructure.communication_store import SQLiteCommunicationStore
 
 store = SQLiteCommunicationStore(Path("data/communication/communication.db"))
 store.initialize()
 # 实际调用应从认证依赖取得 userid，不使用用户或平台 token。
-owner = str("example-only")
+owner = "example-only"
 store.create_conversation("example-conversation", owner_userid=owner)
 store.append_task(
     "example-conversation", owner_userid=owner, turn_id="example-turn",
@@ -293,7 +317,7 @@ store.append_task(
 )
 ```
 
-接口为同步存储方法，未来从异步请求调用时应在线程中执行，避免阻塞事件循环。没有自动清理、用户管理、私有审计表或生产数据迁移；后续表结构变更应增加明确迁移，不依赖 `CREATE TABLE IF NOT EXISTS` 修改已有列。
+接口为同步存储方法，正式异步服务已在线程中调用，避免阻塞事件循环。存储层不管理登录用户或私有审计表；旧检索列、工作区读取兼容和原生思考表各有明确迁移边界，不依赖 `CREATE TABLE IF NOT EXISTS` 修改已有列。
 
 本地 `tests/test_communication_store.py` 覆盖四表重开、用户隔离、最近摘要边界、过期摘要拒绝、工作区版本竞争、并发序号、非法内容回滚、外键和级联。测试文件沿用项目不追踪约定。
 
@@ -320,12 +344,9 @@ store.append_task(
 
 ---
 
-## 原生思考窗口存储
+## 原生思考存储
 
-新增 conversation_reasoning_windows 表，conversation_id 为主键并引用 conversations，删除会话时级联清理；payload 保存完整窗口 JSON（版本、下一个绝对位置及有限思考条目）。启动期幂等建表，旧会话没有记录时按空窗口处理。写入校验所有权和期望位置，独立于任务/工作区批量备份；窗口数据不进入公开历史投影。范围与重启限制见[原生思考 FIFO 窗口](../workflow/contract-communication/reasoning-window.md)。
-
-
----
+原生 `reasoning` / `reasoning_content` 随已接受的 assistant 消息保存于 `conversation_records.payload.agent_messages`，不再单独建表。终态任务备份和恢复包含完整思考，公开历史投影仍不披露这些字段。启动时将旧 `conversation_reasoning_windows` 中可定位的条目迁入原消息后删表，迁移与删表同事务，失败回滚。详见[原生思考随消息保留](../workflow/contract-communication/reasoning-window.md)。
 
 ## 任务输入中的合同引用快照
 

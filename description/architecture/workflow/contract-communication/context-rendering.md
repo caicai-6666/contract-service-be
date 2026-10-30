@@ -102,7 +102,7 @@ YAML 使用局部 SafeDumper：支持中文，多行文本优先使用块样式�
 
 ## 单个任务
 
-实现位于 `context_rendering/task.py`，版本为 `agent-core-task-render-v2`。入口 `render_task_section(task)` 接受 `TaskRenderInput` 或相应字典；完整任务展示用于已结束任务。`render_task_input(task)` 只展示当前任务身份和用户输入，执行轨迹由独立原生消息携带。它使用明确的三分区输入，不从 FIFO 消息正文、工具名称或用户可见文本猜测任务终态。
+实现位于 `context_rendering/task.py`，版本为 `agent-core-task-render-v5`。入口 `render_task_section(task)` 接受 `TaskRenderInput` 或相应字典；完整任务展示用于已结束任务。`render_task_input(task)` 只展示当前任务身份和用户输入，执行轨迹由独立原生消息携带。它使用明确的三分区输入，不从 FIFO 消息正文、工具名称或用户可见文本猜测任务终态。
 
 ```python
 from app.agent.contract_communication.agent_core.context_rendering import render_task_section
@@ -158,7 +158,7 @@ text = render_task_section({
 
 `visible_pages` 由展示管理层提供，以 display_id 映射已解析的实际内容；只为本次真正展示的页面生成提醒。ordinary、没有可见页面时返回空列表，不对普通反馈、隐藏占位或无内容的资源引用发出虚假提醒。未知展示标识、空内容或与声明不符的内容块直接拒绝，不修改原工具结果。工具成功状态与原生调用配对仍由原有层负责。
 
-**接入边界：** 主循环已通过 PageDisplayWindow 接入页面解析、可配置轮数的展示和自动折叠；注入异步 page_resolver 后启用 foldable。提醒与完整内容在请求计数前注入，模型完整返回后减少一次，次数耗尽后仅保留来源占位。没有解析器时仍拒绝此类工具。资源建模和分页接口尚未实现，详见[页面管理](page-content-management.md#已实现接口与容量边界)。
+**接入边界：** 主循环已通过 PageDisplayWindow 接入页面解析、可配置轮数的展示和自动折叠；注入异步 page_resolver 后启用 foldable。提醒与完整内容在请求计数前注入，模型完整返回后减少一次，次数耗尽后仅保留来源占位。没有解析器时仍拒绝此类工具。文件与文本分页资源接口及生命周期管理已实现；通用临时表格查询仍未实现，详见[页面管理](page-content-management.md#已实现接口与容量边界)。
 
 `tests/test_page_display_rendering.py` 验证文本与图片前的统一提醒、只展示部分页面、无页面不提醒、严格输入、顺序、稳定渲染及原结果不变；窗口与主循环联调另由 test_page_display_window.py 和 test_agent_core_runtime.py 覆盖。
 

@@ -10,7 +10,6 @@ from .contract_image_search import ContractSearchResults
 from ..subgraph.contract_retrieval.tool.contract_question_search import failure
 from .file_viewer import FileViewError
 from .registry import RegisteredTool
-from .progress import ToolProgress
 from ..subgraph.fifo_management.schema import FIFOExecutionResult
 
 logger=logging.getLogger(__name__)
@@ -97,6 +96,6 @@ def build_contract_relation_search_registrations(pool,settings):
             return failure('search_failed','关系检索失败，请确认合同可用或指定合同缩小范围后重试；不能据此判断没有关系。')
     async def view(operation,args):return await pool.view(args.result_id,args.page)
     return (
-        RegisteredTool('search_contract_relations',SearchContractRelationsArguments.__doc__,SearchContractRelationsArguments,search,progress=ToolProgress('local-search','正在查阅合同关系')),
+        RegisteredTool('search_contract_relations',SearchContractRelationsArguments.__doc__,SearchContractRelationsArguments,search),
         RegisteredTool('view_contract_relation_search_results',ViewContractRelationSearchResultsArguments.__doc__,ViewContractRelationSearchResultsArguments,view,return_types=('ordinary','foldable')),
     )

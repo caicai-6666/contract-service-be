@@ -11,17 +11,17 @@ from time import perf_counter
 from pydantic import ValidationError
 from app.core.config import get_settings
 from app.infrastructure.mllm import MLLMClient
-from app.schema.communication_workspace import WorkspaceSnapshot
+from app.schema.communication_workspace import WorkspaceSnapshot, WorkspacePayload
 from app.agent.contract_extraction.tool_protocol import ToolProtocolRecovery, audited_assistant_content
 from app.agent.contract_communication.agent_core.prompt.guidance import build_system_guidence_message
 from app.agent.contract_communication.agent_core.tool.workspace import prepare_workspace_edit
 from ..token_count import count_workspace_tokens, render_workspace, WORKSPACE_RENDER_VERSION
 from .prompt import WORKSPACE_COMPRESSION_PROMPT_VERSION, build_workspace_compression_prompt, build_workspace_compression_task_prompt
-from .feedback import build_compression_capacity_feedback
+from app.infrastructure.model_feedback import ModelFeedbackError, schema_validation_feedback
 from .tool import FinishCompressionArguments, build_compression_tools
 
 
-class CompressionLoopError(RuntimeError):
+class CompressionLoopError(ModelFeedbackError):
     """压缩未完成，禁止发布循环中的候选副本。"""
 
 
@@ -56,9 +56,17 @@ async def run_compression_tool_loop(request, *, client=None, settings=None, coun
         result = counter(value.model_copy(deep=True)) if counter else count_workspace_tokens(value, settings=settings)
         result = await result if isawaitable(result) else result
         if type(result) is not int or result < 0:
-            raise CompressionLoopError('工作区计数无效')
+            raise CompressionLoopError('工作区计数不可用。','停止整理并等待计数服务恢复，不通过猜测容量继续修改。')
         return result
 
+    def capacity_feedback(current):
+        usage = f'当前使用量：{current}/{request.token_budget} token（{current / request.token_budget:.1%}）。'
+        # 提示与实际finish校验同用target_tokens，不从独立文案模块复制业务阈值。
+        if current > request.target_tokens:
+            return usage + f'尚未达到压缩目标，请整理至最多{request.target_tokens} token（严格低于70%），暂不能完成。'
+        return usage + '容量已经安全，核对事实、来源与保护项后优先调用finish_compression；不为更低使用率过度整理。'
+
+    pending_feedback = []
     tokens = await count(workspace)
     audit.append({'event': 'start', 'prompt_version': WORKSPACE_COMPRESSION_PROMPT_VERSION,
                   'render_version': WORKSPACE_RENDER_VERSION, 'model': settings.model,
@@ -69,7 +77,7 @@ async def run_compression_tool_loop(request, *, client=None, settings=None, coun
         for round_number in range(1, max_rounds + 1):
             # 末尾只放一份最新工作区。纠错修改 history，不会移动固定工具锚点。
             messages = deepcopy(prefix + history + [{'role': 'user', 'content':
-                '# 最新工作区\n\n' + build_compression_capacity_feedback(tokens, request.token_budget) + '\n\n' + render_workspace(workspace)}])
+                '# 最新工作区\n\n' + capacity_feedback(tokens) + '\n\n' + render_workspace(workspace)}])
             started = perf_counter()
             try:
                 response = await client.create_tool_chat_completion(
@@ -82,6 +90,9 @@ async def run_compression_tool_loop(request, *, client=None, settings=None, coun
             except BaseException as exc:
                 audit.append({'event': 'request_failed', 'round': round_number, 'error_type': type(exc).__name__})
                 raise
+            for pending in pending_feedback:
+                pending['feedback_delivered'] = True
+            pending_feedback.clear()
             entry = {'event': 'tool_round', 'round': round_number, 'elapsed_ms': (perf_counter()-started)*1000,
                      'completion': asdict(response.completion), 'calls': [asdict(call) for call in response.tool_calls],
                      'assistant_content': audited_assistant_content(response.assistant_message.get('content')),
@@ -94,19 +105,18 @@ async def run_compression_tool_loop(request, *, client=None, settings=None, coun
                     tool_call_count=len(response.tool_calls), result_label='工作区压缩操作')
                 history[-1] = build_system_guidence_message(kind='output_error',
                     reason=f'本次响应解析到 {len(response.tool_calls)} 个工具调用，必须恰好一个；本次未执行操作。',
-                    required_action='只调用一个当前工具，不附加普通文本。' + tool_tag_section(template))
+                    required_action='只通过原生tool_calls提交一个当前工具。' + tool_tag_section(template))
                 feedback = history[-1]['content']
             else:
                 call = response.tool_calls[0]
                 try:
                     if (response.completion.finish_reason not in ('stop', 'tool_calls')
-                            or response.assistant_message.get('refusal')
-                            or (response.assistant_message.get('content') or '').strip()):
-                        raise ValueError('响应未完整结束或已拒绝')
+                            or response.assistant_message.get('refusal')):
+                        raise ModelFeedbackError('响应未完整结束或包含拒答标记。','提交完整原生工具调用，截断参数不能执行。')
                     if call.name == 'finish_compression':
                         completed = _parse_arguments(call.arguments, FinishCompressionArguments)
                         if tokens > request.target_tokens:
-                            raise ValueError('当前工作区尚未低于70%，不能完成压缩')
+                            raise ModelFeedbackError(capacity_feedback(tokens),'先精简未受保护的冗余内容，达到目标后再调用finish_compression。')
                         candidate = validate_compression_candidate(request, workspace)
                         next_tokens = tokens
                         success_feedback = f'压缩完成。当前使用量：{tokens}/{request.token_budget} token（{tokens / request.token_budget:.1%}）。'
@@ -115,18 +125,20 @@ async def run_compression_tool_loop(request, *, client=None, settings=None, coun
                         candidate = validate_compression_candidate(request, edit.payload)
                         # 压缩不能假装完成业务探索，也不能使用原操作预留的键。
                         if call.name == 'workspace_add' and edit.removed_path:
-                            raise ValueError('压缩不能执行探索收束')
+                            raise ModelFeedbackError('压缩不能执行探索收束。','保持规划/结果归属，不把剩余方向转入已探索区。')
                         if candidate == workspace:
-                            raise ValueError('操作没有实际改变工作区')
+                            raise ModelFeedbackError('操作未改变工作区，无法推进压缩。','选择实际冗余内容精简，不重复提交相同值。')
                         next_tokens = await count(candidate)
-                        success_feedback = '工作区修改成功。' + build_compression_capacity_feedback(next_tokens, request.token_budget)
+                        success_feedback = '工作区修改成功。' + capacity_feedback(next_tokens)
                 except (ValueError, TypeError, KeyError) as exc:
-                    location = '.'.join(map(str, exc.errors()[0]['loc'])) if isinstance(exc, ValidationError) and exc.errors() else '工具参数或操作目标'
-                    feedback = (f'当前使用量为{tokens}/{request.token_budget} token，尚未低于70%；请先整理至最多{request.target_tokens} token再调用 finish_compression。'
-                                if call.name == 'finish_compression' and tokens > request.target_tokens
-                                else f'{location}：本次操作未接受；请检查名称、参数类型、保护项及引用，提交合法且有效的整理操作。')
-                    message = build_system_guidence_message(kind='invalid_action', reason=feedback,
-                        required_action='依据最新工作区修正后只调用一个工具；失败修改未生效，不要重复同一非法操作。')
+                    if isinstance(exc, ModelFeedbackError):
+                        feedback = exc.public_text
+                    elif isinstance(exc, ValidationError):
+                        feedback = schema_validation_feedback(exc, FinishCompressionArguments if call.name=='finish_compression' else WorkspacePayload)
+                    else:
+                        feedback = 'arguments或目标路径无效：使用有效JSON对象和最新工作区内允许的路径。'
+                    message = build_system_guidence_message(kind='invalid_action', reason=feedback+' 压缩候选未提交。',
+                        required_action='按具体原因修正；本次失败修改未生效，不重复同一非法操作。')
                     recovery.record_tool_failure(history, assistant_message={'role': 'assistant', 'content': ''}, tool_message=message)
                 except BaseException as exc:
                     entry['error_type'] = type(exc).__name__
@@ -136,15 +148,18 @@ async def run_compression_tool_loop(request, *, client=None, settings=None, coun
                     workspace, tokens = candidate, next_tokens
                     consecutive_errors = 0
                     entry.update(accepted=True, feedback=success_feedback, tokens=tokens)
-                    history.extend([deepcopy(response.assistant_message), {'role': 'tool', 'tool_call_id': call.call_id, 'content': success_feedback}])
+                    accepted_message = deepcopy(response.assistant_message)
+                    accepted_message['content'] = None
+                    history.extend([accepted_message, {'role': 'tool', 'tool_call_id': call.call_id, 'content': success_feedback}])
                     if call.name == 'finish_compression':
                         audit.append({'event': 'complete', 'tokens': tokens, 'rounds': round_number, 'summary': completed.summary})
                         return workspace
                     continue
-            entry['feedback'] = feedback
+            entry.update(feedback=feedback, feedback_delivered=False)
+            pending_feedback.append(entry)
             consecutive_errors += 1
             if consecutive_errors >= max_consecutive_errors:
                 audit.append({'event': 'failed', 'reason': 'consecutive_errors'})
-                raise CompressionLoopError('自动压缩连续错误达到上限')
+                raise CompressionLoopError('自动压缩连续错误达到上限。最后反馈未发送给子模型。'+feedback, '依据最后安全诊断调整原操作或保留必要信息后重试；不要声称压缩已完成。')
     audit.append({'event': 'failed', 'reason': 'max_rounds'})
-    raise CompressionLoopError('自动压缩达到最大调用轮数，未成功调用完成工具')
+    raise CompressionLoopError('自动压缩达到最大调用轮数，尚未验收完成。','调整精简方案后重试，原工作区未修改。')

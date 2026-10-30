@@ -25,7 +25,8 @@
 | 合同提取 | PDF 页面准备、合同判断、文件准入与质量检查、重复/相似判断、结构理解、分类、名称与摘要生成，以及 Core、条款和检索问题提取。 |
 | 合同管理 | 合同元数据与摘要、PDF 预览、用户注意事项、不可修改的合同关联、入库审核及删除审核记录。 |
 | 智能问答 | 业务门禁后进入 Agent Core，支持合同与附件查看、合同检索、记忆检索、日期计算、合同库统计、网页搜索与精炼、外部专家多轮求助。 |
-| 上下文管理 | 工作区增删改、任务轨迹容量管理与结构化摘要、原生思考窗口、页面内容折叠及会话记忆持久化。 |
+| 上下文管理 | 工作区增删改、任务轨迹容量管理与结构化摘要、原生思考随已接受消息保存、页面内容折叠及会话记忆持久化。 |
+| 跨平台任务 | 默认关闭的 A2A 子平台消费端，支持首次受理、内存响应链接续及按用户文件等级过滤合同读取。 |
 | 实时反馈 | 合同提取进度、问答中途输出、最终回答、工具执行状态、断线快照及有界 SSE 回放。 |
 
 合同入库的主要流程：
@@ -137,7 +138,7 @@ docker compose ps
 curl --fail http://127.0.0.1:17080/knowledge-accumulation/contract/api/health
 ```
 
-默认前端为 `http://127.0.0.1:17080/contract/`，后端宿主机端口为 `17000`；两者可在 deploy 配置中调整。镜像自动编译 Linux Lindera 扩展，宿主机无需安装 Rust。详见 deploy 的 README 和[后端镜像说明](description/capability/infrastructure/docker-deployment.md)。
+默认前端为 `http://127.0.0.1:17080/knowledge-accumulation/contract/`，后端宿主机端口为 `17000`；两者可在 deploy 配置中调整。镜像自动编译 Linux Lindera 扩展，宿主机无需安装 Rust。详见 deploy 的 README 和[后端镜像说明](description/capability/infrastructure/docker-deployment.md)。
 
 `main` 对应多平台审核；若使用独立应用部署版本，前端、后端和 deploy 应同时切换到匹配的 `local-deploy` 分支，并遵循该版本文档。
 
@@ -165,13 +166,15 @@ test -f .env || cp .env.example .env
 python -m app.main
 ```
 
-当前开发入口监听 `0.0.0.0:20000` 并开启热重载。需要固定监听地址且关闭热重载时使用：
+当前开发入口监听 `0.0.0.0:17000`，`reload=false`，不自动热重载。需要固定监听地址时使用：
 
 ```bash
-uvicorn app.main:app --host 127.0.0.1 --port 20000 --workers 1
+APP_PATH_PREFIX=/dev uvicorn app.main:app --host 127.0.0.1 --port 17000 --workers 1
 ```
 
-健康检查为 `http://127.0.0.1:20000/knowledge-accumulation/contract/api/health`，Swagger UI 为 `/knowledge-accumulation/docs`，OpenAPI JSON 为 `/knowledge-accumulation/openapi.json`。健康检查不探测模型和中间件是否可用；完整验证需执行真实提取、问答及送审请求。
+健康检查为 `http://127.0.0.1:17000/dev/knowledge-accumulation/contract/api/health`，Swagger UI 为 `/dev/knowledge-accumulation/docs`，OpenAPI JSON 为 `/dev/knowledge-accumulation/openapi.json`。健康检查不探测模型和中间件是否可用；完整验证需执行真实提取、问答及送审请求。
+
+直接运行入口设置 `APP_PATH_PREFIX=/dev`，API、接口文档和审核附件链接均使用开发前缀；如自行开启热重载，子进程继承该配置。Docker 默认不设置此变量，继续监听内部 `20000` 并提供生产路径。
 
 ---
 
@@ -186,13 +189,14 @@ uvicorn app.main:app --host 127.0.0.1 --port 20000 --workers 1
 | `VLLM_MLLM_*` / `VLLM_EMBEDDING_*` | 模型地址、采样参数、上下文与生成预算、并发，以及主模型、提取和门禁的推理强度。 |
 | `ELASTICSEARCH_*` / `NEO4J_*` | 合同索引、向量维度、中文分析器和图数据库连接。 |
 | `MIDDLEWARE_*` | 中间件地址、平台身份、登录重试和请求超时。 |
+| `A2A_*` | 子平台任务消费开关、内存响应与回执容量、TTL 和轮询周期，默认关闭。 |
 | `INGESTION_REVIEW_*` / `DELETION_REVIEW_*` | 两个审核区的位置、后台扫描、发送重试、处理及清理策略。 |
 | `COMMUNICATION_*` | 会话存储与工具结果池、分页、文件缓存和开发追踪。 |
 | `DEEPSEEK_*` | 外部专家 Responses 和独立 Search 共用连接身份；搜索使用 `DEEPSEEK_SEARCH_*` 配置。 |
 
 删除审核反馈使用 `DELETION_REVIEW_RESULT_POLL_INTERVAL_SECONDS=30` 和 `DELETION_REVIEW_RESULT_BATCH_SIZE=10`，默认每轮等待30秒、最多处理10条。入库及删除结果分别通过中间件 `/middleware-service/api/ingestion-results/` 和 `/middleware-service/api/deletion-results/` 下的 pull/ack 接口消费；`MIDDLEWARE_REQUEST_TIMEOUT_SECONDS` 控制登录、心跳和结果请求，送审超时使用各自的 `PUBLISH_TIMEOUT_SECONDS`。审核记录保留期不控制再次申请资格。
 
-所有业务接口位于 `/knowledge-accumulation/contract/api`。除健康检查外均需 `Authorization: Bearer <用户 access_token>`；独立验证依赖检查中间件登录有效且 userid 属于本平台管理员。未登录返回401，无访问资格返回403，认证服务不可用返回503。`GET /auth/me` 查询当前身份；旧 `POST /auth/login` 已移除。平台令牌只由后端内部维护，不作为用户凭据。
+ASGI 部署的业务接口位于 `/knowledge-accumulation/contract/api`，直接运行开发入口时增加 `/dev` 前缀。除健康检查外均需 `Authorization: Bearer <用户 access_token>`；独立验证依赖检查中间件登录有效且 userid 属于本平台管理员。未登录返回401，无访问资格返回403，认证服务不可用返回503。`GET /auth/me` 查询当前身份，包含 userid、username、departments 和 ttl；部门仅作资料透传。旧 `POST /auth/login` 已移除。平台令牌只由后端内部维护，不作为用户凭据。
 
 前端 API 基础地址及反向代理应同步采用 `/knowledge-accumulation/contract/api`，转发时保留完整前缀；旧无应用前缀地址不再挂载。PDF 的 `file_uri` 仍是资源标识，由带新前缀的资源接口读取。
 
@@ -217,9 +221,9 @@ SQLite 保存正式目录、摘要、上传人、完整 passport 数组、注意
 
 运行时还需遵守以下边界：
 
-- 后端使用单 worker。登录态、提取任务及工具缓存驻留内存；重启会使登录码失效并丢失未持久化任务。已保存的审核记录与会话数据按现有恢复机制加载。
+- 后端使用单 worker。平台会话、提取任务、A2A 响应链及工具缓存驻留内存；重启会释放这些状态和未持久化任务，用户令牌的有效性仍由中间件管理。已保存的审核记录与会话数据按现有恢复机制加载。
 - 合同类别、Core 和检索指南由 `assets/definition` 在启动时加载；动态工具和字段约束从这些定义编译，运行时不自由生成新 Core 字段。
-- 中间件暂时不可用不阻止 API 启动；ES、Neo4j、用户或业务定义初始化失败会阻止启动。模型不可用时真实业务请求会失败。
+- 中间件暂时不可用不阻止 API 启动；ES、Neo4j 或业务定义初始化失败会阻止启动。启用 A2A 却缺少完整中间件平台身份时启动失败。模型不可用时真实业务请求会失败。
 - 同一 platform_code 只有一个活跃中间件会话，避免本机开发服务与容器同时使用同一身份。
 - 当前部署中的 ES、Neo4j 关闭认证，按 deploy 配置限制网络访问；公网业务入口使用 HTTPS 和合适的反向代理，SSE 需关闭响应缓冲。
 

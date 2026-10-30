@@ -1,4 +1,4 @@
-"""已接受的原生工具交互；不从公开摘要重建参数，不接收私有推理。"""
+"""已接受的原生工具交互；不从公开摘要重建参数，原生思考随已接受消息保存。"""
 from copy import deepcopy
 import json
 
@@ -19,10 +19,13 @@ def validate_native_messages(messages: list[dict]) -> list[dict]:
             raise ValueError('原生消息必须为对象')
         role = message.get('role')
         if role == 'assistant':
-            if pending is not None or set(message) - {'role', 'content', 'tool_calls'}:
+            if pending is not None or set(message) - {'role', 'content', 'tool_calls', 'reasoning', 'reasoning_content'}:
                 raise ValueError('助手消息包含未完成配对或未允许字段')
             if message.get('content') not in (None, ''):
                 raise ValueError('已接受工具消息不包含普通文本或推理草稿')
+            for field in ('reasoning', 'reasoning_content'):
+                if field in message and (not isinstance(message[field], str) or not message[field].strip()):
+                    raise ValueError('原生思考字段必须为非空文本')
             calls = message.get('tool_calls')
             if not isinstance(calls, list) or len(calls) != 1:
                 raise ValueError('每条助手消息必须恰好包含一个工具调用')

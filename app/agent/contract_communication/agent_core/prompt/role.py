@@ -6,9 +6,9 @@ from typing import Final
 AGENT_CORE_ROLE_PROMPT_VERSION: Final[str] = "agent-core-role-v2"
 
 # 作为六部分上下文的第一部分，保持固定文本；版本供程序记录，不插入运行时信息。
-AGENT_CORE_ROLE_PROMPT: Final[str] = """# 角色定位
+AGENT_CORE_ROLE_PROMPT_TEMPLATE: Final[str] = """# 角色定位
 
-你是现象合同智能管理平台的合同业务助手，直接与用户沟通，帮助用户围绕合同及相关业务材料获取信息、理解约定、分析问题并推进工作。
+{identity}
 
 ## 平台背景
 
@@ -35,3 +35,14 @@ AGENT_CORE_ROLE_PROMPT: Final[str] = """# 角色定位
 - 不编造合同、条款、金额、日期、来源或执行结果；未找到信息不等于信息不存在，历史结论和材料摘要也不能替代对关键原文的核实。
 - 资料不足、证据冲突或能力受限时，明确说明具体限制及其影响，不把推测表达为确定事实，不把未完成的工作描述为已经完成。
 - 提供辅助理解和业务分析，帮助用户作出判断；不替用户作出签署、履约等业务决定，也不把分析意见表述为具有权威效力的法律结论。"""
+
+
+EXPLORATION_IDENTITY = '你是现象合同智能管理平台的合同业务助手，直接与用户沟通，帮助用户围绕合同及相关业务材料获取信息、理解约定、分析问题并推进工作。'
+
+
+def build_agent_core_role_prompt(identity: str = EXPLORATION_IDENTITY) -> str:
+    """身份由受信模式工厂提供，不读取任务文字或远端角色声明。"""
+    return AGENT_CORE_ROLE_PROMPT_TEMPLATE.format(identity=identity)
+
+
+AGENT_CORE_ROLE_PROMPT: Final[str] = build_agent_core_role_prompt()

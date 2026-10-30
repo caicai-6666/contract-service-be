@@ -5,6 +5,8 @@ from dataclasses import asdict
 import json
 from app.core.tool_tag import resolve_mllm_tool_tag, tool_tag_section
 from app.infrastructure.mllm import MLLMClient
+from app.infrastructure.model_feedback import ModelFeedbackError, schema_validation_feedback
+from pydantic import ValidationError
 from app.infrastructure.model_json import load_model_json, validate_model_payload
 from app.agent.contract_extraction.subgraph.field_extraction.tool import _validate_property_value
 from app.core.contract_date import normalize_contract_date
@@ -38,40 +40,44 @@ def apply_alignment(query, generation, field_catalog, category_catalog):
     edits = []
     for edit in generation.evidence:
         if query.count(edit.original) != 1:
-            raise ValueError(f'原片段必须在查询中唯一出现：{edit.original!r}')
+            raise ModelFeedbackError('evidence.original不是查询中的唯一片段。','从原查询选择唯一、连续且不重叠的片段，不改写原始片段。')
         start = query.index(edit.original)
         if edit.kind == 'category':
             if edit.code not in categories or edit.property_code is not None or edit.values:
-                raise ValueError('类别必须来自目录，property_code 为 null，values 为空')
+                raise ModelFeedbackError('类别对齐的目录引用或字段组合不合法。','类别使用目录code，property_code=null、values=[]，不要混入Core属性。')
             if edit.code not in edit.aligned:
-                raise ValueError('类别标准表述必须包含对应类别 code')
+                raise ModelFeedbackError('aligned没有包含对应类别code。','使用目录实际提供的类别code构造标准表述。')
         else:
             field = fields.get(edit.code)
             prop = next((p for p in field.properties if p.code == edit.property_code), None) if field else None
             if prop is None:
-                raise ValueError(f'不存在 Core 属性 {edit.code}.{edit.property_code}')
+                raise ModelFeedbackError('evidence引用了目录外Core属性。','只使用本次目录实际提供的code与property_code组合，不猜测属性名。')
             for value in edit.values:
-                _validate_property_value(prop, value)
+                try:
+                    _validate_property_value(prop, value)
+                except (ValueError, TypeError):
+                    raise ModelFeedbackError('evidence.values不满足目录属性类型或约束。','依据本次目录的类型、枚举和数值边界提交标准值，不使用显示标签替代。') from None
                 if prop.index_format == 'strict_date' and normalize_contract_date(value) != value:
-                    raise ValueError('日期标准值必须为 YYYY-MM-DD')
+                    raise ModelFeedbackError('日期标准值不是YYYY-MM-DD。','按目录strict_date标准化日期，不附带时间或改变其他查询内容。')
                 if prop.constraints.enum is not None and value not in edit.aligned:
-                    raise ValueError('标准表述必须包含枚举 value，不能只写标签')
+                    raise ModelFeedbackError('标准表述缺少目录枚举value。','使用本次目录中的枚举标准值，不只写显示标签。')
         edits.append((start, start + len(edit.original), edit.aligned))
     edits.sort()
     if any(left[1] > right[0] for left, right in zip(edits, edits[1:])):
-        raise ValueError('替换片段不能重叠，请缩小为独立条件')
+        raise ModelFeedbackError('evidence替换范围相互重叠。','拆成互不重叠的独立条件，只对每段原文替换一次。')
     aligned = query
     for start, end, replacement in reversed(edits):
         aligned = aligned[:start] + replacement + aligned[end:]
     # 同样接受后续请求的长度约束，不能把异常长的生成带入查询。
     if generation.result != aligned:
-        raise ValueError("result 必须等于按 evidence 局部转换得到的完整查询；不得修改其他内容")
+        raise ModelFeedbackError('result与evidence局部替换得到的完整查询不一致。','仅应用已列出的局部替换，其他原查询内容逐字保留。')
     return ContractRetrievalRequest(query=aligned).query
 
 
 async def align_contract_query(state, *, settings, authorize, field_catalog, category_catalog, client=None, audit=None):
     request = ContractRetrievalRequest.model_validate(state['request'])
     records = audit if audit is not None else []
+    pending_feedback = []
     messages = [{'role':'system', 'content':ALIGNMENT_SYSTEM_PROMPT},
                 {'role':'user', 'content':render_business_definitions(field_catalog,category_catalog)+'\n\n# 原始查询\n'+json.dumps(request.query,ensure_ascii=False)}]
     try:
@@ -83,17 +89,25 @@ async def align_contract_query(state, *, settings, authorize, field_catalog, cat
                 response = await model.create_json_chat_completion(messages=deepcopy(messages),
                     json_schema=QueryAlignmentGeneration.model_json_schema(), schema_name='contract_query_alignment',
                     max_completion_tokens=settings.mllm.generation.max_completion_tokens, enable_thinking=True)
+                for previous in pending_feedback:
+                    previous['feedback_delivered']=True
+                pending_feedback.clear()
                 event = {'stage':'alignment','prompt_version':ALIGNMENT_PROMPT_VERSION,'attempt':attempt,
                          'response':response.raw_response,'accepted':False}
                 records.append(event)
                 try:
                     if response.refusal or response.has_tool_calls or response.finish_reason != 'stop':
-                        raise ValueError('必须正常结束并返回完整 JSON，不允许工具调用或拒答标记')
+                        raise ModelFeedbackError('对齐响应未完整结束、包含工具调用或拒答标记。','本节点只提交完整JSON正文，不调用工具。')
                     generation = validate_model_payload(QueryAlignmentGeneration, load_model_json(response.content))
                     aligned = apply_alignment(request.query,generation,field_catalog,category_catalog)
                 except (ValueError, TypeError) as exc:
-                    event['feedback'] = str(exc)
-                    messages.append({'role':'user','content':'对齐输出未通过校验，请修正：'+str(exc)})
+                    reason = (schema_validation_feedback(exc,QueryAlignmentGeneration) if isinstance(exc,ValidationError)
+                        else exc.public_text if isinstance(exc,ModelFeedbackError) else
+                        '对齐JSON或目录映射约束不满足；保持非目标原文，只按本次目录作局部转换，result须等于转换后全文。')
+                    feedback={'role':'user','content':reason+' 本次尚未执行检索，请修正JSON对齐结果。'}
+                    event.update(feedback=feedback,feedback_delivered=False)
+                    pending_feedback.append(event)
+                    messages.append(feedback)
                     continue
                 await authorize()
                 del messages[2:]
@@ -141,7 +155,7 @@ async def run_contract_retrieval(request,*,metadata_store,settings,authorize,es_
     template = resolve_mllm_tool_tag(settings.mllm, tool_template)
     prefix=[{'role':'system','content':build_prompt(template)},
         {'role':'user','content':'# 查找需求\n'+json.dumps(request.query,ensure_ascii=False)+'\n初始范围：'+('全部ready合同' if request.initial_document_ids is None else f'宿主限定的{len(request.initial_document_ids)}份合同，禁止扩大')}]
-    history=[];errors=0;recovery=ToolProtocolRecovery()
+    history=[];errors=0;recovery=ToolProtocolRecovery();pending_feedback=[]
     generation=settings.mllm.generation
     audit.append({'event':'start','prompt_version':CONTRACT_RETRIEVAL_PROMPT_VERSION})
     try:
@@ -157,24 +171,30 @@ async def run_contract_retrieval(request,*,metadata_store,settings,authorize,es_
                     temperature=generation.temperature,top_p=generation.top_p,top_k=generation.top_k,
                     presence_penalty=generation.presence_penalty,repetition_penalty=generation.repetition_penalty,
                     seed=generation.seed,tool_placement='after_task',tool_task_index=1)
+                for previous in pending_feedback:
+                    previous['feedback_delivered']=True
+                pending_feedback.clear()
                 event={'round':round_number,'assistant':deepcopy(response.assistant_message),'calls':[asdict(c) for c in response.tool_calls],
                     'completion':asdict(response.completion),'accepted':False}
                 audit.append(event)
                 call=response.tool_calls[0] if len(response.tool_calls)==1 else None
                 valid=(call is not None and response.completion.finish_reason in ('stop','tool_calls')
-                    and not response.assistant_message.get('refusal') and not response.assistant_message.get('content') and call.name in handlers)
+                    and not response.assistant_message.get('refusal') and call.name in handlers)
                 if valid:
                     await authorize()
                     result=await handlers[call.name](FIFOOperation(task_id='contract-retrieval',call_id=call.call_id,name=call.name,arguments=call.arguments))
                     feedback=result.tool_result;success=result.status=='succeeded'
                 else:
-                    feedback={'status':'error','message':'请只调用一个当前提供的工具，不附带普通正文；响应必须完整结束。'};success=False
+                    feedback={'status':'error','message':'请只调用一个当前提供的原生工具；响应必须完整结束，本次未执行检索动作。'};success=False
                 event['feedback']=deepcopy(feedback)
                 if not success:
                     errors+=1
                     recovery.record_tool_failure(history,assistant_message={'role':'assistant','content':''},
                         tool_message=build_system_guidence_message(kind='invalid_action',reason=json.dumps(feedback,ensure_ascii=False),required_action='修正后只调用一个合法工具。'+tool_tag_section(template)))
-                    if errors>=3:return ContractRetrievalResult(status='error',error='连续调用错误达到上限，本次查询未完成。')
+                    event['feedback_delivered']=False
+                    pending_feedback.append(event)
+                    if errors>=3:
+                        return ContractRetrievalResult(status='error',error='连续调用错误达到上限，本次查询未完成；最后反馈未发给子模型：'+json.dumps(feedback,ensure_ascii=False))
                     continue
                 recovery.accept_correction(history);errors=0;event['accepted']=True
                 if call.name=='finish_contract_retrieval':

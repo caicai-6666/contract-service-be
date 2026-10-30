@@ -1,4 +1,5 @@
 """从权威目录编译筛选 Schema 与 ES 查询，不硬编码具体业务字段。"""
+from app.infrastructure.model_feedback import ModelFeedbackError
 from datetime import date
 import re
 from typing import Annotated, Literal
@@ -16,14 +17,17 @@ class QueryModel(BaseModel):
     def require_condition(self):
         # 所有层级都拒绝空条件；不能因遗漏或全null意外查询全库。false和0是有效值。
         if not any(value is not None for name, value in self.__dict__.items() if name != 'result_id'):
-            raise ValueError('至少填写一个有效筛选条件，不能只传result_id、空对象或全null')
+            raise ModelFeedbackError('筛选条件为空或全为null。','至少填写一个真实筛选条件，不能只传result_id；false和0是有效条件。')
         return self
 
 
 def _date(value):
     if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', value):
-        raise ValueError('日期必须为 YYYY-MM-DD')
-    date.fromisoformat(value)
+        raise ModelFeedbackError('日期格式不符合目录要求。','使用有效的YYYY-MM-DD日期，不提供时间部分。')
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        raise ModelFeedbackError('日期不是有效日历日期。','核对月份、日数与闰年，使用实际存在的YYYY-MM-DD日期。') from None
     return value
 
 

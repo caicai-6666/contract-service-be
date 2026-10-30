@@ -54,7 +54,7 @@ class AuthService:
         admins = await self._request(self._client.list_platform_admins, token=self._token())
         if login.userid not in admins:
             raise PlatformAccessDeniedError('当前用户无权访问本平台')
-        return AuthenticatedUser(userid=login.userid, username=login.username, ttl=login.ttl)
+        return AuthenticatedUser(userid=login.userid, username=login.username, departments=login.departments, ttl=login.ttl)
 
     async def close(self):
         if self._client is not None:

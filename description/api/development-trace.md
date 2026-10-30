@@ -29,7 +29,7 @@
 
 ```sh
 curl -H 'Authorization: Bearer <用户 access_token>' \
-  'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations/<conversation_id>/turns/<turn_id>/development-trace'
+  'http://127.0.0.1:17000/knowledge-accumulation/contract/api/communication/conversations/<conversation_id>/turns/<turn_id>/development-trace'
 ```
 
 记录只存在于内存，随会话或轮次清理，重启不能恢复；上限 2000 个观察节点。图片不复制原始 Base64。记录不会加入模型上下文或正式用户历史。速度仅使用模型 HTTP 请求至完整响应耗时，不含模型并发额度排队和后续工具执行，包含网络与流回调开销；并行节点耗时不可视为任务总墙钟时间。外部专家和非模型内部子步骤暂未独立计时。
@@ -52,9 +52,9 @@ curl -H 'Authorization: Bearer <用户 access_token>' \
 ```sh
 curl -X POST -H 'Authorization: Bearer <用户 access_token>' \
   -F 'text=请说明合同验收条款需要约定哪些内容' \
-  'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/development-turns'
+  'http://127.0.0.1:17000/knowledge-accumulation/contract/api/communication/development-turns'
 ```
 
-临时会话最多驻留 32 个。只初始化内存中的空工作区、任务轨迹与思考窗口，不创建数据库会话、不触发备份、不生成检索记忆、不保存思考窗口。无活跃任务且空闲十五分钟后，由后台扫描清理，或由页面主动 DELETE。业务门禁与模型工具循环复用原实现；数据库仍可作为工具的只读检索来源。浏览器刷新不恢复结果，关闭页面并不直接中断在途模型请求。
+临时会话最多驻留 32 个。只初始化内存中的空工作区、任务轨迹，不创建数据库会话、不触发备份、不生成检索记忆；原生思考仅随内存任务消息保留。无活跃任务且空闲十五分钟后，由后台扫描清理，或由页面主动 DELETE。业务门禁与模型工具循环复用原实现；数据库仍可作为工具的只读检索来源。浏览器刷新不恢复结果，关闭页面并不直接中断在途模型请求。
 
 独立页面在任务终态后使用 `nodes` 中已完成模型请求的有效用量，计算「输出 token 总和 / 对应模型耗时总和」作为平均生成速度；不平均每轮速率，不计工具时间。缺失指标时标注统计覆盖次数，没有有效指标则显示暂无有效统计。统计仅留在页面内存。

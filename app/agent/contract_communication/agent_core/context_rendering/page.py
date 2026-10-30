@@ -62,7 +62,7 @@ def render_tool_page_messages(
     return [notice, {'role': 'user', 'content': blocks}]
 
 
-def render_tool_receipt(result: FIFOExecutionResult, *, visible: bool = False) -> str:
+def render_tool_receipt(result: FIFOExecutionResult, *, visible: bool = False, visible_ids: set[str] | None = None) -> str:
     """FIFO 与驻留轨迹共用轻量回执；完整内容从不进入此序列化。"""
     result = FIFOExecutionResult.model_validate(result)
     payload = result.tool_result
@@ -70,7 +70,7 @@ def render_tool_receipt(result: FIFOExecutionResult, *, visible: bool = False) -
         payload = {'tool_result': result.tool_result, 'content': {
             'type': 'foldable', 'pages': [
                 {**ref.model_dump(), 'display_status': (
-                    '本页完整内容见紧随本回执的临时资料；剩余可见轮次以资料前的提示为准。' if visible else
+                    '本页完整内容见紧随本回执的临时资料；剩余可见轮次以资料前的提示为准。' if visible and (visible_ids is None or ref.display_id in visible_ids) else
                     '本页内容已隐藏，轨迹仅保留来源和位置；不代表已经读取或资源仍可用，需要时请通过可用工具重新查看。')}
                 for ref in result.content.pages]}}
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False)

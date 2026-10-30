@@ -35,7 +35,7 @@ SQLite 是正式合同文件管理的权威目录，Elasticsearch 是完整合�
 
 > **安全边界：** 当前客户端不配置身份认证和 TLS，只能连接本机回环地址或由网络层隔离的受信 Elasticsearch 节点，不得直接连接公网暴露的实例。
 
-自动合同处理的原始 PDF 只在创建请求期间存在，随后释放；按视觉预算重新封装的处理版 PDF、同源页面缓存、阶段状态和草稿不写入 Elasticsearch，只驻留当前 API 进程内存。只有审核用户通过正式入库接口提交的最终对象才允许进入正式索引；完整边界见[合同提取应用运行时](../../architecture/system/contract-extraction-runtime.md)。
+自动合同处理的原始 PDF 只在创建请求期间存在，随后释放；按视觉预算重新封装的处理版 PDF、同源页面缓存、阶段状态和草稿不写入 Elasticsearch，只驻留当前 API 进程内存。只有用户提交且经外部审核批准的最终对象才允许进入正式索引；完整边界见[合同提取应用运行时](../../architecture/system/contract-extraction-runtime.md)。
 
 需要访问 Elasticsearch 的路由或服务复用应用生命周期中的共享客户端。正式文件列表只读取 SQLite 中的 `ready` 记录，不依赖 ES。SQLite 目录见[合同 SQLite 元数据结构](../../architecture/data/contract-sqlite-metadata.md)，目标索引结构和启动同步边界见[合同 Elasticsearch 文档结构](../../architecture/data/contract-elasticsearch-document.md)；四处持久化流程见[复核后合同正式入库](contract-ingestion.md)。
 
@@ -49,7 +49,7 @@ SQLite 是正式合同文件管理的权威目录，Elasticsearch 是完整合�
 
 同一生命周期还会从 `FIELD_DEFINITION_DIR` 全量读取 Core YAML，构造不可变 `FieldDefinitionCatalog` 并保存到 `application.state.field_definition_catalog`。Core 必须非空，名称和稳定索引 `code` 必须全局唯一；根目录不允许出现 `core` 之外的职责目录。目录加载完成后，该快照立即用于正式索引 mapping 同步。字段对象结构、目录边界和指纹规则见[模型提取对象定义结构](../../architecture/data/field-definition.md)。
 
-认证服务复用后台平台会话，查询中间件有效用户登录及当前平台管理员列表。独立依赖注入业务路由，用户身份仅含 userid、username、ttl，不加载本地用户目录或签发令牌。见[用户身份与所有权](../../architecture/data/user-identity.md)。
+认证服务复用后台平台会话，查询中间件有效用户登录及当前平台管理员列表。独立依赖注入业务路由，用户身份包含 userid、username、departments 和 ttl；departments 仅作用户资料透传，不加载本地用户目录或签发令牌。见[用户身份与所有权](../../architecture/data/user-identity.md)。
 
 ---
 
@@ -67,7 +67,7 @@ SQLite 是正式合同文件管理的权威目录，Elasticsearch 是完整合�
 | 环境变量 | 配置属性 | 用途 |
 | --- | --- | --- |
 | `MIDDLEWARE_PLATFORM_CODE` | `middleware_platform_code` | 本平台登记的 `platform_code`，加载时去除首尾空白。 |
-| `MIDDLEWARE_SECRET` | `middleware_secret` | 本平台的登录 `secret`，使用 `str` 避免配置对象常规输出泄露明文；保留原值，不裁剪凭证。 |
+| `MIDDLEWARE_SECRET` | `middleware_secret` | 本平台的登录 `secret`，使用 `SecretStr` 避免配置对象常规输出泄露明文；保留原值，不裁剪凭证。 |
 
 真实 secret 只填写本地环境或部署密钥配置，`.env.example` 保持空值；不得记录到日志。仅在登录请求发送时通过 `get_secret_value()` 读取凭证明文。
 
@@ -98,7 +98,20 @@ python -m app.main
 
 首次配置及依赖准备见[仓库 README](../../../README.md#启动方式)。Lindera 是需单独准备的原生扩展，不能仅靠安装 Python 依赖完成启动环境。
 
-运行依赖统一维护在项目根目录的 `requirements.txt`，使用兼容版本区间而不是应用打包元数据。 网页搜索复用 `httpx` 异步请求DeepSeek Search，`trafilatura>=2.2,<3.0` 用于本地 HTML 正文提取；搜索和结果列表工具已接入会话缓存、分页与主循环；网页子图已实现 HTTP、正文提取和模型精炼，打开工具已注册主循环并接入正文缓存与分页，详见[网页工具](../../architecture/workflow/contract-communication/web-search.md)。 历史搜索与正文提取验证见[归档报告](../../../experiment/web-search-extraction/REPORT.md)，已记录误召回、权限限制提示遗漏及附件链接丢失等边界。`.venv` 只用于本机隔离且已被 Git 忽略。`app.main` 的 `__main__` 分支直接调用 `uvicorn.run`；从项目根目录执行 `python -m app.main`，默认监听 `0.0.0.0:20000` 并开启源码热重载。IDE 运行时应将项目根目录加入 Python 包搜索路径。
+也可使用 Conda 创建独立的 Python 3.12 开发环境，在项目根目录执行：
+
+```bash
+conda create -n contract-service-be python=3.12 pip -y
+conda activate contract-service-be
+python -m pip install -r requirements.txt
+python -m pip check
+```
+
+后续开发先执行 `conda activate contract-service-be`；IDE 的 Python 解释器选择该环境中的 `bin/python`。Conda 环境仍需上述外部服务配置与 [Lindera 原生扩展](../infrastructure/sqlite-fts.md)，安装 Python 包不代表外部服务已就绪。
+
+> **本地验证记录：** 本文列出的 `experiment/`、`tests/` 或 `output/` 路径未随源码分发，仅保留历史追溯信息；本次文档核对未重新执行这些实验或核验缺失产物。
+
+运行依赖统一维护在项目根目录的 `requirements.txt`，使用兼容版本区间而不是应用打包元数据。 网页搜索复用 `httpx` 异步请求DeepSeek Search，`trafilatura>=2.2,<3.0` 用于本地 HTML 正文提取；搜索和结果列表工具已接入会话缓存、分页与主循环；网页子图已实现 HTTP、正文提取和模型精炼，打开工具已注册主循环并接入正文缓存与分页，详见[网页工具](../../architecture/workflow/contract-communication/web-search.md)。 历史搜索与正文提取验证见归档报告（本地路径：`experiment/web-search-extraction/REPORT.md`），已记录误召回、权限限制提示遗漏及附件链接丢失等边界。`.venv` 只用于本机隔离且已被 Git 忽略。`app.main` 的 `__main__` 分支直接调用 `uvicorn.run`；从项目根目录执行 `python -m app.main`，默认监听 `0.0.0.0:17000`，设置 `APP_PATH_PREFIX=/dev`，当前 `reload=false`，不自动热重载。开发 API 与文档路径均增加 `/dev`；Docker 的 ASGI 入口仍使用内部端口 `20000` 和生产路径。IDE 运行时应将项目根目录加入 Python 包搜索路径。
 
 热重载会重启唯一工作进程并清空内存合同任务，只适合本地开发。部署入口应由外部 ASGI 进程管理器加载 `app.main:app`，关闭热重载，并继续保持单 worker。
 
@@ -117,7 +130,7 @@ python -m app.main
 | MLLM | `http://127.0.0.1:8000/v1` | `chat_completions` | 合同的 Core、Clause 与 Retrieval Question 生成。 |
 | Embedding | `http://127.0.0.1:8001/v1` | `embeddings` | 字段、合同与候选的向量化。 |
 
-单 worker 内所有合同、业务线路与后台任务共享 `VLLM_MLLM_MAX_CONCURRENT_REQUESTS=20`；文本及页面向量化独立共用 `VLLM_EMBEDDING_MAX_CONCURRENT_REQUESTS=10`。节点局部限制继续保留，最终发送由统一客户端执行全局准入；配置与排队边界见[模型全局并发额度](../infrastructure/model-concurrency.md)。应用使用官方异步 `AsyncOpenAI` 客户端和自定义 `base_url` 对接 vLLM；本地服务没有配置 key 时，适配器仅为满足 SDK 初始化提供非敏感占位值。`VLLM_MLLM_USE_MEDIA_REFERENCES=true` 默认启用媒体 UUID 协议，使同页首次上传后只传引用；服务版本、缓存失效和回退要求见[vLLM 多模态媒体引用](../infrastructure/vllm-media-reference.md)。全局通过 `VLLM_MLLM_ENABLE_THINKING=false` 默认关闭思考；节点可以显式开启。思考开关与 JSON Schema 输出约束分别配置，不能仅因使用结构化输出就要求关闭思考。
+单 worker 内所有合同、业务线路与后台任务共享 `VLLM_MLLM_MAX_CONCURRENT_REQUESTS=20`；文本及页面向量化独立共用 `VLLM_EMBEDDING_MAX_CONCURRENT_REQUESTS=10`。节点局部限制继续保留，最终发送由统一客户端执行全局准入；配置与排队边界见[模型全局并发额度](../infrastructure/model-concurrency.md)。应用使用官方异步 `AsyncOpenAI` 客户端和自定义 `base_url` 对接 vLLM；本地服务没有配置 key 时，适配器仅为满足 SDK 初始化提供非敏感占位值。`VLLM_MLLM_USE_MEDIA_REFERENCES=true` 默认启用媒体 UUID 协议，使同页首次上传后只传引用；服务版本、缓存失效和回退要求见[vLLM 多模态媒体引用](../infrastructure/vllm-media-reference.md)。代码在未配置 `VLLM_MLLM_ENABLE_THINKING` 时回退为 `false`；当前 `.env.example` 显式设置为 `True`。以实际环境值为准，节点可按任务配置显式开启。思考开关与 JSON Schema 输出约束分别配置，不能仅因使用结构化输出就要求关闭思考。
 
 MLLM 默认使用 `262144` token 上下文。视觉预算从上下文中扣除 `8192` 最大生成、`4096` 公共提示词和 `10240` 多轮工具历史与安全余量后动态计算；实际视觉预算再随 PDF 页数增长，最大为 `239616`。`VLLM_MLLM_MAX_VISUAL_TOKENS_PER_REQUEST` 留空表示启用动态预算，也可以设置更小的人工上限。
 
@@ -163,3 +176,9 @@ MLLM 默认使用 `262144` token 上下文。视觉预算从上下文中扣除 `
 `deletion_review_query_service` 同时装配为只读服务，复用删除审核库、正式元数据和文件存储；路由以登录用户名称限定删除提交人或合同上传人，返回 ID 列表与分区详情，见[删除审核 API](../../api/deletion-review.md)。
 
 删除执行器就绪后启动 `DeletionReviewConsumer`，保存为 `app.state.deletion_review_consumer`，从 `/middleware-service/api/deletion-results/pull` 拉取反馈。批准后复用执行器完成资源删除、拒绝后恢复标志，确认本地处理完成才 ack；关闭时优先停止消费者，再关闭执行器和依赖。配置与恢复规则见[删除审核反馈消费](deletion-review-consumer.md)。
+
+---
+
+## A2A 子平台消费者
+
+`A2A_ENABLED=true` 时 lifespan 在平台会话启动后装配独立 A2A worker，关闭时先停止 A2A，再关闭会话与业务资源。默认不开启；上下文只驻留内存，不接入 Communication 归档与 SSE。配置、外部接口依赖与权限边界见 [A2A 子平台任务运行时](../../architecture/workflow/contract-communication/a2a-runtime.md)。

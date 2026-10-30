@@ -72,13 +72,14 @@ class ContractRelationService:
             return await asyncio.to_thread(visible_neighbors)
 
 
-    async def search_candidates(self, contract_id=None, *, limit=10000, relation_ids=None):
+    async def search_candidates(self, contract_id=None, *, limit=10000, relation_ids=None, document_ids=None):
         """SQLite 正式状态约束两端，先过滤再交给检索器排名。"""
         if contract_id is not None:
             item = await asyncio.to_thread(self._metadata.get, contract_id)
             if item is None or item.status is not ContractMetadataStatus.READY:
                 raise ContractDocumentNotFoundError('指定合同不存在或不可用')
-        rows = await self._graph.search_candidates(contract_id,limit=limit,relation_ids=relation_ids)
+        scope = {} if document_ids is None else {'document_ids':document_ids}
+        rows = await self._graph.search_candidates(contract_id,limit=limit,relation_ids=relation_ids,**scope)
         def visible():
             cache={}
             for row in rows:

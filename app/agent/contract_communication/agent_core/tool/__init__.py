@@ -26,15 +26,21 @@ __all__ = [
     "prepare_workspace_edit",
 ]
 
-from .interaction import (
-    EmitProgressArguments, FinishTaskArguments, UserOutput, UserOutputReceipt,
-    UserOutputRejected, build_interaction_tools, build_interaction_handlers,
-    parse_interaction_tool_arguments,
-)
+# 旧探索工具按需导出，导入公共工具时不提前装配具体交互模式。
+_INTERACTION_EXPORTS = {
+    'EmitProgressArguments', 'FinishTaskArguments', 'UserOutput', 'UserOutputReceipt',
+    'UserOutputRejected', 'build_interaction_tools', 'build_interaction_handlers',
+    'parse_interaction_tool_arguments',
+}
+__all__ += sorted(_INTERACTION_EXPORTS)
 
-__all__ += ["EmitProgressArguments", "FinishTaskArguments", "UserOutput", "UserOutputReceipt",
-            "UserOutputRejected", "build_interaction_tools", "build_interaction_handlers",
-            "parse_interaction_tool_arguments"]
+
+def __getattr__(name):
+    if name in _INTERACTION_EXPORTS:
+        from . import interaction
+        return getattr(interaction, name)
+    raise AttributeError(name)
+
 
 from .registry import RegisteredTool, ToolRegistry, build_agent_tool_registry
 

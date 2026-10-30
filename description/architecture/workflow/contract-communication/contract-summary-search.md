@@ -19,7 +19,7 @@
 
 查询复用 `generic-text-retrieval-en-v1` 摘要编码指令，返回独立 L2 归一化向量。SQLite 同一读取快照内执行 BM25 和余弦向量两路召回，范围及 ready 状态在两路截断前过滤。全文检索使用 Lindera（Jieba），输入先切词，再引用转义构造 OR 查询，不将自然语言作为 FTS 运算符执行。
 
-每路最多召回 `min(top_k × 4, 200)` 份合同，等权 RRF 计分 `sum(1 / (60 + rank))`，rank 从 1 开始；某路未命中贡献为零，不调整分母。按 RRF 降序、document_id 升序稳定排序后截断 top_k，不融合源结果集的旧分数。
+每路最多召回 `min(top_k × 4, 200)` 份合同，等权 RRF 计分 `sum(1 / (60 + rank))`，rank 从 1 开始；某路未命中贡献为零，不调整分母。单次摘要检索按 RRF 降序、document_id 升序稳定排序后截断 top_k；候选池随后按父排名执行跨查询融合，见[排名规则](contract-retrieval.md)。
 
 旧摘要没有向量或模型、版本、维度不兼容时仍参与 BM25。向量为精确扫描且未设置相似度门槛，可能包含弱相关尾部候选；RRF 不是概率或余弦值，候选数量不是满足业务条件的全库总数。摘要可能省略细节，需要打开原文核实具体约定。
 
@@ -35,6 +35,6 @@
 
 ## 配置与验证
 
-`COMMUNICATION_CONTRACT_SUMMARY_SEARCH_TOP_K` 默认 10，范围 1–50；分页大小和驻留容量沿用 `COMMUNICATION_CONTRACT_SEARCH_*`。摘要模型与编码契约见[摘要向量存储](../../data/contract-sqlite-metadata.md#合同摘要向量)。
+`COMMUNICATION_CONTRACT_SUMMARY_SEARCH_TOP_K` 默认 10，范围 1–50；内部池容量使用 `COMMUNICATION_CONTRACT_SEARCH_CACHE_MAX_QUERIES`；最终结果的容量和分页使用 `COMMUNICATION_CONTRACT_RETRIEVAL_*`。摘要模型与编码契约见[摘要向量存储](../../data/contract-sqlite-metadata.md#合同摘要向量)。
 
 实现位于 `agent_core/subgraph/contract_retrieval/tool/contract_summary_search.py`、`app/infrastructure/contract_summary_search.py`。测试采用真实临时 SQLite、Lindera 和 sqlite-vec，覆盖融合、单路命中、范围限制、旧数据回填、增删更新、非法引用、空结果和页面标签；正式循环测试模拟生成与编码，验证搜索→查看→最终回复。本轮不据此宣称真实模型召回质量。

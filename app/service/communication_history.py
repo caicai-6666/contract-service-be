@@ -15,7 +15,6 @@ from starlette.concurrency import run_in_threadpool
 from app.infrastructure.communication_store import SQLiteCommunicationStore, CommunicationStoreConflict
 from app.schema.communication import ConversationHistoryResponse, ConversationHistoryRecord, TERMINAL_STATUSES, MessageDeltaData, public_event_data
 from app.schema.communication_workspace import WorkspacePayload, WorkspaceSnapshot
-from app.schema.reasoning_window import ReasoningWindow
 from app.service.communication_trace import project_event, append_tool
 from app.service.communication_files import ensure_uploaded_files, read_uploaded_pdf
 
@@ -55,7 +54,6 @@ class ResidentConversation:
     last_idle_scan: float = 0
     idle_scans: int = 0
     uploads: dict[str, bytes] = field(default_factory=dict)
-    reasoning_window: ReasoningWindow = field(default_factory=ReasoningWindow)
     memory_query_pool: object | None = None
 
 
@@ -242,7 +240,6 @@ class ConversationHistoryService:
             now = self._clock()
             self._resident[conversation_id] = ResidentConversation(
                 result, workspace, workspace.revision, last_activity=now, last_idle_scan=now,
-                reasoning_window=await run_in_threadpool(self._store.read_reasoning_window, conversation_id, owner_userid=owner_userid),
             )
         else:
             resident.history = result
@@ -885,21 +882,3 @@ class ConversationHistoryService:
             self._resident.clear()
             self._persisted.clear()
             self._owners.clear()
-
-
-    async def save_agent_reasoning_locked(self, conversation_id, turn_id, *, call_id, fields, tokens, max_rounds):
-        """调用者持共享锁；只为已接受的响应追加思考，先落盘再发布内存窗口。"""
-        record = self._record(conversation_id, turn_id)
-        if record.status != 'processing' or not record.payload.get('agent_core_ready'):
-            raise ValueError('当前任务不能追加思考')
-        if not any(m.get('role') == 'assistant' and m['tool_calls'][0]['id'] == call_id
-                   for m in record.payload.get('agent_messages', [])):
-            raise ValueError('思考缺少原始已接受响应位置')
-        resident = self._resident[conversation_id]
-        original = resident.reasoning_window
-        updated = original.append(task_id=record.record_id, call_id=call_id, fields=fields,
-            tokens=tokens, max_rounds=max_rounds)
-        if not resident.ephemeral:
-            await run_in_threadpool(self._store.save_reasoning_window, conversation_id,
-                owner_userid=self._owners[conversation_id], window=updated, expected_position=original.next_position)
-        resident.reasoning_window = updated

@@ -1,5 +1,6 @@
 """正式会话的文件工具装配：应用共享合同池，驻留会话独立阅读状态。"""
 import asyncio
+from contextlib import contextmanager
 import hashlib
 import logging
 from threading import Event
@@ -165,6 +166,15 @@ class CommunicationFileTools:
             self._sessions[conversation_id] = dict(residency=residency, revoked=revoked, pool=pool, web_results=web_results, web_pages=web_pages,
                 session=session, contract=contract, tools=tools, resolver=resolve_page, search_results=search_results, search_audit=search_audit, final_results=final_results)
             return tools, resolve_page
+
+    @contextmanager
+    def web_page_task_scope(self, conversation_id):
+        """宿主围绕整次生成持有图片，任何退出路径均清除本轮图像快照。"""
+        state = self._sessions.get(conversation_id)
+        if state is None:
+            raise ValueError('文件工具会话尚未准备')
+        with state['web_pages'].task_scope():
+            yield
 
     def evict(self, conversation_id):
         """历史锁内仅撤销并调度清理，不等待可能正在访问历史的工作线程。"""

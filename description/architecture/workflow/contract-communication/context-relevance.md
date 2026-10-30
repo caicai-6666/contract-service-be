@@ -139,7 +139,9 @@ history_continuation 的证据必须同时覆盖可见业务历史与当前输�
 
 v11通过 `experiment/context-weight-guard/run.py --reference-boundary` 执行45次定向回归，原误放行在原样例组合及5次不同样例重复中均被拒绝；明确旧文档请求、有历史追问仍可通过。最终准入45/45符合，依据细分44/45：仍有一条跨合同共同付款主题被高估为强关联。样本已参与调优，不作为盲测准确率；完整报告保存在 `experiment/context-weight-guard/output/20260911T043436.493323Z/analysis.md`。
 
-当前权重防护的真实验收入口为 `experiment/context-weight-guard/run.py`；v9/v6 同集 18 条请求的最终状态与上下文依据均符合预标注。该集已用于提示词优化，属于定向回归；仍有一条文字分类偏保守及拒绝回复的上传指引问题，不能视为整体准确率保证。详见 [实验分析](../../../../experiment/context-weight-guard/output/20260911T041203.777905Z/analysis.md)。实验目录按项目约定不进入 Git，分享给其他环境时需另附产物。
+> **本地验证记录：** 本文列出的 `experiment/`、`tests/` 或 `output/` 路径未随源码分发，仅保留历史追溯信息；本次文档核对未重新执行这些实验或核验缺失产物。
+
+当前权重防护的真实验收入口为 `experiment/context-weight-guard/run.py`；v9/v6 同集 18 条请求的最终状态与上下文依据均符合预标注。该集已用于提示词优化，属于定向回归；仍有一条文字分类偏保守及拒绝回复的上传指引问题，不能视为整体准确率保证。详见 实验分析（本地路径：`experiment/context-weight-guard/output/20260911T041203.777905Z/analysis.md`）。实验目录按项目约定不进入 Git，分享给其他环境时需另附产物。
 
 `tests/test_context_relevance_prompt.py` 检查版本、十例正负配比、输出字段顺序与类型、证据原文可定位、实际渲染格式、冻结样例、无放回四例抽样、可复现随机源及无固定标签配额。`tests/test_context_relevance_rendering.py` 检查元数据白名单、选样固定后的稳定排序与消息、不同抽样间的固定规则前缀、同一 final 的片段恢复、取消/失败/调整的回答可见性、旧数据缺省、多行原文隔离及非法候选拒绝。`tests/test_context_relevance_node.py` 验证正式 Schema、有文字时空历史判断、纯文件空历史跳过、非法历史、协议/请求失败、连续纠错清理、抽样固定、取消传播、并发隔离及实际子图的上下文独立计分。`tests/test_communication_gate_history.py` 验证摘要边界、五轮筛选、拒绝与过期排除、所有权、fresh/SQLite 恢复一致，以及 SSE/快照/历史备份的终态一致性。回归使用模拟模型与临时 SQLite，不代表新增真实模型准确率测量。
 

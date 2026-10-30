@@ -53,7 +53,7 @@ from app.service.file_permission_consumer import FilePermissionAdjustmentConsume
 from app.service.auth import AuthService
 from app.service.communication_workflow import CommunicationWorkflowService
 from app.service.communication_file_tools import CommunicationFileTools
-from app.agent.contract_communication.agent_core.runtime import run_agent_core
+from app.agent.contract_communication.exploration import run_exploration
 from app.service.communication_history import ConversationHistoryService
 from app.service.communication_archive import CommunicationArchiveService
 from app.service.contract_ingestion import ContractIngestionService
@@ -142,7 +142,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         notes_page_size=settings.communication_contract_notes_page_size,
         passport_cache_capacity=settings.communication_contract_passport_cache_max_queries,
         passport_page_size=settings.communication_contract_passport_page_size,
-        agent_core_runner=partial(run_agent_core, settings=settings.mllm),
+        agent_core_runner=partial(run_exploration, settings=settings.mllm),
         file_tools=communication_file_tools,
     )
     logger.info("Communication 正式问答已启用：真实门禁通过后进入 Agent Core，共用本轮 SSE 与驻留会话")
@@ -158,6 +158,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     deletion_review_cleanup = None
     deletion_review_consumer = None
     file_permission_consumer = None
+    a2a_worker = None
     ingestion_review_cleanup = IngestionReviewCleanupService(ingestion_review_store, settings)
     application.state.ingestion_review_cleanup_service = ingestion_review_cleanup
     ingestion_review_publisher = IngestionReviewPublisher(ingestion_review_store, middleware_session, settings)
@@ -280,6 +281,16 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         )
         await communication_archive_service.start()
         await middleware_session.start()
+        if settings.a2a_enabled:
+            if not (settings.middleware_base_url and settings.middleware_platform_code
+                    and settings.middleware_secret.get_secret_value()):
+                raise ValueError('启用 A2A 必须配置完整中间件平台身份')
+            from app.service.a2a_worker import A2AWorker
+            a2a_worker = A2AWorker(settings, middleware_session, metadata=contract_metadata_store,
+                es=elasticsearch, relations=application.state.contract_relation_service,
+                field_catalog=field_definition_catalog, category_catalog=contract_category_catalog)
+            application.state.a2a_worker = a2a_worker
+            await a2a_worker.start()
         await ingestion_review_publisher.start()
         ingestion_review_consumer = IngestionReviewConsumer(ingestion_review_store, middleware_session,
             contract_ingestion_service, settings)
@@ -307,6 +318,8 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         try:
+            if a2a_worker is not None:
+                await a2a_worker.close()
             if file_permission_consumer is not None:
                 await file_permission_consumer.close()
             # 删除扫描必须先结束当前文档操作，再关闭正式库的外部连接。

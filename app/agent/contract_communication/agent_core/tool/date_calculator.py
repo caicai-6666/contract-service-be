@@ -39,7 +39,12 @@ class DateCalculateArguments(WorkspaceObject):
     @field_validator('start_time')
     @classmethod
     def valid_start(cls, value):
-        parse_start_time(value)
+        from app.infrastructure.model_feedback import ModelFeedbackError
+        try:
+            parse_start_time(value)
+        except ValueError:
+            raise ModelFeedbackError('start_time日期格式或日历值无效。',
+                '提供有效的YYYY-MM-DD或ISO日期时间；例如2026-10-27，时区可用Z或±HH:MM。') from None
         return value
 
 

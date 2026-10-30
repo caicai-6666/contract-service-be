@@ -5,6 +5,7 @@ from datetime import datetime
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, StrictStr, model_validator, field_validator, model_serializer
 from app.core.passport import Passports
+from app.schema.auth import Departments
 
 
 class MiddlewareSessionResponse(BaseModel):
@@ -327,14 +328,23 @@ class MiddlewareUserLogin(BaseModel):
     model_config = ConfigDict(frozen=True, extra='ignore')
     userid: StrictStr | None
     username: StrictStr | None
+    departments: Departments | None = Field(default=None, description='有效登录时为当前部门名称列表，无部门为空数组；失效登录为null。')
     is_logged_in: bool = Field(strict=True)
     ttl: int = Field(ge=0, strict=True)
+
+    @model_validator(mode='before')
+    @classmethod
+    def legacy_departments(cls, value):
+        # 旧服务未提供部门时兼容空列表；显式null或畸形字段仍按新契约校验。
+        if isinstance(value, dict) and 'departments' not in value:
+            return {**value, 'departments': [] if value.get('is_logged_in') is True else None}
+        return value
 
     @model_validator(mode='after')
     def valid_state(self):
         if self.is_logged_in:
-            if not self.userid or not self.userid.strip() or not self.username or not self.username.strip() or self.ttl <= 0:
-                raise ValueError('有效登录必须包含用户身份和正数 TTL')
-        elif self.userid is not None or self.username is not None or self.ttl != 0:
+            if not self.userid or not self.userid.strip() or not self.username or not self.username.strip() or self.ttl <= 0 or self.departments is None:
+                raise ValueError('有效登录必须包含用户身份、部门列表和正数 TTL')
+        elif self.userid is not None or self.username is not None or self.departments is not None or self.ttl != 0:
             raise ValueError('失效登录不得携带有效身份或 TTL')
         return self

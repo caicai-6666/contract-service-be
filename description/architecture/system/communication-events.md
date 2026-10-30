@@ -81,7 +81,7 @@ await stream.aclose()
 
 澄清或确认请求也是本轮 `final`，然后 `completed` 关闭流。后续用户回复需注册同会话下的新轮次，不在旧轮次中等待或恢复；会话创建已通过 `POST /communication/conversations` 接入 SQLite，模型上下文继承仍未接通。异常取消、拒绝或失败可以没有最终答复。
 
-快照保留用于展示的中断消息，不是权威模型工作区或私有审计。用户取消后的模型上下文处理见[用户消息与上下文设计](../workflow/contract-communication/user-context.md)，尚未实现。
+快照保留用于展示的中断消息，不是权威模型工作区或私有审计。用户取消后的模型上下文处理已接入，见[用户消息与上下文设计](../workflow/contract-communication/user-context.md)和[上下文装配](../workflow/contract-communication/context-assembly.md)；中断半成品不成为已验收结论。
 
 `cancel_turn` 在同一条件锁内检查归属、当前状态及 `can_interrupt` 后提交 `cancelled`，随后唤醒订阅者。正式流程只有完整门禁通过并进入后续执行时才开放中断；注册、待激活及门禁期间禁止取消或替代。权限开放追加一次 processing 状态事件，激活时间及单调计时起点不变，历史同步更新。重复取消不重复发布，其他终态不改写。提交终态时权限归零、释放输入、标记中断消息；取消与替代、完成竞争的失败方不能改变既有终态。精确 HTTP 语义见 API 文档。
 

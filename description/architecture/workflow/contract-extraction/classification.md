@@ -24,7 +24,7 @@ flowchart TD
 
 ## 分类公共前缀节点
 
-`assemble_classification_context` 读取版本为 `contract-base-context-v4` 的不可变 `ContractBaseContext`，深复制其消息后，只在最后一个 user 内容块尾部追加分类公共规则，生成新的不可变 `ClassificationContext`。产物保留同一 `document_id`，独立记录 `classification-common-v8` 提示词版本和完整消息指纹，不修改或覆盖基础前缀。
+`assemble_classification_context` 读取版本为 `contract-base-context-v4` 的不可变 `ContractBaseContext`，深复制其消息后，只在最后一个 user 内容块尾部追加分类公共规则，生成新的不可变 `ClassificationContext`。产物保留同一 `document_id`，独立记录 `classification-common-v9` 提示词版本和完整消息指纹，不修改或覆盖基础前缀。
 
 公共规则统一说明单类别二元判断目标、合同页面图像事实边界、权威定义与专家卡片优先级、多标签核心权利义务判断方法，以及三个工具的短期记忆和终止协议。同一复合交易分别完整满足多个类别的核心结构时允许多标签；相邻类别可能成立不能自动否定当前类别。分类只使用文档结构中的单元页码、文字锚点和摘要辅助导航，明确忽略 `unit_locations` 坐标，不裁剪页面，也不输出视觉位置；导航不足时回退完整相关页面。`think` 被明确约束为依次比较核心交换、成立条件、排除规则、相邻类别和证据强弱；输出顺序固定为证据、推理摘要、决定。
 

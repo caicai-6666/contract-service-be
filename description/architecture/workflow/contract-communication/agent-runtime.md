@@ -6,9 +6,9 @@
 
 ## 入口与职责
 
-`agent_core/runtime.py` 的 `run_agent_core(service, conversation_id, turn_id, owner, *, context, ...)` 由正式启动装配注入 `CommunicationWorkflowService`。完整业务门禁通过后才运行。
+`agent_core/runtime.py` 的 `run_agent_loop(host, bindings, ...)` 为通用单任务循环。正式启动通过 `exploration.run_exploration` 适配 `CommunicationWorkflowService`，完整业务门禁通过后运行；`a2a.run_a2a_task` 另提供受信内部任务入口。宿主和交付边界见[模式划分](agent-modes.md)。旧 `run_agent_core` 仅保留探索兼容转发。
 
-主循环通过统一 ToolRegistry 提供三个工作区工具及 emit_progress、finish_task；additional_tools 接收完整 RegisteredTool，模型 Schema、参数解析与执行绑定从同一表生成，详见[统一工具注册](tool-execution.md#统一注册契约)。正式宿主另注册 view_session_file、view_contract_file 并注入页面解析器；另已注册记忆检索与翻页、外部专家求助与追问、合同一跳关联查看、元数据读取与注意事项分页；合同库自然语言检索尚未注册；不能把提示词中的能力说明当成工具已实现。采样、输出上限和 thinking 开关采用实际 MLLM generation 配置；默认最多 96 次生成、连续 3 次错误，均可通过入口参数调整。
+主循环通过统一 ToolRegistry 提供三个工作区工具；输出工具由模式装配，探索为 emit_progress、finish_task，A2A 仅 finish_task；additional_tools 接收完整 RegisteredTool，模型 Schema、参数解析与执行绑定从同一表生成，详见[统一工具注册](tool-execution.md#统一注册契约)。正式宿主另注册 view_session_file、view_contract_file 并注入页面解析器；另已注册记忆检索与翻页、外部专家求助与追问、合同一跳关联查看、元数据读取与注意事项分页；合同库自然语言检索尚未注册；不能把提示词中的能力说明当成工具已实现。采样、输出上限和 thinking 开关采用实际 MLLM generation 配置；默认最多 96 次生成、连续 3 次错误，均可通过入口参数调整。
 
 ---
 
@@ -44,11 +44,11 @@ emit_progress 发布阶段性输出后继续。finish_task 实际发布最终正
 
 ## 错误与审计
 
-无工具、多工具、输出截断、普通文本、非法 JSON 或重复调用 ID 进入有限协议恢复。工具明确失败时允许有限纠错；管理结果的 can_continue=false 不授权普通业务继续，纠错请求仍受完整上下文检查。unknown、压缩失败、容量不足则停止，不猜测副作用、不自动重放。
+无工具、多工具、输出截断、纯普通文本、非法 JSON 或重复调用 ID 进入有限协议恢复。单个合法原生调用允许附带 content，附文只留私有审计，成功历史统一 content=null。工具明确失败时允许有限纠错；管理结果的 can_continue=false 不授权普通业务继续，纠错请求仍受完整上下文检查。unknown、压缩失败、容量不足则停止，不猜测副作用、不自动重放。
 
 复用 ToolProtocolRecovery 管理连续失败边界，下一次动作完全通过后删除整段失败消息。成功交互才写入 payload.agent_messages。错误正文不回显，反馈使用统一 system-guidence 和注入的工具模板。
 
-私有审计保存在服务的每任务列表，包括模型响应、调用参数、用量、耗时和管理结果；普通输出文本限制长度，开启 thinking 后，已接受响应的原生推理由独立 FIFO 窗口按原位置回注。子 Agent 审计单独挂在对应调用下。审计不写入 SSE、工作区或摘要源；会话驱逐时释放，不是跨进程持久化审计。
+私有审计保存在服务的每任务列表，包括模型响应、调用参数、用量、耗时和管理结果；普通输出文本限制长度，开启 thinking 后，已接受响应的完整原生推理随对应 assistant 消息保留。子 Agent 审计单独挂在对应调用下。审计不写入 SSE、工作区或摘要源；会话驱逐时释放，不是跨进程持久化审计。
 
 ---
 
@@ -70,7 +70,9 @@ emit_progress 发布阶段性输出后继续。finish_task 实际发布最终正
 
 ## 真实模型首批实验
 
-实验入口为 [Agent Core 真实运行验证](../../../../experiment/agent-core-live/README.md)。通过局部注册表注入mock检索/打开工具，实际加载data/contract页面PNG，正式主循环、工作区/FIFO管理、摘要生成、内存提交和SQLite备份真实运行。图片回传由实验适配器完成，不代表通用生产文件工具已实现。
+> **本地验证记录：** 本文列出的 `experiment/`、`tests/` 或 `output/` 路径未随源码分发，仅保留历史追溯信息；本次文档核对未重新执行这些实验或核验缺失产物。
+
+实验入口为 Agent Core 真实运行验证（本地路径：`experiment/agent-core-live/README.md`）。通过局部注册表注入mock检索/打开工具，实际加载data/contract页面PNG，正式主循环、工作区/FIFO管理、摘要生成、内存提交和SQLite备份真实运行。图片回传由实验适配器完成，不代表通用生产文件工具已实现。
 
 长轨迹预置20个已结束任务、60组成功工具交互，约2.66万FIFO token，重点执行最后1～2个用户任务。基线发现workspace_add将对象value输出/解析为字符串，连续校验失败；替换已有条目、删除冗余、80%主动整理与满容量自动压缩均出现成功。对照限制只更新已有条目后，短轨迹和自动摘要后的长轨迹各两个用户任务完整完成，历史位置、剩余任务和重载均一致。详细结果和限制以各运行analysis.md为准，不将对照通过解释为新增工具已经修复。
 
@@ -79,9 +81,9 @@ emit_progress 发布阶段性输出后继续。finish_task 实际发布最终正
 
 ## 正式门禁连接与本机启用
 
-启动装配已连接 `业务门禁 → 准入附件及记录摘要/页数 → 上下文装配 → run_agent_core → finish_task → 任务终态与后台备份`。全程复用同一 conversation_id、turn_id 与 SSE 队列。拒绝或门禁失败不调用主助手；主助手失败也不改写为门禁拒绝。
+启动装配已连接 `业务门禁 → 准入附件及记录摘要/页数 → 上下文装配 → run_exploration → run_agent_loop → finish_task → 任务终态与后台备份`。全程复用同一 conversation_id、turn_id 与 SSE 队列。拒绝或门禁失败不调用主助手；主助手失败也不改写为门禁拒绝。
 
-正式启动始终绑定 `run_agent_core`，演示服务及配置开关已移除。启动日志输出“Communication 正式问答已启用”。当前正式注册工具包括工作区增删改、两种用户输出与两种文件查看工具；文件检索及外部检索尚未注册。文件查看的来源、授权、落盘限制与生命周期见[文件工具装配](page-content-management.md#正式循环装配)。
+正式启动始终绑定 `run_exploration`，演示服务及配置开关已移除。启动日志输出“Communication 正式问答已启用”。当前正式工具包括工作区增删改、用户输出、日期计算、附件/合同查看、合同候选查询与分页、图像与关系检索、合同元数据/注意事项/通行证读取、合同库统计、记忆检索、网页搜索/正文及图片阅读和外部专家求助。文件查看的来源、授权、落盘限制与生命周期见[文件工具装配](page-content-management.md#正式循环装配)。
 
 `tests/test_gate_agent_core_integration.py` 以真实门禁图、真实主循环和管理图验证同轮执行，仅替换模型与分词接口：放行后附件描述进入上下文，字符串对象新增成功并刷新下一轮工作区，唯一 final 收束并备份；损坏 PDF 被拒绝时模型循环不被调用。这些回归验证编排连接，不宣称门禁模型的实际判断质量。
 
@@ -89,12 +91,12 @@ emit_progress 发布阶段性输出后继续。finish_task 实际发布最终正
 普通工具结果默认保持原反馈与轨迹格式；注册项现已声明成功返回的内容类别（ordinary/foldable）。主循环注入异步 page_resolver 后支持可折叠内容的可配置轮数的展示与隐藏；未注入时仍拒绝此类注册项，详见[工具返回契约](tool-execution.md#工具返回的内容分类)。
 
 
-原生思考的 K 轮窗口、跨任务定位及重启恢复见[原生思考 FIFO 窗口](reasoning-window.md)。默认保留 3 轮，不设思考窗口独立的 token 上限；仅保存已接受动作对应的完整思考，任务结束后窗口仍可保留该任务的条目。
+原生思考随每条已接受的 assistant 消息完整保留，不再设置独立轮数窗口或存储表，随任务轨迹备份和恢复；任务被正常 FIFO 摘要覆盖后不再注入。详见[原生思考随消息保留](reasoning-window.md)。
 
 
 ## 用户输出流式展示
 
-主循环请求使用流式工具响应，仅对 `emit_progress` 和 `finish_task` 增量展示正文，未增加工具注册属性。完整工具响应仍由 FIFO 管理及工具校验后提交；失败预览标记 interrupted，并排除出模型的成功轨迹。传输、前端消费与恢复边界见[交互工具增量展示](interaction-tools.md#增量展示)。
+探索工厂通过可选输出观察器启用流式正文，输出工具以 `output_kind` 注册元数据声明类别。A2A 不装配正文流式回调。完整工具响应仍由 FIFO 管理及工具校验后提交；失败预览标记 interrupted，并排除出模型的成功轨迹。传输、前端消费与恢复边界见[交互工具增量展示](interaction-tools.md#增量展示)。
 
 
 ## 工具执行状态展示
@@ -105,4 +107,4 @@ emit_progress 发布阶段性输出后继续。finish_task 实际发布最终正
 合同图像检索与结果查看已通过正式 `CommunicationFileTools` 注入同一注册表、FIFO 执行及页面解析器，详见[合同图像相似检索](contract-image-search.md)。
 
 
-`search_contracts_by_question` 已注入同一工具注册表，可引用图像或问题检索的已有结果集限定范围；分页仍由 `view_contract_search_results` 提供，详见[按问题检索合同](contract-question-search.md)。
+问题、备注、摘要、名称和条款查询现仅向合同候选子 Agent 注册；主模型调用 search_contracts 与 view_contract_candidates。图像检索仍独立使用 view_contract_search_results。入口、范围及跨查询排名融合见[合同候选查询子图](contract-retrieval.md)。

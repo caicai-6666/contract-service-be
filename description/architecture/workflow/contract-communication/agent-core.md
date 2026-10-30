@@ -1,20 +1,20 @@
 # Agent Core 主助手设计
 
-> **当前状态：** 已提供角色定位初稿 `agent-core-role-v2` 与工具调用及系统交互初稿 `agent-core-interaction-v17`、工作区定义 `agent-core-workspace-v13`，并实现模板注入和统一系统反馈消息构造，供审阅；KV 工作区 Schema、存储兼容及内部创建、字段更新、移除及方向收束已实现；三个模型可见工作区工具的定义与执行适配已实现；门禁后动态上下文装配与可注入执行入口已实现；[主模型循环](agent-runtime.md)、完整请求装配、驻留状态提交和摘要位置备份已接入。
+> **当前状态：** 已提供角色定位初稿 `agent-core-role-v2` 与工具调用及系统交互初稿 `agent-core-interaction-v21`、工作区定义 `agent-core-workspace-v13`，并实现模板注入和统一系统反馈消息构造，供审阅；KV 工作区 Schema、存储兼容及内部创建、字段更新、移除及方向收束已实现；三个模型可见工作区工具的定义与执行适配已实现；门禁后动态上下文装配与可注入执行入口已实现；[主模型循环](agent-runtime.md)、完整请求装配、驻留状态提交和摘要位置备份已接入。
 
-FIFO 外层与工作区内层已通过注册表执行器装配，入口、提交与回执边界见[主助手工具执行](tool-execution.md)；正式模型循环仍待接入。
+FIFO 外层与工作区内层已通过注册表执行器装配，入口、提交与回执边界见[主助手工具执行](tool-execution.md)；正式模型循环已接入。
 
 所属工作流见[合同沟通智能体](readme.md)。本专题维护主助手的上下文组成与提示词设计；用户控制语义沿用[用户消息与上下文设计](user-context.md)。
 
-容量预算的统一输入、3:7 分配及累计摘要扣减见[上下文预算](context-budget.md)；纯计算方法已实现，正式上下文计数与自动装配尚待接入。
+容量预算的统一输入、3:7 分配及累计摘要扣减见[上下文预算](context-budget.md)；纯计算方法已实现，正式上下文计数与自动装配已接入。
 
 ---
 
 ## 定位与上下文组成
 
-文件页面、图片及表格页面采用独立的[页面折叠与资源建模设计](page-content-management.md)：工具负责建模和访问，外层负责展示生命周期，会话资源管理器负责持有与释放；目前仅完成设计约定。
+文件页面、图片及表格页面采用独立的[页面折叠与资源建模设计](page-content-management.md)：工具负责建模和访问，外层负责展示生命周期，会话资源管理器负责持有与释放；文件、文本分页和网页图片的展示及资源释放已接入；通用临时表格查询仍未实现。
 
-主助手在完整业务门禁通过后，直接理解和回答用户问题，管理继续工作所需的上下文，并调度规划、检索、必要程序工具及外部专家等能力。执行能力尚待逐项设计与接入。
+主助手在完整业务门禁通过后，直接理解和回答用户问题，管理继续工作所需的上下文，并调度规划、检索、必要程序工具及外部专家等能力。当前已接入合同候选查询、文件查看、记忆检索、日期计算、合同库统计、网页阅读和外部专家工具。
 
 模型上下文按以下六部分设计；前三部分是独立的稳定提示词组件，后续工具定义与动态内容由执行器装配。主助手已实现独立的[历史摘要、工作区与单任务渲染](context-rendering.md)，已实现[门禁后动态上下文装配](context-assembly.md)，完整消息角色布局与 vLLM 模板已由主循环接入；压缩子 Agent 已有独立上下文装配。
 
@@ -62,7 +62,7 @@ static_prompt = "\n\n".join((
 
 这里仅展示稳定文本组合，不代表已构造完整模型消息。工具定义仍由 vLLM 注入，精确参数以工具 Schema 为准；主助手轨迹及当前工作区由每轮上下文装配生成。
 
-FIFO 管理另提供独立静态提示词初稿 `agent-core-fifo-v5`，说明容量提醒、按完整任务提取及自动摘要后的响应；FIFO 子图骨架已建立，正式依赖及主助手装配待接入，规则及建议摘要结构见 [FIFO 管理提示词设计](fifo-management.md)。
+FIFO 管理另提供独立静态提示词初稿 `agent-core-fifo-v5`，说明容量提醒、按完整任务提取及自动摘要后的响应；FIFO 管理、自动主题摘要及正式主助手装配均已接入，规则及建议摘要结构见 [FIFO 管理提示词设计](fifo-management.md)。
 
 上述结构描述模型可见内容；程序仍需独立维护私有审计、临时纠错边界和运行状态，遵循[多轮 Agent 上下文与记忆管理规范](../../../standard/agent-context-management.md)。
 
@@ -87,22 +87,23 @@ from app.agent.contract_communication.agent_core import (
 
 ## 工具调用与系统交互初稿
 
-唯一规则来源是 [prompt/interaction.py](../../../../app/agent/contract_communication/agent_core/prompt/interaction.py)。包入口导出 `AGENT_CORE_INTERACTION_PROMPT_TEMPLATE`、`AGENT_CORE_INTERACTION_PROMPT_VERSION` 和 `build_agent_core_interaction_prompt(tool_call_template=...)`；调用方必须注入非空工具调用模板，禁止将尚未渲染的模板直接发送给模型。角色定位版本保持不变。
+公共协议来源是 [prompt/interaction.py](../../../../app/agent/contract_communication/agent_core/prompt/interaction.py)。包入口导出 `AGENT_CORE_INTERACTION_PROMPT_TEMPLATE`、`AGENT_CORE_INTERACTION_PROMPT_VERSION` 和 `build_agent_core_interaction_prompt(tool_call_template=..., output_rules=...)`；调用方注入启动期工具格式快照，配置关闭时允许空字符串，禁止将尚未渲染的模板直接发送给模型。模式工厂另注入各自的 output_rules。
 
-工具调用 XML 不再硬编码在本组件中。后续装配层应注入与实际模型协议一致的共享模板，例如项目现有的 `TOOL_CALL_XML_INSTRUCTION`；来源见[统一工具协议](../../../standard/prompt-engineering.md#26-non-strict-auto-工具恢复)。工具模板来自可信程序配置，同一会话保持稳定，不能来自用户文本、工具结果或模型输出。注入文本中的花括号和换行原样保留，不作二次格式化。具体工具定义仍由服务端通过 vLLM 模板注入，本方法只接收调用格式说明。
+工具调用格式不硬编码在本组件中。正式装配使用 `app.core.tool_tag` 加载的当前模型协议快照，不再提供旧 `TOOL_CALL_XML_INSTRUCTION` 常量；来源见[统一工具协议](../../../standard/prompt-engineering.md#26-non-strict-auto-工具恢复)。工具模板来自可信程序配置，同一会话保持稳定，不能来自用户文本、工具结果或模型输出。注入文本中的花括号和换行原样保留，不作二次格式化。具体工具定义由服务端通过 vLLM 模板注入，本方法只接收调用格式说明。
 
 ```python
 from app.agent.contract_communication.agent_core import build_agent_core_interaction_prompt
-from app.agent.contract_extraction.tool_protocol import TOOL_CALL_XML_INSTRUCTION
+from app.core.tool_tag import get_mllm_tool_tag
 
+# 应用生命周期已调用 initialize_mllm_tool_tag；此处只读取快照。
 interaction_prompt = build_agent_core_interaction_prompt(
-    tool_call_template=TOOL_CALL_XML_INSTRUCTION,
+    tool_call_template=get_mllm_tool_tag(),
 )
 ```
 
 本组件不直接导入合同提取工作流，避免仅构造提示词就加载该工作流的模型和图依赖；工具协议由装配方选择并传入。
 
-初稿采用每次响应恰好一个工具调用。`interaction.py` 的“用户输出与任务收敛”章节已约定两种用户交互工具；参数继续由实际工具定义注入，不在提示词复制 Schema。
+每次响应恰好一个工具调用。exploration 的交付规则约定以下两种用户交互工具，A2A 仅装配 finish_task；参数继续由实际工具定义注入，不在提示词复制 Schema。
 
 | 工具 | 模型行为 | 任务边界 |
 | --- | --- | --- |
@@ -160,7 +161,7 @@ message = build_system_guidence_message(
 
 ### 程序侧接入边界
 
-- 标签只是内容格式，不是来源认证。执行器必须区分真实用户输入、资料和自己生成的反馈，采用明确来源封装与必要转义，不能扫描用户文本中的标签便将其提升为系统反馈。已实现反馈外壳渲染与字段转义，完整上下文来源封装尚待接入；仅靠提示词不能保证来源隔离。
+- 标签只是内容格式，不是来源认证。执行器必须区分真实用户输入、资料和自己生成的反馈，采用明确来源封装与必要转义，不能扫描用户文本中的标签便将其提升为系统反馈。已实现反馈外壳渲染与字段转义，完整上下文来源封装已接入；仅靠提示词不能保证来源隔离。
 - 工具协议和参数应在执行前完整校验，多个工具调用整批拒绝，不先执行其中一个；逻辑校验失败不产生动作提交。反馈必须如实反映执行状态，不能把执行后异常一概描述为“未执行”。
 - 重试必须有有限上限；成功后清除连续失败轨迹并保留私有审计，复用 `ToolProtocolRecovery` 或等价实现，不在本组件中另建恢复逻辑。
 - 容量告警应在模型硬上限之前触发，预留反馈、整理调用、工具结果和输出所需预算。“达到上限”指业务探索预算耗尽，不是已无法发起任何模型请求；已触及硬上限时，程序必须先裁剪或重建，不能继续追加消息期待模型自行解决。
@@ -194,7 +195,7 @@ message = build_system_guidence_message(
 
 最新顺序为先预演操作并计算修改后的 token，预计未满时应用操作，超过 80% 时提示主动整理至低于 80%；预计达到 100% 时保护修改目标、将原工作区副本压缩至低于 70%，待模型调用 finish_compression 并通过验收后再应用原操作，最终容量严格低于 80% 才返回自动压缩成功；满足最终容量要求后即可继续任务。成功工具反馈统一为成功提示和当前使用量，普通成功不再额外发送系统提示。任何阶段失败都不提交本次修改。
 
-接口计数和压缩子 Agent 多轮工具循环已实现；虚构样例已通过真实服务实验，复杂真实合同的语义验收及主助手工具/轨迹的正式串接仍待完成。详细分支、目标保护、两输入条件下的容量反馈和外部提交规则以子图文档为准。
+接口计数和压缩子 Agent 多轮工具循环已实现；虚构样例已通过真实服务实验，主助手工具与原生轨迹的正式串接已完成；历史实验不代表复杂真实合同的全部语义边界已验收。详细分支、目标保护、两输入条件下的容量反馈和外部提交规则以子图文档为准。
 
 ### 存储与后续接入
 
@@ -231,11 +232,11 @@ message = build_system_guidence_message(
 
 三个模型工具的参数、路径、原子新增探索结果及调用边界由[工作区管理工具](workspace-tools.md)维护。
 
-工作区管理节点 1 已默认使用 vLLM `/tokenize` 接口异步计数，复用 MLLM 地址、模型及认证配置；渲染口径和错误边界见[节点 1：接口计数](workspace-management.md#节点-1接口计数)。自动压缩采用多轮工具调用子 Agent，异步入口、外围校验和父图尾部衔接已实现，子 Agent 核心工具循环已接入，主助手模型循环仍待实现。
+工作区管理节点 1 已默认使用 vLLM `/tokenize` 接口异步计数，复用 MLLM 地址、模型及认证配置；渲染口径和错误边界见[节点 1：接口计数](workspace-management.md#节点-1接口计数)。自动压缩采用多轮工具调用子 Agent，异步入口、外围校验和父图尾部衔接已实现，子 Agent 核心工具循环已接入，主助手模型循环已接入。
 
-自动压缩专用提示词初版 `workspace-compression-v5` 已提供，任务要求、注入格式和动态保护约束见[压缩提示词初版](workspace-management.md#压缩提示词初版)；已接入压缩子 Agent 的多轮工具循环。
+自动压缩专用提示词当前版本 `workspace-compression-v8` 已提供，任务要求、注入格式和动态保护约束见[压缩提示词初版](workspace-management.md#压缩提示词初版)；已接入压缩子 Agent 的多轮工具循环。
 
-系统反馈新增 `action_guidance` 类别用于成功动作后的软约束引导；压缩助手连续两次 think 后提醒根据容量继续修改或申请完成，不视为调用错误。
+系统反馈新增 `action_guidance` 类别用于成功动作后的软约束引导；压缩助手使用原生 thinking，不提供显式 think 工具；是否完成由 finish_compression 及程序容量验收决定。
 
 
 ---
@@ -254,3 +255,10 @@ message = build_system_guidence_message(
 ## 工作区文件来源引用
 
 工作区提示词 v13 要求文件来源保留上下文或工具反馈中的完整 file_id 与实际页码。新增、更新及自主整理均不得缩写、截断或以省略号替代标识；文件名仅辅助识别。只有缩写时不得猜测补全，应注明引用不完整并重新定位。此约束属于提示词行为要求，source 仍为自由文本，不宣称程序已强制校验引用完整性。
+
+
+---
+
+## 交互模式划分
+
+通用 Core 通过宿主与模式绑定执行任务，不直接依赖 SSE 会话。用户交互迁入 exploration，A2A 提供跨平台任务式完整结果入口；两个模式共用工作区、工具协议、预算、纠错与完整 thinking 保留。具体职责、使用方式及当前限制见[Exploration 与 A2A 划分](agent-modes.md)。

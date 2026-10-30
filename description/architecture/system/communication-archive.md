@@ -115,4 +115,6 @@ python -m unittest discover -s tests -p 'test_memory*.py'
 
 ## 真实Embedding链路验证
 
-已运行独立[归档链路实验](../../../experiment/memory-persistence-live/README.md)：12任务经正式筛选、单任务图和真实Embedding处理，成功保存12条检索记录，其中3条筛选跳过、9条含向量，共22个区域向量。主动注入SQLite失败后整批回滚，重试成功；强制尾批完成后安全驱逐，新建历史服务恢复工作区/窗口且不重复编码。具体产物与边界见[实验分析](../../../experiment/memory-persistence-live/output/20260916T054858.732596Z/analysis.md)。本次不调用MLLM，不操作生产库。
+> **本地验证记录：** 本文列出的 `experiment/`、`tests/` 或 `output/` 路径未随源码分发，仅保留历史追溯信息；本次文档核对未重新执行这些实验或核验缺失产物。
+
+已运行独立归档链路实验（本地路径：`experiment/memory-persistence-live/README.md`）：12任务经正式筛选、单任务图和真实Embedding处理，成功保存12条检索记录，其中3条筛选跳过、9条含向量，共22个区域向量。主动注入SQLite失败后整批回滚，重试成功；强制尾批完成后安全驱逐，新建历史服务恢复工作区/窗口且不重复编码。具体产物与边界见实验分析（本地路径：`experiment/memory-persistence-live/output/20260916T054858.732596Z/analysis.md`）。本次不调用MLLM，不操作生产库。

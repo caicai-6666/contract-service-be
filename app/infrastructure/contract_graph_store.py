@@ -188,7 +188,7 @@ class ContractGraphStore:
         return neighbors
 
 
-    async def search_candidates(self, contract_id=None, *, limit=10000, relation_ids=None):
+    async def search_candidates(self, contract_id=None, *, limit=10000, relation_ids=None, document_ids=None):
         """有起点时先匹配邻边；无起点按物理方向读取一次，避免无向边重复。"""
         if contract_id is not None:
             self._validate_id(contract_id)
@@ -196,14 +196,19 @@ class ContractGraphStore:
                 raise ContractGraphNodeMissingError('合同图节点缺失，请同步后重试')
         pattern = ('MATCH (a:Contract {document_id:$id})-[r:RELATED_TO]-(b:Contract) '
                    if contract_id is not None else 'MATCH (a:Contract)-[r:RELATED_TO]->(b:Contract) ')
-        where = 'WHERE r.relation_id IN $ids ' if relation_ids is not None else ''
+        conditions = []
+        if relation_ids is not None: conditions.append('r.relation_id IN $ids')
+        # A2A 必须在候选上限前约束两端，隐藏合同不能挤占可见结果或触发全库上限。
+        if document_ids is not None:
+            conditions.append('a.document_id IN $documents AND b.document_id IN $documents')
+        where = 'WHERE ' + ' AND '.join(conditions) + ' ' if conditions else ''
         result = await self._client.query(pattern+where+
             'RETURN a.document_id AS document_id_a,b.document_id AS document_id_b, '
             'r.relation_id AS relation_id,r.description AS description, '
             'r.description_embedding AS description_embedding,r.embedding_model AS embedding_model, '
             'r.embedding_version AS embedding_version,r.embedding_dimensions AS embedding_dimensions '
             'ORDER BY r.relation_id LIMIT $limit',
-            {'id':contract_id,'ids':list(relation_ids) if relation_ids is not None else None,'limit':limit+1})
+            {'id':contract_id,'ids':list(relation_ids) if relation_ids is not None else None,'limit':limit+1,'documents':list(document_ids) if document_ids is not None else None})
         if len(result.records)>limit:
             raise ValueError('关系候选超过安全上限，请指定合同缩小范围')
         return [dict(r) for r in result.records]

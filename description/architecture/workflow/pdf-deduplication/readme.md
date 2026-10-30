@@ -80,7 +80,9 @@ flowchart TD
 
 召回请求把 `PDF_DEDUP_MINIMUM_RECALL_COSINE_SIMILARITY` 直接传给 ES 的 `knn.similarity`，默认原始 cosine 门槛为 `0.60`。ES 在近邻探索后排除低于门槛的向量，因此结果可以是 0～3 条；候选为空表示当前索引没有达到最低相似度的 PDF，可以直接形成唯一结论。该参数只决定是否值得进入 MLLM，不直接形成重复关系。
 
-`PDFDuplicateCandidate.score` 保存响应中的 ES `_score`，不是原始 cosine。当前 mapping 使用 cosine 时，二者满足 `_score = (1 + cosine) / 2`，所以默认原始门槛 `0.60` 对应 `_score 0.80`；节点使用 ES 原生 `similarity` 参数，避免在应用层混用两种口径。阈值来源、正负样本回放和风险边界见[尾页加权实验分析](../../../../experiment/pdf-page-fusion-weighting/output/20260901T114337.345239Z/analysis.md)。达到门槛的候选中仍可能存在同模板或关联合同，ES 分数只决定比较顺序，最终关系必须由 MLLM 判断。
+> **本地验证记录：** 本文列出的 `experiment/`、`tests/` 或 `output/` 路径未随源码分发，仅保留历史追溯信息；本次文档核对未重新执行这些实验或核验缺失产物。
+
+`PDFDuplicateCandidate.score` 保存响应中的 ES `_score`，不是原始 cosine。当前 mapping 使用 cosine 时，二者满足 `_score = (1 + cosine) / 2`，所以默认原始门槛 `0.60` 对应 `_score 0.80`；节点使用 ES 原生 `similarity` 参数，避免在应用层混用两种口径。阈值来源、正负样本回放和风险边界见尾页加权实验分析（本地路径：`experiment/pdf-page-fusion-weighting/output/20260901T114337.345239Z/analysis.md`）。达到门槛的候选中仍可能存在同模板或关联合同，ES 分数只决定比较顺序，最终关系必须由 MLLM 判断。
 
 ### 并发逐候选判重
 
@@ -139,7 +141,7 @@ flowchart TD
 
 ### 全量查看策略提示词
 
-`judge_full_documents` 使用版本为 `full-document-relation-judgment-v5` 的专属策略提示词。它追加在“上传页面阅读前缀 + 共同关系标准”之后，再次确认 A 是前面已经提供的上传合同、B 是随后提供的候选合同，只规定两份文档当前包含的全部页面图像一次性提供时如何核对，不重复三分类定义。完整文本和确定性追加函数位于 `app.agent.pdf_deduplication.prompt.full_document`。
+`judge_full_documents` 使用版本为 `full-document-relation-judgment-v6` 的专属策略提示词。它追加在“上传页面阅读前缀 + 共同关系标准”之后，再次确认 A 是前面已经提供的上传合同、B 是随后提供的候选合同，只规定两份文档当前包含的全部页面图像一次性提供时如何核对，不重复三分类定义。完整文本和确定性追加函数位于 `app.agent.pdf_deduplication.prompt.full_document`。
 
 该策略要求按两份文档各自物理页码核对全部可用页面图像，不把“全部可用”误解为原始合同必然无缺页，并禁止请求未提供的额外页面。每轮只允许一个工具动作：`think` 提供真实分析与推理空间，reasoning 最多2000字符，并且最多连续调用两次；证据充分时使用 `submit_contract_relation`；只有材料本身无法支持任何关系且至少完成一次 `think` 核对后，才能使用 `report_unable_to_determine_relation`。工具调用及纠错提示统一使用启动时加载的 tool-tag 协议。
 
@@ -161,7 +163,7 @@ flowchart TD
 
 ### 候选页面导航提示词
 
-长文档路线使用版本为 `candidate-page-navigation-judgment-v5` 的专属提示词，完整文本、确定性组装函数和逐轮上下文构造函数位于 `app.agent.pdf_deduplication.prompt.page_navigation`。候选页面查看和观察记录工具使用独立 Pydantic 契约，候选指南、证据工作区及有限执行循环已经接入 `judge_with_page_navigation_agent`。
+长文档路线使用版本为 `candidate-page-navigation-judgment-v6` 的专属提示词，完整文本、确定性组装函数和逐轮上下文构造函数位于 `app.agent.pdf_deduplication.prompt.page_navigation`。候选页面查看和观察记录工具使用独立 Pydantic 契约，候选指南、证据工作区及有限执行循环已经接入 `judge_with_page_navigation_agent`。
 
 该路线采用不对称查看：上传合同 A 的全部可用页面始终位于共同关系标准之前，候选合同 B 不一次性提供全部视觉页面，而是先提供确定性 JSON 导航指南。当前指南只包含文档标识、页数、各页尺寸、方向、视觉 token 及首页、尾页和四分位回退位置；尚未接入复核后 Core、条款页定位或页面摘要。指南只具有导航作用，未实际查看的候选页面不能进入正式页面证据。
 
@@ -214,6 +216,6 @@ flowchart TD
 
 应用流程在合同文档识别可靠判定为合同后、合同结构识别前运行查重；非合同不会进入本工作流。应用层从内部 Top-3 判断中过滤出 `duplicate` 和 `similar` 前端对象，每项只公开原始 cosine、关系、简洁理由，以及 Elasticsearch 原样提供的 `document_id`、友好 `file_name`、`file_uri`、审核人 `reviewer` 和页数；`different`、`failed`、页面融合向量、完整工具轨迹及内部错误仍留在聚合私有状态。过滤后保留原始 ES 排名，因此 `rank` 可以不连续。SSE 发布 `run.deduplication_review_required` 后停止推进，运行状态变为 `awaiting_deduplication_review`，等待期最长 600 秒；普通快照、SSE 订阅与心跳均不续期。前端通过 `POST .../{run_id}/continue` 消费一次暂停点后，才依次开始合同结构识别、分类、建议名称生成和三个业务分支。
 
-候选 PDF 不以内联 Base64 进入 SSE，也不再生成依赖当前运行生命周期的 `pdf_url`。前端把 `file_uri` 作为查询参数传给[资源文件 API](../../api/resource.md)以读取处理版 PDF；资源接口独立执行路径限制和存在性校验。前端通过其他独立接口删除或处理候选时，不得直接修改本次运行已经形成的查重结果。
+候选 PDF 不以内联 Base64 进入 SSE，也不再生成依赖当前运行生命周期的 `pdf_url`。前端把 `file_uri` 作为查询参数传给[资源文件 API](../../../api/resource.md)以读取处理版 PDF；资源接口独立执行路径限制和存在性校验。前端通过其他独立接口删除或处理候选时，不得直接修改本次运行已经形成的查重结果。
 
 后续仍需使用真实模型扩展 `similar`、`different`、无法判断及协议恢复样本，并根据测试结果优化证据引用和页面查看预算；这些验证不改变当前暂停与继续协议。

@@ -1,4 +1,6 @@
 """压缩子 Agent 的调用边界；多轮工具循环已接入，不另建 LangGraph。"""
+from app.infrastructure.model_feedback import ModelFeedbackError, schema_validation_feedback
+from pydantic import ValidationError
 from collections.abc import Awaitable, Callable
 
 from app.schema.communication_workspace import WorkspacePayload
@@ -28,19 +30,19 @@ def validate_compression_candidate(request: CompressionRequest, raw_candidate) -
     content = candidate.model_dump()
     for path, value in request.protected_values.items():
         if _get(content, path) != value:
-            raise ValueError('压缩改变了保护目标或引用')
+            raise ModelFeedbackError('压缩改变了受保护目标或引用。','保持protected_values指定位置的原值，不替换祖先来绕过保护；选择未保护的冗余信息精简。')
     if request.reserved_path:
         parent_path, key = request.reserved_path.rsplit('/', 1)
         if key in _get(content, parent_path):
-            raise ValueError('压缩占用了新增 ID')
+            raise ModelFeedbackError('压缩占用了原操作预留的新增位置。','不要在reserved_path新增或迁移条目，保留该位置供父操作使用。')
     for key, value in candidate.known_information.items():
         original = request.workspace.known_information.get(key)
         if original and value.status != original.status:
-            raise ValueError('压缩不能改变信息确认状态')
+            raise ModelFeedbackError('压缩改变了已有信息的确认状态。','保留原status，只精简文字，不把未核实信息升级为已确认。')
     for key, value in candidate.explored_directions.items():
         original = request.workspace.explored_directions.get(key)
         if original is None or value.outcome != original.outcome:
-            raise ValueError('压缩不能创建探索成果或改变探索结果')
+            raise ModelFeedbackError('压缩创建了探索成果或改变了原探索结果。','保留原outcome，不创建新探索结果，未执行事项保持未完成。')
     return candidate
 
 
@@ -68,6 +70,11 @@ async def run_workspace_compression_agent(
         else:
             raw_candidate = await compressor(request.model_copy(deep=True))
         candidate = validate_compression_candidate(request, raw_candidate)
+    except ModelFeedbackError as exc:
+        audit.append({'event':'agent_failed','error_type':type(exc).__name__, 'feedback':exc.public_text})
+        return error(exc.public_text)
+    except ValidationError as exc:
+        return error(schema_validation_feedback(exc, WorkspacePayload)+' 压缩候选未提交，原工作区保持不变。')
     except Exception as exc:
         audit.append({'event': 'agent_failed', 'error_type': type(exc).__name__})
         return error('自动压缩执行或验收失败；本次操作未执行，原工作区保持不变。')

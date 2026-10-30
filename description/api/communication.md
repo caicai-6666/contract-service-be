@@ -73,7 +73,7 @@
 ### 请求示例
 
 ```bash
-curl 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations' \
+curl 'http://127.0.0.1:17000/knowledge-accumulation/contract/api/communication/conversations' \
   -H 'Authorization: Bearer <用户 access_token>'
 ```
 
@@ -177,7 +177,7 @@ model_context_start_sequence 仍表示内部模型窗口起点，可能指向未
 ### 请求示例
 
 ```bash
-curl -X POST 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations/c1/open' \
+curl -X POST 'http://127.0.0.1:17000/knowledge-accumulation/contract/api/communication/conversations/c1/open' \
   -H 'Authorization: Bearer <用户 access_token>'
 ```
 
@@ -187,7 +187,7 @@ curl -X POST 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communi
 
 会话可能在空闲至少三十分钟且连续三次扫描无活动、归档全部成功后从内存驱逐。open 会重新从 SQLite 加载工作区及最新摘要窗口；不恢复已回收的实时 SSE 事件源。后台总结/向量化不改写原任务 payload，也不向此响应添加向量或加工标记。
 
-驻留历史中的任务供前端查看，摘要仅内部保留；模型历史窗口始终为最新摘要及其后记录，不受向前刷新影响。已实现内部 get_model_records 方法执行该截取，尚未接入真实模型；权限后的状态过滤、token 预算及消息格式组装仍由后续 Agent 层完成。
+驻留历史中的任务供前端查看，摘要仅内部保留；模型历史窗口始终为最新摘要及其后记录，不受向前刷新影响。内部 get_model_records 提供窗口候选；正式 Agent Core 已接入按任务状态筛选、工作区与原生消息装配、FIFO 压缩及完整请求 token 校验，详见[门禁后上下文装配](../architecture/workflow/contract-communication/context-assembly.md)。
 
 ---
 
@@ -250,7 +250,7 @@ model_context_start_sequence 仍表示内部模型窗口起点，可能指向未
 ### 请求示例
 
 ```bash
-curl -X POST 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations/c1/refresh' \
+curl -X POST 'http://127.0.0.1:17000/knowledge-accumulation/contract/api/communication/conversations/c1/refresh' \
   -H 'Authorization: Bearer <用户 access_token>'
 ```
 
@@ -311,7 +311,7 @@ curl -X POST 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communi
 ### 请求示例
 
 ```bash
-curl -X PATCH 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations/c1' \
+curl -X PATCH 'http://127.0.0.1:17000/knowledge-accumulation/contract/api/communication/conversations/c1' \
   -H 'Authorization: Bearer <用户 access_token>' \
   -H 'Content-Type: application/json' \
   -d '{"name":"采购合同分析"}'
@@ -355,7 +355,7 @@ curl -X PATCH 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/commun
 ### 请求示例
 
 ```bash
-curl -i -X DELETE 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations/c1' \
+curl -i -X DELETE 'http://127.0.0.1:17000/knowledge-accumulation/contract/api/communication/conversations/c1' \
   -H 'Authorization: Bearer <用户 access_token>'
 ```
 
@@ -453,7 +453,7 @@ curl -i -X DELETE 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/co
 ### 请求示例
 
 ```bash
-curl -X POST 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations' \
+curl -X POST 'http://127.0.0.1:17000/knowledge-accumulation/contract/api/communication/conversations' \
   -H 'Authorization: Bearer <用户 access_token>' \
   -F 'name=采购合同分析' \
   -F 'text=请查看这些合同' \
@@ -543,7 +543,7 @@ curl -X POST 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communi
 普通后续问题：
 
 ```bash
-curl -X POST 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations/c1/turns' \
+curl -X POST 'http://127.0.0.1:17000/knowledge-accumulation/contract/api/communication/conversations/c1/turns' \
   -H 'Authorization: Bearer <用户 access_token>' \
   -F 'text=进一步分析付款条件'
 ```
@@ -551,7 +551,7 @@ curl -X POST 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communi
 调整执行中的方向：
 
 ```bash
-curl -X POST 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations/c1/turns' \
+curl -X POST 'http://127.0.0.1:17000/knowledge-accumulation/contract/api/communication/conversations/c1/turns' \
   -H 'Authorization: Bearer <用户 access_token>' \
   -F 'text=先只分析验收条款' \
   -F 'supersedes_turn_id=t1'
@@ -561,7 +561,7 @@ curl -X POST 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communi
 
 输入校验或注册失败不替换旧轮次。替代成功后旧轮次变为 `superseded`，其 `context_status=user_goal_adjusted`，旧流关闭；新轮次仍待激活。新轮次过期不会恢复旧轮次。旧轮次已结束时直接创建普通新轮次，不改写旧终态。
 
-不自动继承旧文字或文件，替代后旧运行时输入字节释放，但原文字和文件引用仍保留在同一会话的冻结轨迹中并后台备份。请求暂不具备幂等键；已有活跃轮次时重复提交会冲突。正式执行器只允许替代完整门禁通过后的任务，并停止旧后续执行协程、拒收迟到结果；门禁期间返回 `409`，旧任务继续执行且不注册新轮次。新轮门禁读取符合边界的近期历史；第二层上下文继承与旧文件原文复用尚未实现。
+不自动继承旧文字或文件，替代后旧运行时输入字节释放，但原文字和文件引用仍保留在同一会话的冻结轨迹中并后台备份。请求暂不具备幂等键；已有活跃轮次时重复提交会冲突。正式执行器只允许替代完整门禁通过后的任务，并停止旧后续执行协程、拒收迟到结果；门禁期间返回 `409`，旧任务继续执行且不注册新轮次。新轮门禁读取符合边界的近期历史；第二层已继承最新摘要后的有效任务、原生交互与工作区；旧附件可通过文件查看工具按原 file_id 重新读取，当前只读取已落盘 upload 文件，不在新轮自动重传旧字节。
 
 ---
 
@@ -590,7 +590,7 @@ curl -X POST 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communi
 `200 text/event-stream`，持续返回事件帧；不是普通 JSON 响应。
 
 ```bash
-curl -N 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations/c1/turns/t1/events' \
+curl -N 'http://127.0.0.1:17000/knowledge-accumulation/contract/api/communication/conversations/c1/turns/t1/events' \
   -H 'Authorization: Bearer <用户 access_token>' \
   -H 'Last-Event-ID: 0'
 ```
@@ -778,7 +778,7 @@ Last-Event-ID: 0
 - `messages`：按生成顺序排列，每条含 `message_id/message_kind/text/status/references`，状态为 `streaming/completed/interrupted`。
 - `progress`、`error`：各自最近一次事件负载，没有则为 `null`，负载保留 `event_type` 标签。`progress` 包含 `type` 和 `message`，只保存最后一条，不是进度列表；终态仍保留供恢复，但不再表示正在执行。校验结论作为普通消息保存在 `messages`，不另设专属字段。
 
-快照和事件在同一锁内更新，因此快照序号与消息内容一致。快照是用户界面恢复数据，不是模型上下文；取消后展示中的中断文本不代表会继续送给模型。上下文终止语义仍待对话运行时实现。
+快照和事件在同一锁内更新，因此快照序号与消息内容一致。快照是用户界面恢复数据，不是模型上下文；取消后展示中的中断文本不代表会继续送给模型。上下文终止语义已由正式运行时实现，见[用户消息与上下文](../architecture/workflow/contract-communication/user-context.md)。
 
 前端处理中可使用 `Math.max(0, Date.now() - Date.parse(activated_at))` 展示实时毫秒数（客户端时钟偏差会影响该估算）；收到终态后停止计时，改用服务端 `processing_duration_ms`。三个时间字段同时包含在 `turn.status` 中，无需为终态耗时额外请求快照。时间戳采用带时区的 ISO 8601 UTC 格式，总耗时由服务端单调时钟计算，不受系统校时影响。重连、回放、重复取消与快照读取都不会重置或延长已记录的耗时。
 
@@ -798,7 +798,7 @@ Last-Event-ID: 0
 ### 请求示例
 
 ```bash
-curl 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations/c1/turns/t1' \
+curl 'http://127.0.0.1:17000/knowledge-accumulation/contract/api/communication/conversations/c1/turns/t1' \
   -H 'Authorization: Bearer <用户 access_token>'
 ```
 
@@ -863,7 +863,7 @@ curl 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/c
 ### 请求示例
 
 ```bash
-curl -X POST 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/communication/conversations/c1/turns/t1/cancel' \
+curl -X POST 'http://127.0.0.1:17000/knowledge-accumulation/contract/api/communication/conversations/c1/turns/t1/cancel' \
   -H 'Authorization: Bearer <用户 access_token>'
 ```
 
@@ -893,10 +893,10 @@ Authorization: Bearer <用户 access_token>
 
 ## 实现边界与相关文档
 
-会话和空工作区已持久化，任务轨迹收集、历史查询、摘要生成、上下文继承、向量化及真实模型/工具执行仍待接入。本文不把设计中的能力列为可调用接口。
+会话和工作区持久化、轨迹收集与历史查询、FIFO 摘要、上下文继承、三入口记忆向量化、真实模型和工具执行均已接入。当前仍无提交幂等键、跨进程实时恢复及活动任务自动续跑；附件孤立文件回收和通用临时表格查询尚未提供。
 
 - [事件运行时](../architecture/system/communication-events.md)：内部事件提交、回放与容量限制。
-- [SQLite 存储](../architecture/data/communication-sqlite.md)：三表、密钥归属与存储配置。
+- [SQLite 存储](../architecture/data/communication-sqlite.md)：四表、userid 归属与存储配置。
 - [用户上下文设计](../architecture/workflow/contract-communication/user-context.md)：取消与调整的模型可见语义。
 
 

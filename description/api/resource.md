@@ -6,10 +6,10 @@
 
 | 接口 | 方法 | 完整路径 |
 | --- | --- | --- |
-| [读取待审 PDF](#读取待审-pdf) | `GET` | `/knowledge-accumulation/contract/api/resource/pending-review-pdf/{submission_id}` |
 | [读取合同 PDF](#读取合同-pdf) | `GET` | `/knowledge-accumulation/contract/api/resource/contract` |
 | [读取提取任务的内存处理版 PDF](#读取提取任务的内存处理版-pdf) | `GET` | `/knowledge-accumulation/contract/api/resource/extraction-pdf/{file_id}` |
 | [读取已驻留会话任务的 PDF 附件](#读取已驻留会话任务的-pdf-附件) | `GET` | `/knowledge-accumulation/contract/api/resource/conversations/{conversation_id}/files/{file_id}` |
+| [读取待审 PDF](#读取待审-pdf) | `GET` | `/knowledge-accumulation/contract/api/resource/pending-review-pdf/{submission_id}` |
 
 ---
 
@@ -84,7 +84,7 @@ Authorization: Bearer <用户 access_token>
 
 ```bash
 curl --header 'Authorization: Bearer <用户 access_token>' \
-  'http://127.0.0.1:20000/knowledge-accumulation/contract/api/resource/extraction-pdf/5a31a5f0-714d-4d46-8455-3f9643c8e9a7' \
+  'http://127.0.0.1:17000/knowledge-accumulation/contract/api/resource/extraction-pdf/5a31a5f0-714d-4d46-8455-3f9643c8e9a7' \
   --output processed-contract.pdf
 ```
 
@@ -114,7 +114,7 @@ Authorization: Bearer <用户 access_token>
 
 ### 认证方式
 
-使用登录接口取得的 Bearer 用户访问令牌。所有已通过本平台访问验证的用户均可读取本人附件，所有权按用户 `owner_userid` 校验，不按展示用户名匹配；UUID 本身不是访问凭证。
+使用统一登录平台签发的 Bearer 用户访问令牌。所有已通过本平台访问验证的用户均可读取本人附件，所有权按用户 `owner_userid` 校验，不按展示用户名匹配；UUID 本身不是访问凭证。
 
 ### 请求参数
 
@@ -154,7 +154,7 @@ X-Content-Type-Options: nosniff
 
 ```bash
 curl --header 'Authorization: Bearer <用户 access_token>' \
-  'http://127.0.0.1:20000/knowledge-accumulation/contract/api/resource/conversations/<conversation_id>/files/5a31a5f0-714d-4d46-8455-3f9643c8e9a7' \
+  'http://127.0.0.1:17000/knowledge-accumulation/contract/api/resource/conversations/<conversation_id>/files/5a31a5f0-714d-4d46-8455-3f9643c8e9a7' \
   --output conversation-attachment.pdf
 ```
 
@@ -177,20 +177,48 @@ curl --header 'Authorization: Bearer <用户 access_token>' \
 
 ## 读取待审 PDF
 
-`GET /knowledge-accumulation/contract/api/resource/pending-review-pdf/{submission_id}` 使用 `Authorization: Bearer <用户访问令牌>`。已登录系统用户可读取仍保留的待审 PDF。
+### 方法与用途
 
-路径参数 `submission_id` 为 UUID，无请求体。返回200 `application/pdf`，`Content-Disposition: inline`，文件名为申请 UUID。
+`GET /knowledge-accumulation/contract/api/resource/pending-review-pdf/{submission_id}` 读取待入库申请仍保留的处理版 PDF，供审核结果页面预览。
 
-服务端根据申请身份生成固定文件路径，并校验 PDF 字节哈希与快照中的 document_id 一致，不把调用方路径用于读盘。可通过带 Authorization 的 fetch 获取 Blob 供前端预览；普通 iframe 不会自动携带自定义 Bearer 头。
+### 认证方式
+
+携带 `Authorization: Bearer <用户 access_token>`，验证中间件登录及本平台管理员资格。所有通过该验证的用户均可读取保留中的待审 PDF，不按申请所有者隔离。
+
+### 请求参数
+
+| 参数 | 位置 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- | --- |
+| `submission_id` | path | UUID | 是 | 待审详情中的申请 ID，不是合同 SHA-256。 |
+| `Authorization` | header | string | 是 | 统一登录平台签发的 Bearer 用户令牌。 |
+
+无查询参数或请求体。
+
+### 成功响应
+
+`200 application/pdf`，响应体为处理版 PDF 字节；`Cache-Control: no-store`，`Content-Disposition: inline; filename="{submission_id}.pdf"`。
+
+### 错误响应
 
 | 状态码 | 含义 |
 | --- | --- |
-| 404 | 申请不存在、已清理或临时 PDF 已不存在 |
-| 409 | 临时 PDF 哈希校验失败，拒绝返回不匹配文件 |
-| 422 | submission_id 不是合法 UUID |
-| 503 | 存储暂时无法读取 |
+| `401` | 缺少令牌、令牌无效或用户未登录。 |
+| `403` | 当前用户不是本平台管理员。 |
+| `404` | 申请不存在、已清理或临时 PDF 已不存在。 |
+| `409` | 临时 PDF 校验失败，拒绝返回不匹配文件。 |
+| `422` | submission_id 不是合法 UUID。 |
+| `503` | 认证依赖未就绪或存储暂时无法读取。 |
 
-已完成申请也只能在保留期内预览临时 PDF；正式入库合同的长期原文仍通过既有正式合同资源接口读取。
+### 请求示例
 
+```bash
+curl --header 'Authorization: Bearer <用户 access_token>' \
+  'http://127.0.0.1:17000/knowledge-accumulation/contract/api/resource/pending-review-pdf/12345678-1234-4234-8234-123456789abc' \
+  --output pending-contract.pdf
+```
 
-此 PDF 是提取流程保存的处理版 PDF，不保证与最初上传文件的原始字节一致。地址由[待入库详情](ingestion-review.md#获取待入库申请详情)的 `pdf.url` 提供；旧 `/pending-reviews/{submission_id}/pdf` 已移除。
+### 行为与边界
+
+服务端根据申请身份生成固定文件路径，校验 PDF 字节哈希与快照 document_id 一致，不将调用方路径用于读盘。通过带 Authorization 的 fetch 获取 Blob 后预览；普通 iframe 不会自动携带自定义 Bearer 头。
+
+已完成申请也只能在保留期内预览临时 PDF；正式合同的长期原文通过正式合同资源接口读取。此 PDF 是提取流程保存的处理版，不保证与最初上传文件的原始字节一致。地址由[待入库详情](ingestion-review.md#获取待入库申请详情)的 pdf.url 提供；旧 `/pending-reviews/{submission_id}/pdf` 已移除。

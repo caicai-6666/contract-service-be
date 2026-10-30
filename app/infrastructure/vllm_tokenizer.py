@@ -42,6 +42,8 @@ async def count_chat_tokens(messages, tools, settings: MLLMSettings, *, chat_tem
     """计数真正的聊天模板输入；工具布局和思考开关必须与生成请求一致。"""
     template_kwargs = dict(chat_template_kwargs or {})
     # 分词和生成必须使用同一档位，否则上下文容量计算会遗漏强度指令。
+    if 'preserve_thinking' in template_kwargs:
+        template_kwargs['clear_thinking'] = not template_kwargs['preserve_thinking']
     template_kwargs.pop('reasoning_effort', None)
     template_kwargs.update(settings.thinking_template_kwargs(
         template_kwargs.get('enable_thinking', settings.generation.enable_thinking)))

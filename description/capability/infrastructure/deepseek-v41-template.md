@@ -73,7 +73,7 @@ V4.1 标签中的空格属于协议：
 | `drop_thinking` | 默认 true；普通会话移除最后一个用户段之前的思考。只要存在工具定义，按官方规则保留传入的思考。 |
 | `add_generation_prompt` | 默认 true；false 不为末尾用户段添加待生成的 assistant 头。 |
 
-历史思考读取 reasoning_content，兼容 reasoning。模板只能保留请求实际提供的内容，不扩大 Agent Core 自身的思考 FIFO 窗口。应用统一通过 VLLM_MLLM_REASONING_EFFORT 配置强度，环境变量只接受 low/medium/xhigh，默认 xhigh；节点不能单独覆盖。选择 DS tool-tag 后，生成与分词请求统一转换为 50/75/100，兼容绕过 Jinja 的原生编码器，详细契约见[全局推理强度](vllm-chat-template.md#全局推理强度)。
+历史思考读取 reasoning_content，兼容 reasoning。模板只能保留请求实际提供的内容，Agent Core 已取消独立思考窗口，完整思考随原生消息保留。应用统一通过 VLLM_MLLM_REASONING_EFFORT 配置强度，环境变量只接受 low/medium/xhigh，默认 xhigh；合同提取、业务门禁和 A2A 首次受理可使用独立配置副本，不修改全局配置。选择 DS tool-tag 后，生成与分词请求统一转换为 50/75/100，兼容绕过 Jinja 的原生编码器，详细契约见[全局推理强度](vllm-chat-template.md#全局推理强度)。
 
 ---
 
@@ -95,7 +95,9 @@ VLLM_MLLM_TOOL_TAG_FILE=deepseek-v4.1-flash.txt
 
 ## 验证
 
-[离线测试](../../../tests/test_deepseek_v41_template.py) 使用官方编码器生成的 [84 组固定对照样例](../../../tests/fixtures/deepseek_v41_encoding.json)，覆盖两种模式、六种强度设置、普通多轮、system、工具定义注入、混合类型参数、多工具逆序返回、会话中 system 和多图占位。这些对照显式使用 system 布局，全部逐字一致；新增前后置、默认后置、图片顺序、连续 user 合并、固定锚点多轮前缀稳定性、首条 system 工具迁移、非法位置与索引测试。连同既有强度、调用和生成头校验，八个测试方法均通过。
+> **本地验证记录：** 本文列出的 `experiment/`、`tests/` 或 `output/` 路径未随源码分发，仅保留历史追溯信息；本次文档核对未重新执行这些实验或核验缺失产物。
+
+离线测试（本地路径：`tests/test_deepseek_v41_template.py`） 使用官方编码器生成的 84 组固定对照样例（本地路径：`tests/fixtures/deepseek_v41_encoding.json`），覆盖两种模式、六种强度设置、普通多轮、system、工具定义注入、混合类型参数、多工具逆序返回、会话中 system 和多图占位。这些对照显式使用 system 布局，全部逐字一致；新增前后置、默认后置、图片顺序、连续 user 合并、固定锚点多轮前缀稳定性、首条 system 工具迁移、非法位置与索引测试。连同既有强度、调用和生成头校验，八个测试方法均通过。
 
 ```bash
 python -m unittest discover -s tests -p test_deepseek_v41_template.py -v

@@ -2,7 +2,7 @@
 
 本模块位于`fifo_management/fifo_summary/`，把选定轨迹及旧累计摘要整理为可继续工作的主题记忆。它负责内容摘要，不负责选择FIFO驱逐范围、修改工作区或执行用户工具。容量和轨迹管理由外围FIFO管理子图负责。
 
-当前采用业务无关的筛选规则：规划提示词`fifo-topic-planning-v10`、生成提示词`fifo-topic-generation-v17`、输入渲染`fifo-topic-readable-v4`、最终结构`fifo-topic-summary-v2`。提示词不预设付款、交付等领域分类，示例使用通用状态更新和产物版本。
+当前采用业务无关的筛选规则：规划提示词`fifo-topic-planning-v11`、生成提示词`fifo-topic-generation-v17`、输入渲染`fifo-topic-readable-v4`、最终结构`fifo-topic-summary-v2`。提示词不预设付款、交付等领域分类，示例使用通用状态更新和产物版本。
 
 ---
 
@@ -122,20 +122,22 @@ Reduce不调用模型。它按规划顺序检查所有结果恰好对应一个�
 
 相关实验：
 
-- [单主题推理实验与复测入口](../../../../experiment/fifo-reasoning-json/README.md)。
-- [完整主题摘要联调入口](../../../../experiment/fifo-topic-generation/README.md)。
-- [旧五区域独立长轨迹结果](../../../../experiment/fifo-topic-generation/output/20260914T141140.123437Z/analysis.md)：全部分支成功，但出现跨主题旧目标污染，摘要剩余70.57%。该结果属于旧v14五区域，不能作为当前两区域效果证明。
+> **本地验证记录：** 本文列出的 `experiment/`、`tests/` 或 `output/` 路径未随源码分发，仅保留历史追溯信息；本次文档核对未重新执行这些实验或核验缺失产物。
+
+- 单主题推理实验与复测入口（本地路径：`experiment/fifo-reasoning-json/README.md`）。
+- 完整主题摘要联调入口（本地路径：`experiment/fifo-topic-generation/README.md`）。
+- 旧五区域独立长轨迹结果（本地路径：`experiment/fifo-topic-generation/output/20260914T141140.123437Z/analysis.md`）：全部分支成功，但出现跨主题旧目标污染，摘要剩余70.57%。该结果属于旧v14五区域，不能作为当前两区域效果证明。
 
 
 ---
 
 ## 两区域长轨迹复测
 
-规划v10、生成v16在同一24任务口述史场景完成8主题、17次调用，无截断或重试，旧五区域输入成功转换为v2。输入23025 tokens，摘要7165 tokens，保留31.12%，较旧五区域摘要小55.90%。主要业务状态保留；公开许可主题错误声明备忘录已交付，全局保全解除条件被简化，不能判为完全准确。见[完整分析](../../../../experiment/fifo-topic-generation/output/20260914T142731.512580Z/analysis.md)。
+规划v10、生成v16在同一24任务口述史场景完成8主题、17次调用，无截断或重试，旧五区域输入成功转换为v2。输入23025 tokens，摘要7165 tokens，保留31.12%，较旧五区域摘要小55.90%。主要业务状态保留；公开许可主题错误声明备忘录已交付，全局保全解除条件被简化，不能判为完全准确。见完整分析（本地路径：`experiment/fifo-topic-generation/output/20260914T142731.512580Z/analysis.md`）。
 
 
 ---
 
 ## 事实边界v17复测
 
-同一24任务长轨迹完整复测：8主题、17次调用一次通过，无截断；59条摘要、7672 tokens。上一轮备忘录交付错误及更新引用错位未复现，主要事实状态正确；仍有条件性新检索表述和恢复发布主体泛化，不能声称严格零推导。以事实准确性为主评估，单纯遗漏不计错。见[实验分析](../../../../experiment/fifo-topic-generation/output/20260914T143702.617558Z/analysis.md)。
+同一24任务长轨迹完整复测：8主题、17次调用一次通过，无截断；59条摘要、7672 tokens。上一轮备忘录交付错误及更新引用错位未复现，主要事实状态正确；仍有条件性新检索表述和恢复发布主体泛化，不能声称严格零推导。以事实准确性为主评估，单纯遗漏不计错。见实验分析（本地路径：`experiment/fifo-topic-generation/output/20260914T143702.617558Z/analysis.md`）。

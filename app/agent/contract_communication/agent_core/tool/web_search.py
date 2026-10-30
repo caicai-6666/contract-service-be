@@ -323,6 +323,5 @@ def build_web_search_registrations(*, pool, service, authorize):
             progress=ToolProgress(type='online-search', message='正在搜索网页'),
             progress_factory=search_progress),
         RegisteredTool('view_web_search_results', ViewWebSearchResultsArguments.__doc__, ViewWebSearchResultsArguments,
-            view, return_types=('ordinary', 'foldable'),
-            progress=ToolProgress(type='online-search', message='正在查看搜索结果')),
+            view, return_types=('ordinary', 'foldable')),
     )

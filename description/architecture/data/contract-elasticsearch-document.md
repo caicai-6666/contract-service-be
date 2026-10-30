@@ -2,7 +2,7 @@
 
 > **用途：** 本文定义复核完成后的合同写入 Elasticsearch 时使用的最终检索文档结构、字段边界和 mapping 原则。
 
-本文是合同正式入库数据的参考契约。合同自动提取流程、内存草稿与 SSE 状态见[合同提取应用运行时](../system/contract-extraction-runtime.md)；Elasticsearch 客户端、索引名称和连接配置见[FastAPI 后端应用骨架](../../capability/application/backend-application.md#elasticsearch-边界)。
+本文是合同正式入库数据的参考契约。合同自动提取流程、内存草稿与 SSE 状态见[合同提取应用运行时](../system/contract-extraction-runtime.md)；Elasticsearch 客户端、索引名称和连接配置见[FastAPI 后端应用骨架](../../capability/application/backend-application.md#正式持久化边界)。
 
 > **实现状态：** 应用启动时能够创建正式索引并增量同步 Core 与检索问题原文 mapping；复核后合同正式入库、检索问题原文、问题融合向量和 PDF 页面融合向量均已接入应用运行时。
 

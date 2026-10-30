@@ -21,7 +21,7 @@
 
 `contract_names_fts` 使用 Lindera（Jieba）的 FTS5 外部内容索引，关联 contracts.rowid。首次初始化回填历史名称，增删和名称修改由触发器与元数据在同一事务同步；重复初始化不重建。维护数据库必须使用加载 Lindera 的连接。
 
-查询使用相同分词器切词，逐词引用转义后按 OR 匹配。ready 和输入范围在排名截断前过滤。SQLite BM25 原始分数越小越好，返回时取负以统一降序展示，并以 document_id 确定并列顺序。单路检索不使用 RRF，也不融合源结果集分数。常见词“合同”可能召回弱相关候选，有限结果不等于准确命中清单或全量符合条件的合同。
+查询使用相同分词器切词，逐词引用转义后按 OR 匹配。ready 和输入范围在排名截断前过滤。SQLite BM25 原始分数越小越好，返回时取负以统一降序展示，并以 document_id 确定并列顺序。名称 BM25 单路自身不使用 RRF；进入候选池后，有父排名时按[跨查询排名规则](contract-retrieval.md)融合。常见词“合同”可能召回弱相关候选，有限结果不等于准确命中清单或全量符合条件的合同。
 
 内部结果池只驻留 ID、分数和查询方式，查询后只回显引用与数量，不提供 view 工具。最终名单由程序读取，详见[合同候选查询子图](contract-retrieval.md)。
 
@@ -29,6 +29,6 @@
 
 ## 配置与验证
 
-`COMMUNICATION_CONTRACT_NAME_SEARCH_TOP_K` 默认 10，范围 1–50；驻留容量及页大小复用 `COMMUNICATION_CONTRACT_SEARCH_*`。
+`COMMUNICATION_CONTRACT_NAME_SEARCH_TOP_K` 默认 10，范围 1–50；内部池容量使用 `COMMUNICATION_CONTRACT_SEARCH_CACHE_MAX_QUERIES`；最终结果容量和页大小使用 `COMMUNICATION_CONTRACT_RETRIEVAL_*`。
 
 实现为 `agent_core/subgraph/contract_retrieval/tool/contract_name_search.py` 和 `infrastructure/contract_name_search.py`。真实临时 SQLite/Lindera 测试覆盖排名、范围、状态、历史回填、增删改同步、空结果、失效引用、失败反馈、参数描述和分页标签。主循环装配测试使用模拟生成验证搜索→查看→最终回复，尚未测试真实模型拟写名称的稳定性。

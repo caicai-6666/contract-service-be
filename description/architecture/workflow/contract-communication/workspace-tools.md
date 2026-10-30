@@ -1,10 +1,10 @@
 # 工作区管理工具
 
-> **当前状态：** 已实现三个模型可见工具的参数 Schema、路径编辑、完整校验和可注入提交适配；尚未接入主助手模型循环、私有审计和纠错调度；压缩子 Agent 已复用这些工具并实现自身审计与纠错，不代表正式问答已经调用这些工具。
+> **当前状态：** 已实现三个模型可见工具的参数 Schema、路径编辑、完整校验和可注入提交适配；已通过注册表执行器接入主助手模型循环、私有审计和有限纠错；压缩子 Agent 同样复用这些工具。
 
-FIFO 外层与工作区内层已通过注册表执行器装配，入口、提交与回执边界见[主助手工具执行](tool-execution.md)；正式模型循环仍待接入。
+FIFO 外层与工作区内层已通过注册表执行器装配，入口、提交与回执边界见[主助手工具执行](tool-execution.md)；正式模型循环已接入。
 
-已实现的容量管理流程见[工作区管理子图](workspace-management.md)，当前执行适配尚未串接该子图。主助手见 [Agent Core 设计](agent-core.md)，工作区内容契约见 [SQLite 工作区](../../data/communication-sqlite.md#工作区-kv-内容)。工具按能力组织在 `agent_core/tool/` 包中；工作区工具定义与编辑实现位于 [tool/workspace.py](../../../../app/agent/contract_communication/agent_core/tool/workspace.py)。
+已实现的容量管理流程见[工作区管理子图](workspace-management.md)，正式注册工具已串接该子图；独立 execute_workspace_tool 仍保留不含容量管理的适配。主助手见 [Agent Core 设计](agent-core.md)，工作区内容契约见 [SQLite 工作区](../../data/communication-sqlite.md#工作区-kv-内容)。工具按能力组织在 `agent_core/tool/` 包中；工作区工具定义与编辑实现位于 [tool/workspace.py](../../../../app/agent/contract_communication/agent_core/tool/workspace.py)。
 
 
 `tool/__init__.py` 统一导出工作区工具的参数模型、定义构造、参数解析、候选编辑和执行适配；原 `app.agent.contract_communication.agent_core.tool` 导入路径继续可用。后续工具按能力新增同级模块，不集中堆放于包初始化文件。
@@ -137,7 +137,7 @@ result = await execute_workspace_tool(
 )
 ```
 
-该独立适配尚未接入容量子图，其内部成功返回 `status=accepted`、实际 `path`、可选的 `removed_path`、新 `revision` 和完整新 `workspace`。普通新增返回的 path 含程序生成的 ID；探索收束同时给出新路径与移除路径。返回内容用于下一次上下文构造，不代表已完成磁盘备份或释放上下文。正式容量子图的成功工具反馈已定义为“成功提示 + 当前工作区使用量”，详见[子图输入与输出](workspace-management.md#输入与输出)；该内部对象不应直接作为正式模型工具消息。
+execute_workspace_tool 保留为不含容量管理的独立适配；正式主循环通过容量子图及受权提交回调执行工作区工具，其内部成功返回 `status=accepted`、实际 `path`、可选的 `removed_path`、新 `revision` 和完整新 `workspace`。普通新增返回的 path 含程序生成的 ID；探索收束同时给出新路径与移除路径。返回内容用于下一次上下文构造，不代表已完成磁盘备份或释放上下文。正式容量子图的成功工具反馈已定义为“成功提示 + 当前工作区使用量”，详见[子图输入与输出](workspace-management.md#输入与输出)；该内部对象不应直接作为正式模型工具消息。
 
 失败抛出校验、版本或提交异常，不返回成功结果。执行器后续必须先审计、检查恰好一个工具调用，再执行工具；将子图 error_feedback 作为普通工具错误反馈；无法形成合法工具调用的协议错误使用最小 system-guidence。有限纠错成功后清除整段失败轨迹，遵循[上下文规范](../../../standard/agent-context-management.md)。本模块不另建模型循环或复制恢复协议，也不自动把普通文本写入工作区。
 

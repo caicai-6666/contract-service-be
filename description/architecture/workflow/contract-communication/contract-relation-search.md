@@ -1,6 +1,6 @@
 # 合同关系检索
 
-`search_contract_relations` 根据用户记录的关系描述查找边，输出独立关系结果集；`view_contract_relation_search_results` 分页展示两端合同及关系。已接入 Agent Core。搜索状态为 `local-search`，查看为 `thinking`，页面为 foldable。
+`search_contract_relations` 根据用户记录的关系描述查找边，输出独立关系结果集；`view_contract_relation_search_results` 分页展示两端合同及关系。已接入 Agent Core。搜索和查看状态均为默认 `thinking` / “正在思考”，页面为 foldable。
 
 ---
 

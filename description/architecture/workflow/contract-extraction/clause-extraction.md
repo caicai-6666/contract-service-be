@@ -66,7 +66,7 @@ flowchart TD
   → 固定 extract_clause_content 工具 Schema（由聊天模板放置）
 ```
 
-消息部分保存为不可变 `ClauseExtractionContext`，记录 `document_id`、公共提示词版本 `clause-content-common-v11`、工具版本 `clause-content-tool-v10`、消息元组和消息指纹。指纹只覆盖确定性消息；固定工具块由独立工具版本标识，后续节点必须同时复用相同消息、工具版本、工具顺序和 `before_task` 布局。模型可见公共文本只说明已有合同材料与权威候选目录；各请求随后追加当前唯一候选，不暴露节点编号、并发或缓存概念。组装后直接并发发送各候选请求，由 vLLM 自然建立公共前缀缓存。
+消息部分保存为不可变 `ClauseExtractionContext`，记录 `document_id`、公共提示词版本 `clause-content-common-v12`、工具版本 `clause-content-tool-v10`、消息元组和消息指纹。指纹只覆盖确定性消息；固定工具块由独立工具版本标识，后续节点必须同时复用相同消息、工具版本、工具顺序和 `before_task` 布局。模型可见公共文本只说明已有合同材料与权威候选目录；各请求随后追加当前唯一候选，不暴露节点编号、并发或缓存概念。组装后直接并发发送各候选请求，由 vLLM 自然建立公共前缀缓存。
 
 ---
 
@@ -190,7 +190,7 @@ content: |-
 
 ## 内容提取提示词与缓存边界
 
-单条款内容提示词位于 `clause_extraction/prompt/content.py`，公共版本为 `clause-content-common-v11`，动态目标版本为 `clause-content-target-v5`。拼接分为稳定公共层和单候选动态层：
+单条款内容提示词位于 `clause_extraction/prompt/content.py`，公共版本为 `clause-content-common-v12`，动态目标版本为 `clause-content-target-v5`。拼接分为稳定公共层和单候选动态层：
 
 ```text
 最终公共前缀（页面图像 + 文档结构 + 分类）
@@ -219,7 +219,7 @@ content: |-
 
 ## 节点一任务提示词与记忆位置
 
-节点一任务提示词位于 `clause_extraction/prompt/`，当前版本为 `clause-discovery-v15`。稳定任务描述明确首轮层级分析、直接正文准入、原合同绝对层级与完整 `document_path`、粒度、排除边界、包含式起止锚点、结构证据优先级、保守层级策略、深度优先顺序、可用工具变化、记忆清理、结束复核和合法 XML 工具调用格式；动态工作区与恢复方向不写入该稳定文本。模型只被告知已有资料、当前条款发现任务、程序工作区和下一步动作，不读取工程节点位置。
+节点一任务提示词位于 `clause_extraction/prompt/`，当前版本为 `clause-discovery-v16`。稳定任务描述明确首轮层级分析、直接正文准入、原合同绝对层级与完整 `document_path`、粒度、排除边界、包含式起止锚点、结构证据优先级、保守层级策略、深度优先顺序、可用工具变化、记忆清理、结束复核和合法 XML 工具调用格式；动态工作区与恢复方向不写入该稳定文本。模型只被告知已有资料、当前条款发现任务、程序工作区和下一步动作，不读取工程节点位置。
 
 实际模型序列固定为：
 

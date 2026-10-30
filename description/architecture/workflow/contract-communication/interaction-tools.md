@@ -2,7 +2,7 @@
 
 > **当前状态：** 两个工具的参数 Schema、严格本地校验、消息提交适配和注册表装配已实现；正式消息发送、任务终态及[主模型循环](agent-runtime.md)已接入。
 
-行为规则由 `prompt/interaction.py` 的 `agent-core-interaction-v14` 维护，实现位于 `agent_core/tool/interaction.py`，统一从 `tool` 包导出。调用经过[主助手工具执行](tool-execution.md)的 FIFO 外层，避免绕过容量管理。
+探索输出规则由 `exploration/prompt/interaction.py` 维护，公共工具协议位于 `agent_core/prompt/interaction.py`（v20）；输出工具实现在 `exploration/tool/interaction.py`，旧工具路径保留兼容导出。A2A 的唯一最终输出另见[模式划分](agent-modes.md)。调用经过[主助手工具执行](tool-execution.md)的 FIFO 外层，避免绕过容量管理。
 
 ---
 
@@ -71,7 +71,7 @@ async def publish_output(output):
 
 主循环调用模型时启用流式工具响应。`MLLMClient.create_tool_chat_completion` 接受可选的异步 `on_tool_delta` 回调，服务端返回的增量在完整请求生命周期内合并；最终仍返回原有 `MLLMToolCompletion`，供协议和工具校验。其他节点不传回调时沿用非流式请求。全局并发额度持有到流结束，取消或异常时关闭连接，媒体缓存和用量观测继续复用原有链路。
 
-展示逻辑位于 `agent_core/output_stream.py`，只识别 `emit_progress`、`finish_task`，注册表不新增流式属性。工具名及调用身份明确后，程序逐步解码 `content` 字符串并发送 `message.delta`，支持跨块 JSON 转义及 Unicode 代理对；不展示推理、其他工具参数或普通 assistant 文本。正文尚未完整到达时属于临时预览，不能认定工具已成功执行。
+展示逻辑位于 `exploration/output_stream.py`，只识别探索的 `emit_progress`、`finish_task`；Core 通过输出观察接口与 `output_kind` 元数据处理交付。工具名及调用身份明确后，程序逐步解码 `content` 字符串并发送 `message.delta`，支持跨块 JSON 转义及 Unicode 代理对；不展示推理、其他工具参数或普通 assistant 文本。正文尚未完整到达时属于临时预览，不能认定工具已成功执行。
 
 完整响应到齐后仍经过单调用协议、参数校验和 FIFO 管理。交互工具执行成功时，同一消息发送 `message.completed(status=completed)`；`finish_task` 再由主循环结束任务。自动压缩可能发生在预览后、正式提交前。没有可增量解码的前缀时，等待完整合法结果再发送正文，不猜补参数。
 
@@ -86,7 +86,7 @@ async def publish_output(output):
 
 ## 主动中途反馈策略
 
-主模型 system 的“用户输出与任务收敛”维护主动沟通规则（`agent-core-interaction-v18`）。连续查找、阅读、比较、核对或求助的任务，在开始较长处理前说明主要安排；出现有价值的阶段性发现时说明已知事实、限制和下一步；遇到影响结果的阻碍而调整方法时说明变化。自动 SSE 状态只描述动作，不能替代这些解释。
+探索模式 system 的“用户输出与任务收敛”维护主动沟通规则（`exploration-interaction-v1`）。连续查找、阅读、比较、核对或求助的任务，在开始较长处理前说明主要安排；出现有价值的阶段性发现时说明已知事实、限制和下一步；遇到影响结果的阻碍而调整方法时说明变化。自动 SSE 状态只描述动作，不能替代这些解释。
 
 反馈应简短、有新增信息，不按固定调用轮数强制插入，不复述详细思考或调用日志。简单任务或已能交付时直接最终答复；必须等待用户补充时仍通过 `finish_task` 结束本轮，不用中途输出假装暂停。工具描述、参数、注册和执行机制不变，不增加程序强制调用逻辑。这是提示词引导，实际调用频率仍需真实任务验证。
 

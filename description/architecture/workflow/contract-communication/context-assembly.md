@@ -58,7 +58,7 @@ context = assemble_agent_core_context(
 
 消息顺序为：最新摘要（若有，独立 user）→ 各历史任务的原生消息 → 最新工作区（独立 user）→ 当前任务用户输入 → 当前任务原生交互。任务首条 user 保留标识、时间、附件与引用合同的局部格式化；不再将整份任务渲染成文本。工作区每轮刷新，紧邻当前输入之前。
 
-每个历史任务保留真实 assistant.tool_calls 与 tool.tool_call_id 配对，包括 emit_progress 和 finish_task，不重复追加公开输出正文。终态清除来源明确的操作提示，追加程序生成的任务结束状态；取消、替代和失败不编造结论。旧记录若没有 agent_messages，只逐条提供已有的展示说明及实际输出，不猜测原始调用参数。历史与当前思考均按 task_id/call_id 回注原生 assistant 字段。
+每个历史任务保留真实 assistant.tool_calls 与 tool.tool_call_id 配对，包括 emit_progress 和 finish_task，不重复追加公开输出正文。终态清除来源明确的操作提示，追加程序生成的任务结束状态；取消、替代和失败不编造结论。旧记录若没有 agent_messages，只逐条提供已有的展示说明及实际输出，不猜测原始调用参数。历史与当前思考直接从对应的已接受 assistant 消息读取，随任务备份和恢复，不再通过独立思考窗口回注。
 
 内部 source 标记仅供类型管理与摘要过滤，发送前移除。临时页面继续紧随对应工具回执注入，历史页面只保留折叠回执。fifo 使用同一任务消息列表，工作区和累计摘要不混入任务；不再生成 rendered_content。摘要输入过滤系统来源和思考字段，保留真实角色及调用配对。
 
@@ -113,7 +113,7 @@ await service.record_agent_core_exchange(
 context = await service.get_agent_core_context(conversation_id, turn_id, owner=owner)
 ```
 
-该内部接口只接受 succeeded 的执行结果。assistant_message 必须包含恰好一个真实函数调用，arguments 保持原始 JSON 字符串；工具反馈根据实际执行结果构造并匹配调用 ID。校验拒绝重复 ID、半完成配对、多个调用、非法 JSON、普通文本和私有推理字段。配对后的系统提示保存来源，不从文本猜测身份。
+该内部接口只接受 succeeded 的执行结果。assistant_message 必须包含恰好一个真实函数调用，arguments 保持原始 JSON 字符串；工具反馈根据实际执行结果构造并匹配调用 ID。校验拒绝重复 ID、半完成配对、多个调用、非法 JSON 和非空 content；完整原生 reasoning/reasoning_content 随已接受消息保存，普通附文仅留私有审计。配对后的系统提示保存来源，不从文本猜测身份。
 
 每个完整交互批次原子追加到当前任务 payload.agent_messages。相同 ID 和内容重复保存无副作用，不同内容复用 ID 则拒绝。failed/unknown 结果、待执行调用及临时纠错不写入已接受列表，由主循环持有其临时消息和私有审计。该方法不重新执行工具。
 
@@ -144,4 +144,6 @@ context = await service.get_agent_core_context(conversation_id, turn_id, owner=o
 
 ## 原生历史消息实测
 
-[新旧布局对照实验](../../../../experiment/agent-core-native-messages/README.md)使用虚构短/长历史、真实主循环与 vLLM，对比工具协议遵循、工作区写入、事实提取及模型请求耗时。2026-09-30 的四组运行均正常结束；原生布局本地模板验证恢复了角色及工具标签，但单次样本不能证明稳定提速，长样本还存在额外事实推算，详见[实验分析](../../../../experiment/agent-core-native-messages/output/20260930T022442.243129Z/analysis.md)。
+> **本地验证记录：** 本文列出的 `experiment/`、`tests/` 或 `output/` 路径未随源码分发，仅保留历史追溯信息；本次文档核对未重新执行这些实验或核验缺失产物。
+
+新旧布局对照实验（本地路径：`experiment/agent-core-native-messages/README.md`）使用虚构短/长历史、真实主循环与 vLLM，对比工具协议遵循、工作区写入、事实提取及模型请求耗时。2026-09-30 的四组运行均正常结束；原生布局本地模板验证恢复了角色及工具标签，但单次样本不能证明稳定提速，长样本还存在额外事实推算，详见实验分析（本地路径：`experiment/agent-core-native-messages/output/20260930T022442.243129Z/analysis.md`）。

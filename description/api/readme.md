@@ -22,7 +22,7 @@
 | [确认查重并继续](contract.md#确认查重并继续) | `POST` | `/knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}/continue` |
 | [订阅处理事件](contract.md#订阅处理事件) | `GET` | `/knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}/events` |
 | [重试失败阶段](contract.md#重试失败阶段) | `POST` | `/knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}/stages/{stage_code}/retry` |
-| [正式入库合同](contract.md#正式入库合同) | `POST` | `/knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}/ingestion` |
+| [提交合同待审申请](contract.md#提交合同待审申请) | `POST` | `/knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}/ingestion` |
 | [获取合同注意事项列表](contract.md#获取合同注意事项列表) | `GET` | `/knowledge-accumulation/contract/api/contract/documents/{document_id}/notes` |
 | [新增合同注意事项](contract.md#新增合同注意事项) | `POST` | `/knowledge-accumulation/contract/api/contract/documents/{document_id}/notes` |
 | [获取合同内容摘要](contract.md#获取合同内容摘要) | `GET` | `/knowledge-accumulation/contract/api/contract/documents/{document_id}/summary` |
@@ -35,6 +35,7 @@
 | [获取删除申请 ID 列表](deletion-review.md#获取删除申请-id-列表) | `GET` | `/knowledge-accumulation/contract/api/deletion-reviews/list` |
 | [获取删除申请详情](deletion-review.md#获取删除申请详情) | `GET` | `/knowledge-accumulation/contract/api/deletion-reviews/detail/{submission_id}` |
 | [读取合同 PDF](resource.md#读取合同-pdf) | `GET` | `/knowledge-accumulation/contract/api/resource/contract` |
+| [读取待审 PDF](resource.md#读取待审-pdf) | `GET` | `/knowledge-accumulation/contract/api/resource/pending-review-pdf/{submission_id}` |
 | [读取提取任务的内存处理版 PDF](resource.md#读取提取任务的内存处理版-pdf) | `GET` | `/knowledge-accumulation/contract/api/resource/extraction-pdf/{file_id}` |
 | [读取已驻留会话任务的 PDF 附件](resource.md#读取已驻留会话任务的-pdf-附件) | `GET` | `/knowledge-accumulation/contract/api/resource/conversations/{conversation_id}/files/{file_id}` |
 | [创建临时展示任务](development-trace.md#创建临时展示任务) | `POST` | `/knowledge-accumulation/contract/api/communication/development-turns` |
@@ -54,13 +55,13 @@
 
 ## 服务入口
 
-本地默认服务地址为：
+deploy 默认后端宿主机地址为：
 
 ```text
-http://127.0.0.1:20000
+http://127.0.0.1:17000
 ```
 
-业务接口统一使用 `/knowledge-accumulation/contract/api` 前缀。当前自动生成的接口资料为：
+ASGI 部署的业务接口统一使用 `/knowledge-accumulation/contract/api` 前缀。本文示例使用 deploy 默认后端宿主机地址 `http://127.0.0.1:17000`；直接运行 `python -m app.main` 时同为端口 17000，但 API 和文档路径均须增加 `/dev` 前缀。当前 ASGI 部署自动生成的接口资料为：
 
 | 入口 | 路径 |
 | --- | --- |
@@ -77,7 +78,7 @@ OpenAPI 是请求参数和响应 Schema 的机器可读来源；本目录中的 
 ## 全局约定
 
 - 除二进制上传和流式响应外，数据均使用 JSON。
-- 所有时间均为带时区的 ISO 8601 字符串。
+- 时间格式以各接口字段契约为准：合同与审核日期多为带时区的 ISO 8601 字符串，会话及任务的 created_at、activated_at 等为 UTC Unix 毫秒，处理时长也以毫秒计。
 - 资源不存在时返回 `404`，参数或请求体不符合 Schema 时返回 `422`。
 - 应用主动返回的普通错误使用 `{"detail":"错误说明"}`。
 - 自动生成结果未经专家确认，不能直接视为正式存储对象。
@@ -106,7 +107,7 @@ GET /knowledge-accumulation/contract/api/health
 ## 业务接口
 
 - [多轮对话 API](communication.md)：提供会话及任务创建、180 秒内订阅激活、业务门禁和 Agent Core、SSE、快照、主动取消与历史恢复。
-- [用户访问认证 API](auth.md)：使用审核用户 userid获取限时用户访问令牌。
+- [用户访问认证 API](auth.md)：携带统一登录平台签发的用户令牌，查询当前身份并验证本平台管理员资格；本平台不签发用户令牌。
 - [资源文件 API](resource.md)：根据 `file_uri` 读取正式合同 PDF，或按快照中的 UUID 读取本人提取任务的内存处理版 PDF。
 - [合同 API](contract.md)：获取 Core 表单定义、列出并恢复未入库运行、上传 PDF、获取建议文件名与 Core/Clause 结果、订阅 SSE、重试失败阶段并提交正式入库。
 

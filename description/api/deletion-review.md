@@ -38,10 +38,10 @@
 | 401 | 用户访问令牌缺失、无效或过期。 |
 | 503 | 数据库读取失败；不伪装为空列表。 |
 
-**请求示例：** 将用户访问令牌替换为登录接口返回值。
+**请求示例：** 将用户访问令牌替换为统一登录平台签发的 access_token。
 
 ```bash
-curl 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/deletion-reviews/list' \
+curl 'http://127.0.0.1:17000/knowledge-accumulation/contract/api/deletion-reviews/list' \
   -H 'Authorization: Bearer replace-with-user-access-token'
 ```
 
@@ -124,7 +124,7 @@ curl 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/deletion-review
 **请求示例：** 将用户访问令牌和申请 UUID 替换为实际值。
 
 ```bash
-curl 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/deletion-reviews/detail/12345678-1234-4234-8234-123456789abc' \
+curl 'http://127.0.0.1:17000/knowledge-accumulation/contract/api/deletion-reviews/detail/12345678-1234-4234-8234-123456789abc' \
   -H 'Authorization: Bearer replace-with-user-access-token'
 ```
 

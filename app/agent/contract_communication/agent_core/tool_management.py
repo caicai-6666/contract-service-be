@@ -2,7 +2,7 @@
 from collections.abc import Mapping
 
 from .tool.executor import ToolExecutor, ToolHandler
-from .tool.interaction import UserOutputPublisher
+from .output import UserOutputPublisher
 from .tool.registry import build_agent_tool_registry
 from .tool.progress import ToolProgressPublisher
 from .tool.workspace_executor import WorkspaceCommit, WorkspaceReader, WorkspaceToolHandler
@@ -17,22 +17,28 @@ def build_tool_management_subgraph(
     *, fifo_token_budget: int, workspace_token_budget: int,
     read_workspace: WorkspaceReader, commit_workspace: WorkspaceCommit,
     handlers: Mapping[str, ToolHandler] | None = None, additional_tools=(),
-    publish_output: UserOutputPublisher | None = None,
+    publish_output: UserOutputPublisher | None = None, output_tools=(),
     publish_progress: ToolProgressPublisher | None = None,
     fifo_counter=count_fifo_task_tokens, workspace_counter=count_workspace_tokens,
     fifo_compressor=summarize_fifo_placeholder, workspace_compressor=None,
     summary_counter=count_fifo_summary_tokens, executor: ToolExecutor | None = None, summary_commit=None,
 ):
     """装配 FIFO 外层和工作区内层。自定义 executor 时必须自行注册工作区适配。"""
-    if executor is not None and (handlers is not None or publish_output is not None or publish_progress is not None or additional_tools):
-        raise ValueError('executor 不可与 handlers、additional_tools、publish_output 或 publish_progress 同时指定')
+    if executor is not None and (handlers is not None or publish_output is not None or publish_progress is not None or additional_tools or output_tools):
+        raise ValueError('executor 不可与 handlers、additional_tools、output_tools、publish_output 或 publish_progress 同时指定')
     if executor is None:
         workspace_graph = build_workspace_management_subgraph(
             token_budget=workspace_token_budget, counter=workspace_counter, compressor=workspace_compressor)
         workspace_handler = WorkspaceToolHandler(
             graph=workspace_graph, read_workspace=read_workspace, commit=commit_workspace)
+        if publish_output is not None:
+            # 兼容旧探索调用；新宿主应显式传入模式输出工具。
+            from ..exploration.tool.interaction import build_interaction_registrations
+            if output_tools:
+                raise ValueError('不能同时提供输出工具和旧发布回调')
+            output_tools = build_interaction_registrations(publish_output)
         registered = build_agent_tool_registry(workspace_handler=workspace_handler,
-            publish_output=publish_output, additional_tools=additional_tools)
+            output_tools=output_tools, additional_tools=additional_tools)
         registered.require_supported_content()
         registry = registered.handlers(publish_progress=publish_progress)
         # 仅保留独立图旧调用方的原始 handler 适配；正式模型工具必须完整注册。

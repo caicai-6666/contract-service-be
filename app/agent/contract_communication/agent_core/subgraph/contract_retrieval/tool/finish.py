@@ -1,6 +1,8 @@
 """候选查询结束工具：参数、执行适配与注册集中定义。"""
 from collections.abc import Awaitable, Callable
 from pydantic import Field
+from app.infrastructure.model_feedback import ModelFeedbackError
+from app.agent.contract_communication.agent_core.tool.file_viewer import FileViewError
 
 from app.agent.contract_communication.agent_core.tool.registry import RegisteredTool
 from app.agent.contract_communication.agent_core.subgraph.fifo_management.schema import FIFOExecutionResult
@@ -25,8 +27,14 @@ def build_finish_contract_retrieval_registration(
             await authorize()
             on_complete(value)
             return FIFOExecutionResult(status='succeeded', tool_result={'status':'success'})
-        except (ValueError, RuntimeError) as exc:
-            return FIFOExecutionResult(status='failed', tool_result={'status':'error','message':str(exc)})
+        except ModelFeedbackError as exc:
+            return FIFOExecutionResult(status='failed',tool_result={'status':'error','message':exc.public_text})
+        except FileViewError:
+            return FIFOExecutionResult(status='failed',tool_result={'status':'error',
+                'message':'本次候选结果引用已不可用；重新查询并使用当前子任务返回的完整引用，未提交最终候选。'})
+        except (ValueError, RuntimeError):
+            return FIFOExecutionResult(status='failed',tool_result={'status':'error',
+                'message':'候选回读或当前任务授权检查未通过；重新核对本轮查询条件，未提交最终候选。'})
 
     return RegisteredTool('finish_contract_retrieval', FinishContractRetrievalArguments.__doc__,
                           FinishContractRetrievalArguments, execute)

@@ -32,7 +32,7 @@ flowchart TD
 | `contract_overview_context` | `ContractOverviewGenerationContext` | 追加命名任务后的不可变模型上下文。 |
 | `contract_overview` | `ContractOverviewResult` | 经模型与程序形成的 `generated` 合同概览（名称与摘要）或不携带半成品的 `failed` 结果。 |
 
-`contract-overview-generation-v2` 提示词从基础上下文复制消息，在其末尾依次追加分类摘要与命名任务。分类摘要按原有命中顺序为每个类别建立 Markdown 分组，每组只展示 `category_name`、`reasoning_summary` 和 `scenario`；换行等空白会被折叠，避免动态文本破坏固定排版。`unmapped` 单独展示未映射类型说明，`partial` 明确提示类别集合不完整，`failed` 被拒绝组装。
+`contract-overview-generation-v3` 提示词从基础上下文复制消息，在其末尾依次追加分类摘要与命名任务。分类摘要按原有命中顺序为每个类别建立 Markdown 分组，每组只展示 `category_name`、`reasoning_summary` 和 `scenario`；换行等空白会被折叠，避免动态文本破坏固定排版。`unmapped` 单独展示未映射类型说明，`partial` 明确提示类别集合不完整，`failed` 被拒绝组装。
 
 命名任务把原始标题视为命名素材而非默认结果。模型先判断标题的信息量；“买卖合同”“采购合同”“服务合同”“合作协议”等只表达通用文种或交易类别的标题均视为泛化标题，必须根据页面可确认的核心标的、具体项目或实际服务内容重新凝练，优先形成“核心内容 + 合同类型”的友好名称。只有原始标题已经包含足够具体且与正文一致的核心内容时才直接沿用。
 
@@ -51,7 +51,7 @@ flowchart TD
 
 `assemble_contract_overview_context` 只接受同一 `document_id` 的 `ContractBaseContext` 与紧凑 `ContractClassificationResult`。分类运行审计、占位对象和跨文档分类结果会被明确拒绝。节点调用唯一消息构造器，深复制基础上下文后依次追加分类 Markdown 与命名任务，不修改共享的页面图像和文档结构前缀。
 
-节点输出不可变 `ContractOverviewGenerationContext`，保存 `contract-overview-generation-v2`、完整消息元组及确定性 SHA-256 指纹。相同输入重复组装会得到相同消息和指纹；分类状态为 `failed`、分类状态与命中集合矛盾，或最后一条基础消息不是内容块列表时，构造过程直接失败，不形成可供生成节点消费的半成品上下文。
+节点输出不可变 `ContractOverviewGenerationContext`，保存 `contract-overview-generation-v3`、完整消息元组及确定性 SHA-256 指纹。相同输入重复组装会得到相同消息和指纹；分类状态为 `failed`、分类状态与命中集合矛盾，或最后一条基础消息不是内容块列表时，构造过程直接失败，不形成可供生成节点消费的半成品上下文。
 
 ## 合同概览生成节点
 

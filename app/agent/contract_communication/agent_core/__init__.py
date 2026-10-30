@@ -1,4 +1,4 @@
-"""合同沟通主助手：提供角色与交互规则初稿，双层工具管理已装配，主模型循环与上下文组装尚未接入。"""
+"""合同沟通通用执行核心；具体交互由 exploration 与 a2a 装配。"""
 
 from .prompt import (
     SYSTEM_GUIDENCE_TEMPLATE,

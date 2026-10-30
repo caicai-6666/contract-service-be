@@ -2,7 +2,7 @@
 
 > **用途：** 说明用户确认后保存独立待审快照，再由中间件审核反馈驱动正式入库的职责划分。
 
-HTTP 契约见[提交合同待审申请](../../api/contract.md#正式入库合同)，存储结构见[待审快照](../../architecture/data/ingestion-review.md)、[正式 SQLite 元数据](../../architecture/data/contract-sqlite-metadata.md)与[ES 文档](../../architecture/data/contract-elasticsearch-document.md)。
+HTTP 契约见[提交合同待审申请](../../api/contract.md#提交合同待审申请)，存储结构见[待审快照](../../architecture/data/ingestion-review.md)、[正式 SQLite 元数据](../../architecture/data/contract-sqlite-metadata.md)与[ES 文档](../../architecture/data/contract-elasticsearch-document.md)。
 
 ---
 

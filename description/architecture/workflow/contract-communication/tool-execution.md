@@ -67,6 +67,8 @@ result = output["result"]
 
 每个会话独立创建并复用 `ToolExecutor`。同一实例串行执行，并按 `call_id` 保存回执；相同调用返回回执，不再次执行处理器；复用 ID 却改变任务、名称或原始参数则拒绝。取消继续向外传播，已进入处理器的调用留下 `unknown` 回执。异常细节记录在程序日志，不放进模型反馈。
 
+工具可返回私有 `ToolExecution(result, after_commit)`；注册表与Executor只向FIFO传递已校验的结果，回调不进入Schema、序列化轨迹或模型上下文。主循环在FIFO完整校验并成功记录宿主轨迹后调用 `executor.commit(operation)`，同一调用最多一次；管理失败、取消或未提交不触发回调。网页游标及正常无正文次数通过此边界更新。原有只返回 `FIFOExecutionResult` 的工具保持兼容；独立管理图调用方没有宿主提交时不得擅自触发回调。
+
 回执是进程内保护，不提供跨实例或重启后的持久化幂等，也不按语义识别不同 ID 的重复操作。随会话执行器一起释放，不能在仍可能重放时清空。若重新装配图以更新 FIFO 预算，应通过 `executor=` 传入同一 `ToolExecutor`；此时由调用方自行注册 `WorkspaceToolHandler` 和其他工具，不能同时传 `handlers`、`additional_tools` 或 `publish_output`。
 
 调用回执复用只避免副作用重放，不负责 FIFO 整体请求幂等。调用方应恢复已返回的 FIFO/摘要、使用更新后的预算，不得在已有工具反馈的轨迹上重复追加同一回执。错误纠正轨迹清理、私有审计与正式模型循环仍由外层运行时负责。
@@ -146,14 +148,14 @@ search_registration = RegisteredTool(
 
 **当前支持边界：** 主循环配置 page_resolver 后支持可配置轮数的展示与折叠；未配置时仍在装配期阻断 foldable。独立 FIFO 图默认无展示能力，收到页面结果时保留执行事实并返回 unsupported_content；主循环显式启用 supports_foldable 后保存轻量回执。驻留轨迹使用与 FIFO 相同的序列化函数，只持久化来源定位及隐藏占位，不保存完整页面。
 
-展示生命周期与仍待实现的资源管理边界，详见[页面内容折叠与资源建模](page-content-management.md)。`tests/test_tool_content_contract.py` 验证普通兼容、内建声明、可折叠结构、非法类型、返回越界、回执不重放及未接入展示时保留执行事实。
+展示生命周期与资源管理边界，详见[页面内容折叠与资源建模](page-content-management.md)。`tests/test_tool_content_contract.py` 验证普通兼容、内建声明、可折叠结构、非法类型、返回越界、回执不重放及未接入展示时保留执行事实。
 
 
 ---
 
 ## 工具执行状态
 
-每个 `RegisteredTool` 都有不可变 `progress: ToolProgress`，默认 `type=thinking`、`message=正在思考`，无需在每个注册点重复填写。工作区增删改及两个用户输出工具均使用默认值。本地合同库检索使用 `local-search`，记忆检索与查看使用 `thinking`，联网检索使用 `online-search`，外部专家咨询使用 `external-expert`；当前允许类型复用 `TaskProgressData`，新增类型须同步前端契约。
+每个 `RegisteredTool` 都有不可变 `progress: ToolProgress`，默认 `type=thinking`、`message=正在思考`，无需在每个注册点重复填写。工作区增删改及两个用户输出工具均使用默认值。合同候选与图片检索使用 `local-search`，合同关系检索、记忆检索及搜索结果查看使用 `thinking`，网页搜索与正文读取使用 `online-search`，外部专家咨询使用 `external-expert`；当前允许类型复用 `TaskProgressData`，新增类型须同步前端契约。
 
 状态文案必须采用“正在＋动作”，由 `ToolProgress` 在注册时校验；旧展示历史仍可读取，不回写既有事件。状态切换仅说明当前展示步骤变化，不是前一步成功的凭证。
 
@@ -276,3 +278,22 @@ view_memory_query由正式Communication主循环按会话注册，接收query_id
 
 
 `get_contract_by_passport` 已接入正式主循环，按完整通行证精确读取 SQLite 中的多份 ready 合同，使用会话独立 LRU 缓存 ID 快照。同一工具支持 page 翻页，非空结果以 foldable 渲染合同列表，空结果普通返回，默认 thinking 状态。详见[按通行证获取合同](contract-metadata-tool.md#按通行证获取合同)。
+
+
+---
+
+## 模式输出绑定
+
+`build_agent_tool_registry` 只提供公共日期与工作区工具，通过 `output_tools` 显式接收模式输出注册项。`RegisteredTool.output_kind` 为程序侧 `intermediate/final` 元数据，注册时校验必填字符串 `content`，不进入模型工具 Schema。探索注册中途和最终输出，A2A 只注册最终输出；绑定接口与扩展边界见[Exploration 与 A2A 划分](agent-modes.md)。旧 `build_tool_management_subgraph(publish_output=...)` 保留探索兼容适配；新调用应显式传入输出工具。
+
+---
+
+## 校验反馈与原生调用附文
+
+Schema解析错误由注册入口就近标明原因、修正动作和not_executed状态。`app/infrastructure/model_feedback.py`仅提供可信诊断容器与Schema机械格式化，不维护业务文案：只引用Schema声明的字段及约束，未知字段名、原始参数、异常msg/input及任意ctx不发给模型。业务分支使用ModelFeedbackError显式给出公开原因，不将str(exc)直接提升为系统反馈。
+
+主循环、A2A广播认领、合同检索和压缩允许单个合法原生调用附带content；附文只留私有审计，正常历史content=null。零/多个调用、拒答、截断、非法参数仍拒绝；纯JSON任务仍校验正文。失败调用参数不重放进下一轮，模型仅收到安全诊断及仍有效的状态；成功后删除整段失败轨迹。外层传递工具原始定向回执，不追加泛化“检查参数”覆盖原因。
+
+`feedback_delivered`只在下一轮模型请求成功返回后确认为true；错误上限/总轮数上限后的最后反馈保持false，审计不把生成提示冒充已送达。压缩子循环在终止时将最后安全诊断传给父图，原工作区不变。A2A文件边界仍统一隐藏不可见与不存在；页码、查询及业务校验不再被全部抹成资料不可用。
+
+`tests/test_tool_feedback.py`验证字段缺失/类型/约束区分、未知字段与敏感值隔离、四条原生工具路径的附文与历史规范化、下一轮真实消息、成功清理、错误上限的送达标记、纯JSON拒绝工具、压缩定向诊断跨层传递和旧权限隐匿边界。测试仅使用隔离模型与内存状态，不重启真实服务。

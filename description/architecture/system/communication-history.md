@@ -6,7 +6,7 @@
 
 `ConversationHistoryService` 是会话历史与工作区的统一内存数据源。每个 `ResidentConversation` 同时持有有序轨迹、工作区快照及备份状态。`CommunicationEventService` 与其共用锁，在接受公开事件时同步更新轨迹；SSE 回放队列和展示快照只是传输、展示投影，不作为完整历史来源。
 
-正式应用和独立展示脚本均通过 `bind_history` 装配。前端通过 [open 与 refresh](../../api/communication.md#打开会话) 获取当前驻留范围的全部任务，服务端过滤摘要；不需要等待 SQLite 备份。实时问答工作流及最终问答模型上下文组装尚未接入，后台记忆加工已由独立归档服务接入。
+正式应用和独立展示脚本均通过 `bind_history` 装配。前端通过 [open 与 refresh](../../api/communication.md#打开会话) 获取当前驻留范围的全部任务，服务端过滤摘要；不需要等待 SQLite 备份。实时问答与模型上下文装配已由正式 Agent Core 接入，后台记忆加工由独立归档服务调度。
 
 用户恢复不再直接消费内部 trace。运行时接受事件时同步记录 payload.events（排除 delta），与 trace、event_cursor 和任务状态同批提交；`communication_display.py` 只将输入、展示事件及活跃消息累积正文投影给前端，隐藏工具轨迹。旧任务只兼容聚合已有消息，不伪造遗漏的进度和错误。精确接口见[用户展示 Payload](../../api/communication.md#用户展示-payload)。
 
@@ -20,11 +20,11 @@
 | 终态、fresh | 不可再修改 | 复制到 SQLite，失败重试 |
 | 已持久化 | 不可再修改 | 无需重复备份 |
 
-实现以记录终态和内部 `_persisted` 标记集区分上述状态；标记与归属密钥不进入 payload 或前端响应。加载的 SQLite 记录标记为已持久化。
+实现以记录终态和内部 `_persisted` 标记集区分上述状态；标记与内部归属映射不进入 payload 或前端响应。加载的 SQLite 记录标记为已持久化。
 
 注册轮次时先校验归属并加载最近窗口，再按会话内最大 sequence 分配新序号和 record_id。后续正常完成、取消、替换、拒绝、失败、激活超时均冻结原身份及顺序；后台不得重新编号。旧 SSE 轮次过期不会删除会话轨迹；处理中运行时 TTL 到期以 failed 冻结后回收事件源。
 
-用于上下文截断的累计摘要生成尚未接入（不同于已实现的单任务检索总结）。未来摘要写入必须加入同一序号分配与锁协议，禁止绕开驻留层直接向存在 fresh 任务的会话追加摘要或任务，否则可能序号冲突；当前加载与备份遇冲突拒绝覆盖。
+用于上下文截断的 FIFO 累计摘要已接入，与三入口检索投影分开管理。摘要经 insert_agent_summary 在同一序号分配与锁协议内插入，原子备份规则见[自动摘要与驻留排序](#自动摘要与驻留排序)；禁止绕开驻留层直接向存在 fresh 任务的会话追加摘要或任务，加载与备份遇冲突拒绝覆盖。
 
 ---
 
@@ -84,7 +84,7 @@ accepted 只表示保存资格，不是“磁盘写入已确认”；异步备�
 
 SQLite 查询显式选择记录元数据、payload、activated_at 与 processing_duration_ms，不读取 retrieval_text/embedding。新任务 created_at 为注册时间，activated_at 为首次激活 UTC 毫秒，结束时复制快照的总时长。老记录计时缺失为 null，不推算。
 
-模型入口 get_model_records 仅提供窗口候选，状态过滤、token 预算和工作区组装仍需后续按[上下文规范](../../standard/agent-context-management.md)实现。
+模型入口 get_model_records 仅提供窗口候选；正式 Agent Core 按[上下文装配](../workflow/contract-communication/context-assembly.md)完成状态过滤、工作区组装与预算校验，并遵循[上下文规范](../../standard/agent-context-management.md)。
 
 门禁使用独立内部入口 `CommunicationEventService.get_gate_history(conversation_id, turn_id, owner=...)`：先校验轮次所有权及 processing 状态，再持共享锁调用 `ConversationHistoryService.get_gate_records_locked`。只从当前轮之前、最新累计摘要之后选择最近最多五条有效终态任务，排除拒绝、过期、在途任务与摘要本身；返回深拷贝，包含已备份与 fresh 数据，不额外加载向量或检索文本。无合格历史则返回空元组，不跨摘要补足数量；有文字时上下文节点仍判断明确的先前文件操作意图，只有文件且无历史时跳过。具体输入投影和执行规则见[上下文相关性判断](../workflow/contract-communication/context-relevance.md)。此入口不改变用户 open/refresh 返回范围。第二层使用独立的[门禁后上下文装配](../workflow/contract-communication/context-assembly.md)，读取最新摘要后的全部已准入有效任务，不受五轮限制。
 
@@ -104,7 +104,7 @@ SQLite 查询显式选择记录元数据、payload、activated_at 与 processing
 
 应用正常关闭先停止事件生产，把未结束轮次标为 failed，再排空旧备份及其后产生的新版本；发生失败则不无限阻塞关闭，记录不含密钥/正文的日志后释放内存。突然崩溃或备份持续失败时，fresh 轨迹和未备份工作区可能丢失，不承诺零丢失。正式服务跨重启保留已备份历史和工作区。
 
-当前要求单进程、单 worker；已接入[十分钟记忆归档与空闲驱逐](communication-archive.md)，仍没有总驻留容量控制。SSE 的容量限制不等于完整历史容量限制，长期大量会话需要后续增加驻留预算。累计摘要生成、历史压缩及文件垃圾回收仍不包含在当前实现中。
+当前要求单进程、单 worker；已接入[十分钟记忆归档与空闲驱逐](communication-archive.md)，仍没有总驻留容量控制。SSE 的容量限制不等于完整历史容量限制，长期大量会话需要后续增加驻留预算。累计摘要生成与历史压缩已接入主循环，文件垃圾回收仍未实现。
 
 ---
 
@@ -112,7 +112,7 @@ SQLite 查询显式选择记录元数据、payload、activated_at 与 processing
 
 首次打开或注册轮次时，轨迹窗口与工作区在同一 SQLite 读事务内载入。后续 open、refresh 和注册只合并历史，保留内存中的最新工作区，不能用尚未更新的数据库内容覆盖它。删除会话时统一清除轨迹、工作区和待备份副本。
 
-内部接口供后续问答执行器使用，不是新增 HTTP 或模型工具接口：
+内部接口供正式问答执行器使用，不是新增 HTTP 或模型工具接口：
 
 - `get_workspace(conversation_id, owner_userid=...)`：加载并返回工作区深拷贝，包含 payload、revision、updated_at。
 - `update_workspace(conversation_id, owner_userid=..., payload=..., expected_revision=...)`：校验归属、完整结构及内存版本，接受后递增 revision，更新时间并唤醒后台备份；返回深拷贝。过期版本拒绝提交。
@@ -122,7 +122,7 @@ SQLite 查询显式选择记录元数据、payload、activated_at 与 processing
 - `remove_workspace_entry(..., section=..., key=..., expected_revision=...)`：移除失效补充、已知信息或方向条目；不允许留下悬空信息引用，不删除原始轨迹。
 - `flush()`：每个会话最多尝试一个备份批次；返回值只表示本轮尝试是否成功，不代表处理期间新产生的数据已经全部保存。
 
-内容契约复用 `WorkspacePayload` 的四个 KV 区域（用户任务及补充、已知信息、已探索方向、剩余方向），见 [SQLite 工作区](../data/communication-sqlite.md#conversation_workspaces会话工作区)。结构校验不等于业务确认：目标、已知信息和后续任务由未来问答模型及其执行器整理，当前服务不根据轨迹猜测工作区，不读取失败草稿或私有推理填充它。
+内容契约复用 `WorkspacePayload` 的四个 KV 区域（用户任务及补充、已知信息、已探索方向、剩余方向），见 [SQLite 工作区](../data/communication-sqlite.md#conversation_workspaces会话工作区)。结构校验不等于业务确认：目标、已知信息和后续任务由问答模型及其执行器整理，当前服务不根据轨迹猜测工作区，不读取失败草稿或私有推理填充它。
 
 创建、字段更新、移除和探索收束均复用完整快照校验与版本提交；读取后出现竞争更新时拒绝旧版本，不覆盖其他有效条目。信息状态与探索结果的业务真实性仍由执行器判断，服务不会因用户任务改变而自动删改相关规划。[模型可见工具](../workflow/contract-communication/workspace-tools.md)已提供定义和执行适配，通过受权提交回调复用完整 payload 更新；[模型循环](../workflow/contract-communication/agent-runtime.md)已接入。
 

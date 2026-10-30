@@ -283,6 +283,7 @@ class MLLMClient:
         min_p: float | None = None,
         tool_placement: ToolPlacement | None = None,
         tool_task_index: int | None = None,
+        preserve_thinking: bool | None = None,
         on_tool_delta: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> MLLMToolCompletion:
         """调用函数工具；传入增量回调时启用流式接收，仍返回完整待校验响应。"""
@@ -295,6 +296,10 @@ class MLLMClient:
 
         # 所有节点统一读取配置，不接受单次调用覆盖强度。
         chat_template_kwargs = self._settings.thinking_template_kwargs(enable_thinking)
+        if preserve_thinking is not None:
+            # 主助手保留请求内全部历史思考；同时兼容 Qwen 和 GLM 模板。
+            chat_template_kwargs['preserve_thinking'] = preserve_thinking
+            chat_template_kwargs['clear_thinking'] = not preserve_thinking
         # 布局由节点契约决定；未指定时不覆盖服务端模板默认值，便于尚未
         # 完成消息边界设计的节点继续保持现状。
         if tool_placement is not None:

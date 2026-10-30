@@ -1,6 +1,6 @@
 # 合同信息抽取 Agent：项目说明
 
-> **项目定位：** 本项目面向单份 PDF 合同，使用本地多模态模型完成文档结构理解、合同分类、固定 Core 字段提取、条款提取和检索问题生成，并通过 HTTP/SSE 提供可追溯的增量审核草稿。
+> **项目定位：** 本项目提供合同 PDF 信息抽取、共享合同库管理和合同沟通智能体。单份 PDF 经本地多模态模型生成可审核的结构化草稿；用户问答通过 HTTP/SSE 交付，跨平台任务通过可选 A2A 消费端处理。
 
 本文件只说明当前已经实现的能力、全局边界和阅读入口。字段契约、子图流程、接口协议与运行方式分别由对应专题文档维护，并统一收录在[项目文档导航](readme.md)中。
 
@@ -24,6 +24,10 @@
 ## 2. 当前实现范围
 
 ### Agent 工作流
+
+- 网页查看已支持候选图像加载、精炼模型选图及主模型原生图片展示，图像只保留在当前任务内存并随任务退出释放，详见[网页图片阅读](architecture/workflow/contract-communication/web-images.md)。
+
+- 合同沟通的执行核心已与交付模式分离：exploration 承接现有用户 SSE，a2a 已接入中间件子平台任务收发、首次受理、内存响应链及无感文件过滤，详见[交互模式划分](architecture/workflow/contract-communication/agent-modes.md)。
 
 - 会话记忆已切换为用户输入、中途输出和最终输出三入口检索投影：外层确定性筛选、单任务子图并发向量化、中途逐条编码融合、SQLite原子归档与空闲安全驱逐已接通；原始任务/工作区后台备份独立运行。旧综合摘要字段已移除，旧任务在所属会话重新驻留后重新加工；查询端已提供主模型检索与结果翻页工具，详见[会话记忆加工工作流](architecture/workflow/conversation-memory/readme.md)。
 - 创建任务后先通过独立 MLLM Agent 判断处理版 PDF 是否属于合同文档；合同判断通过后进入文件准入与质量检查，独立收束节点统一生成决定与反馈，只有通过才执行 PDF 查重；质量检查已接入原生思考和强制 JSON 输出，非合同仍形成可见终态。
@@ -53,7 +57,7 @@
 - `/communication/conversations` 已支持首次输入与可选名称创建持久化会话、空工作区及待激活首轮；后续轮次须引用存在且归属当前 userid的会话，任务有序轨迹统一驻留，终态后自动后台备份，不阻塞历史展示。
 - `/communication` 已支持表单暂存文字与 PDF、创建或替换待激活轮次；须在 180 秒内首次订阅激活，否则释放输入并返回 `410`。SSE 与快照支持用户隔离、交错输出、`intermediate/final`、回放及终态关闭。正式执行器激活后调用文件可读性门禁，校验统一展示“正在思考”，拒绝提示流式输出，终态同步写入驻留历史并后台备份；支持取消执行及输入清理。
 - 用户使用统一登录平台签发的 access_token；本平台经中间件校验登录有效且属于本平台管理员，不再提供本地密钥登录或令牌签发。
-- 除健康检查外，所有 HTTP/SSE 接口统一注入独立用户访问验证依赖；userid 用于所有权，username 用于展示。
+- 除健康检查外，所有 HTTP/SSE 接口统一注入独立用户访问验证依赖；userid 用于所有权，username 用于展示，当前多部门名称仅作为用户资料透传到 `/auth/me`，不参与授权。
 - 所有登录有效且属于本平台管理员的用户均可查看、新增和删除共享正式合同及维护注意事项；会话、附件和提取任务仍保留所有者隔离。
 - 合同任务在创建时绑定当前用户 userid；运行列表、快照、SSE、继续和重试只允许任务所有者访问，跨用户请求按任务不存在处理。
 - 支持按正式合同文档的 `file_uri` 安全读取 `data/contract` 中的 PDF。
@@ -77,26 +81,25 @@
 
 ### 基础设施
 
-- 同级 deploy 已提供 Neo4j Community 镜像构建、Compose 服务及开发端口覆盖，供后续合同关联图使用；后端已提供官方驱动依赖、连接环境配置和通用异步客户端，已接入合同入库、删除及启动对账，关系创建、独立删除及一跳查询接口已实现，详见[Neo4j 部署与开发连接](capability/infrastructure/neo4j-development.md)。
+- 同级 deploy 已提供 Neo4j Community 镜像构建、主 Compose 及独立本机开发 Compose；后端已接入合同入库、删除及启动对账，关系创建、独立删除、一跳查询和 Agent 关系检索已实现，详见[Neo4j 部署与开发连接](capability/infrastructure/neo4j-development.md)。
 
 - 合同 SQLite 已初始化单份内容摘要字段 `contracts.summary` 和一对多用户注意事项表 `contract_notes`；注意事项列表、新增、单条删除及合同摘要拉取接口已接入，摘要已在合同概览子图中生成，正式入库已接收用户确认摘要并写入 SQLite，会话请求已支持按 ID 读取合同名称与摘要快照并注入上下文，详见[合同元数据结构](architecture/data/contract-sqlite-metadata.md)。
 
-- Communication 已提供会话、任务/摘要、工作区及独立思考窗口的 SQLite 存储和基础读写，启动时初始化；会话同时驻留轨迹与工作区，每批终态轨迹备份在同一事务同步保存工作区，Agent Core 已接入模型工作区操作、自主整理与自动压缩，详见 [Communication SQLite 存储](architecture/data/communication-sqlite.md)。
+- Communication 已提供会话、任务/摘要、工作区的 SQLite 存储（原生思考随任务消息保存）和基础读写，启动时初始化；会话同时驻留轨迹与工作区，每批终态轨迹备份在同一事务同步保存工作区，Agent Core 已接入模型工作区操作、自主整理与自动压缩，详见 [Communication SQLite 存储](architecture/data/communication-sqlite.md)。
 - 应用启动时探测正式 Elasticsearch 索引，不存在时按当前契约创建，存在时增量补齐新增 Core 与检索问题原文 mapping；自动草稿不写入 Elasticsearch，最终审核值及后台检索数据在正式入库时统一写入。
 - 正式合同的轻量文件目录保存在 `data/abstract/contracts.db`；普通文件管理只读取 `ready`，应用启动时对非就绪记录核验 PDF、ES 并同步 Neo4j；删除中记录自动继续清理，已有正式合同幂等补建图节点。
-- 根目录 Dockerfile 负责后端镜像构建；前端、后端与 Elasticsearch 的 Compose 编排由独立 `contract-service-deploy` 项目维护。
+- 根目录 Dockerfile 负责后端镜像构建；前端、后端、Elasticsearch 与 Neo4j 的 Compose 编排由独立 `contract-service-deploy` 项目维护。
 - 多模态生成和 Embedding 均通过环境变量连接本地 OpenAI 兼容服务。
 - 全部模型客户端在单 worker 内共享两类独立的全局请求配额，默认 MLLM 20、Embedding 10；节点局部限制继续保留，详见[模型全局并发额度](capability/infrastructure/model-concurrency.md)。
 - MLLM 页面首次发送完整视觉内容，后续并发与多轮请求通过 vLLM 媒体 UUID 引用同一页面，并在缓存失效时自动重填一次。
 - 合同类别、Core 字段和检索问题指南在应用启动时全量加载并形成不可变快照。
-- 审核用户 YAML 在应用启动时全量校验并形成不可变内存用户对象。
-- 用户访问令牌以“用户访问令牌 → 审核人名称”保存于当前 API 进程内存，成功访问受保护接口时刷新配置时效。
+- 用户登录有效性及平台管理员资格在每次受保护请求时通过中间件查询，不加载本地用户 YAML，也不保存跨请求授权缓存；用户令牌由统一登录平台签发和管理。
 
 ---
 
 ## 3. 当前边界
 
-- 面向用户的[合同沟通智能体](architecture/workflow/contract-communication/readme.md)已有门禁与[文件可读性子图](architecture/workflow/contract-communication/file-readability.md)，已实现顺序打开、按文件 Map-Reduce 渲染与视觉判断、JSON Schema 约束解码、有限纠错及尾部熔断，并已接入正式 Communication 服务。可读性通过后已接入逐文件并发命名与摘要；摘要披露独立无关内容时经主题冲突节点直接熔断反馈；文件、文字业务相关性、文件与文字整体判断、上下文相关性及加权阈值聚合已实现；服务端选取最新摘要之后最多五轮有效历史并排除拒绝任务。门禁后已接入动态上下文装配：读取驻留工作区、最新结构化摘要及其后任务并追加当前请求；核心问答模型循环、完整请求预算、工作区即时提交、摘要按压缩边界插入与原子备份已实现；文件查看工具已注册并接入正式循环，支持已落盘附件和已有标识的合同页面，资源按会话/全局池管理；记忆检索及结果翻页工具、外部专家求助与追问工具已接入；规划或合同查询工具仍未接入。已确认需求与待定边界见 [Communication 总体设计](architecture/system/contract-communication.md)。
+- 面向用户的[合同沟通智能体](architecture/workflow/contract-communication/readme.md)已有门禁与[文件可读性子图](architecture/workflow/contract-communication/file-readability.md)，已实现顺序打开、按文件 Map-Reduce 渲染与视觉判断、JSON Schema 约束解码、有限纠错及尾部熔断，并已接入正式 Communication 服务。可读性通过后已接入逐文件并发命名与摘要；摘要披露独立无关内容时经主题冲突节点直接熔断反馈；文件、文字业务相关性、文件与文字整体判断、上下文相关性及加权阈值聚合已实现；服务端选取最新摘要之后最多五轮有效历史并排除拒绝任务。门禁后已接入动态上下文装配：读取驻留工作区、最新结构化摘要及其后任务并追加当前请求；核心问答模型循环、完整请求预算、工作区即时提交、摘要按压缩边界插入与原子备份已实现；文件查看工具已注册并接入正式循环，支持已落盘附件和已有标识的合同页面，资源按会话/全局池管理；记忆检索及结果翻页工具、外部专家求助与追问工具已接入；合同候选查询子图、元数据/注意事项/通行证读取、合同图像与关系检索、合同库统计、网页搜索及正文/图片阅读均已接入。已确认需求与待定边界见 [Communication 总体设计](architecture/system/contract-communication.md)。
 - Communication 附件已支持[准入后延迟落盘](architecture/system/communication-history.md#附件准入与延迟落盘)：注册只暂存内存，执行层显式批准后随终态备份保存；拒绝或未判定就结束的附件仅保留不可用元数据。正式门禁不因可读性通过就提前批准附件；完整门禁通过后批准附件并进入正式 Agent Core，附件随终态备份保存。
 - 系统只支持固定 Core 提取，不包含候选字段生成、归并、统计或治理流程。
 - Core 只能来自启动期通过严格校验的固定字段目录；运行时不得创建目录外字段。
@@ -104,7 +107,7 @@
 - 前端确认接口只提交不可变待审申请，外部审核备注与入库员 note 分开保存；审核通过才正式入库。已提供[待审查询 API](api/ingestion-review.md)，包含保留中的申请列表、详情中的清理时间和临时 PDF；暂未实现已提交申请修改或重审。
 - [删除临时区](architecture/data/deletion-review.md)已提供独立 SQLite、精简合同快照存入及审核结果记录；[HTTP 删除入口](api/contract.md#删除正式合同)保存删除申请并置 can_delete=false，拒绝后恢复标志；[后台执行器](capability/application/deletion-review-executor.md)定时删除已批准合同并保存结果、重试失败；[删除审核查询](api/deletion-review.md)按当前用户是删除提交人或合同上传人返回相关申请 ID 和详情；[定时清理](capability/application/deletion-review-cleanup.md)按本地完成时间保留后清除审核数据并保存最小幂等凭据。[中间件删除申请发布](capability/application/deletion-review-publisher.md)已接入，[删除审核反馈消费](capability/application/deletion-review-consumer.md)已接入，实际删除或拒绝恢复完成后才 ack，失败与重复反馈按本地完成标记恢复。
 - 当前注册表不跨进程共享，开发热更新会清空任务；合同处理服务必须使用单 worker。
-- 免登校验确认审核人身份，结合三级操作权限和合同任务所有权隔离；用户访问令牌缓存和任务注册表均不跨进程共享，重启即清空。
+- 受保护接口逐请求验证中间件登录与平台管理员资格，并按 userid 隔离合同任务、会话和附件；本地不缓存用户授权。任务注册表和平台会话不跨进程共享，重启后重新建立。
 - 系统不替代合同审阅、法律意见或合同效力判断。
 - 检索问题只生成问题和向量，不生成配套答案。
 

@@ -56,7 +56,7 @@ flowchart TD
 
 ## 提示词与请求
 
-节点提示词归属于 `document_understanding/document_structure/prompt/`，当前版本为 `document-structure-unit-discovery-v13`。消息通过文档结构理解子图的唯一构造器复用“公共阅读规范 + 合同页面图像”，结构发现任务只追加在页面之后。模型可见任务以已有完整合同页面、当前导航结构目标和下一步工具动作表达，不使用文件格式、上下游节点或视觉定位节点等无关暗示。
+节点提示词归属于 `document_understanding/document_structure/prompt/`，当前版本为 `document-structure-unit-discovery-v14`。消息通过文档结构理解子图的唯一构造器复用“公共阅读规范 + 合同页面图像”，结构发现任务只追加在页面之后。模型可见任务以已有完整合同页面、当前导航结构目标和下一步工具动作表达，不使用文件格式、上下游节点或视觉定位节点等无关暗示。
 
 `discover_document_units` 显式传递 `tool_placement=after_task`，使首轮 `summary` 工具集和后续单元发现工具集都位于“合同页面图像 + 结构发现任务”之后、assistant/tool 短期历史之前。工具集随状态机轮次变化时只截断任务之后的缓存，不会在页面图像公共前缀之前造成分叉。具体模板契约见 [vLLM 自定义聊天模板](../../../capability/infrastructure/vllm-chat-template.md)。
 
@@ -186,7 +186,7 @@ span:
 
 `locate_document_units` 位于单元发现之后，代码内聚在 `document_structure/visual_grounding/`。节点为每个单元创建一个独立短期记忆工具循环，再通过同一个 MLLM 并发信号量调度所有单元；单元失败彼此隔离，只有成功执行 `finish` 的完整定位框才能提升为下游权威结果。
 
-提示词版本为 `unit-visual-grounding-v4`，工具版本为 `unit-visual-grounding-tool-v3`：
+提示词版本为 `unit-visual-grounding-v5`，工具版本为 `unit-visual-grounding-tool-v3`：
 
 | 工具 | 参数 | 职责 |
 | --- | --- | --- |
@@ -236,4 +236,6 @@ unit_locations:
 - `unit_locations.status=located` 的区域可以增强导航；失败单元必须回退到页码、锚点和对应的完整页面图像。
 - 下游不得静默修改结构结果；发现冲突时应记录并进入审核信息。
 
-两类工具调用历史分别保留在文档结构理解子图私有状态中；主图只接收包含完整 `unit_locations` 的最终 `document_structure` 结果。当前完整流程的真实模型验证入口见[合同提取质量与推理指标实验](../../../../experiment/contract-extraction-quality/README.md)。
+> **本地验证记录：** 本文列出的 `experiment/`、`tests/` 或 `output/` 路径未随源码分发，仅保留历史追溯信息；本次文档核对未重新执行这些实验或核验缺失产物。
+
+两类工具调用历史分别保留在文档结构理解子图私有状态中；主图只接收包含完整 `unit_locations` 的最终 `document_structure` 结果。当前完整流程的真实模型验证入口见合同提取质量与推理指标实验（本地路径：`experiment/contract-extraction-quality/README.md`）。

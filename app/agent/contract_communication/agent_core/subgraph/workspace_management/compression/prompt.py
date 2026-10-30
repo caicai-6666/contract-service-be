@@ -6,7 +6,7 @@ from typing import Final
 from ..schema import CompressionRequest
 
 
-WORKSPACE_COMPRESSION_PROMPT_VERSION: Final[str] = 'workspace-compression-v7'
+WORKSPACE_COMPRESSION_PROMPT_VERSION: Final[str] = 'workspace-compression-v8'
 
 WORKSPACE_COMPRESSION_PROMPT_TEMPLATE: Final[str] = """# 工作区压缩任务
 
@@ -47,7 +47,7 @@ WORKSPACE_COMPRESSION_PROMPT_TEMPLATE: Final[str] = """# 工作区压缩任务
 
 ## 工具调用与反馈
 
-每次响应必须且只能调用一个当前提供的工具，等待实际结果后再选择下一步。只使用注入定义中的名称、参数、路径和类型；当前工作区是路径及 ID 的依据。调用之外不输出普通文本，不输出整份工作区作为替代结果。
+每次响应必须且只能调用一个当前提供的工具，等待实际结果后再选择下一步。只使用注入定义中的名称、参数、路径和类型；当前工作区是路径及 ID 的依据。单个合法原生调用附带文本只留私有审计，不作为修改结果；不输出整份工作区替代工具调用。
 
 {tool_call_template}
 

@@ -232,7 +232,7 @@ class ContractSearchResults:
 
 
 def build_contract_image_search_registrations(*, session_viewer, contract_viewer, results,
-                                               client, index_name, metadata_store, settings, authorize, final_results=None):
+                                               client, index_name, metadata_store, settings, authorize, final_results=None, document_scope=None):
     async def search(operation, arguments):
         try:
             await authorize()
@@ -244,6 +244,9 @@ def build_contract_image_search_registrations(*, session_viewer, contract_viewer
                 if parent_pool is None:
                     raise FileViewError('result_unavailable', '请使用当前会话的图片结果或最终合同候选结果集ID。')
                 scope = frozenset(parent_pool.document_ids(arguments.result_id))
+            if document_scope is not None:
+                allowed = frozenset(await document_scope())
+                scope = allowed if scope is None else scope.intersection(allowed)
             if arguments.source_type == 'contract':
                 source = await asyncio.to_thread(metadata_store.get, arguments.file_id)
                 if source is None or source.status is not ContractMetadataStatus.READY:

@@ -1,6 +1,6 @@
 # Neo4j 部署与开发连接
 
-Neo4j 为后续合同关联和限定深度的邻域查询提供图存储。已安装官方 Python 驱动、连接配置及通用异步客户端 `Neo4jClient`；已接入应用生命周期及合同入库、删除和启动恢复；关系创建、独立删除及一跳查询接口已实现，Agent 图检索工具尚未实现。
+Neo4j 为合同关联及一跳邻域查询提供图存储。已安装官方 Python 驱动、连接配置及通用异步客户端 `Neo4jClient`；已接入应用生命周期及合同入库、删除和启动恢复；关系创建、独立删除及一跳查询接口已实现，Agent 关系列表、关系描述检索与合同库统计工具已接入，详见[合同关系检索](../../architecture/workflow/contract-communication/contract-relation-search.md)。
 
 ---
 
@@ -8,7 +8,7 @@ Neo4j 为后续合同关联和限定深度的邻域查询提供图存储。已�
 
 与 Elasticsearch 一致，由同级 `contract-service-deploy` 维护 `neo4j/Dockerfile`、主 `docker-compose.yml`和 `.env.example`。完整操作见 [deploy 部署说明](../../../../contract-service-deploy/README.md#neo4j-部署与本地开发)。
 
-默认版本为 Neo4j Community `5.26.30-community`。主 Compose 统一提供端口映射，通过 `.env` 的 `NEO4J_BIND_ADDRESS`、`NEO4J_HTTP_PORT`、`NEO4J_BOLT_PORT` 配置；默认监听回环地址 HTTP 7474、Bolt 7687，数据库绑定地址独立于前后端。与 ES 一致关闭认证（`NEO4J_AUTH: "none"`），无需用户名和密码。宿主机后续驱动使用 `bolt://127.0.0.1:7687`；容器后端使用 `bolt://neo4j:7687`。
+默认版本为 Neo4j Community `5.26.30-community`。主 Compose 统一提供端口映射，通过 `.env` 的 `NEO4J_BIND_ADDRESS`、`NEO4J_HTTP_PORT`、`NEO4J_BOLT_PORT` 配置；默认监听回环地址 HTTP 7474、Bolt 7687，数据库绑定地址独立于前后端。与 ES 一致关闭认证（`NEO4J_AUTH: "none"`），无需用户名和密码。宿主机驱动使用 `bolt://127.0.0.1:7687`；容器后端使用 `bolt://neo4j:7687`。
 
 在 deploy 目录执行：
 

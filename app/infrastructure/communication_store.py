@@ -68,11 +68,6 @@ CREATE INDEX IF NOT EXISTS records_summary_boundary
 CREATE INDEX IF NOT EXISTS records_time
     ON conversation_records(conversation_id, created_at);
 
-CREATE TABLE IF NOT EXISTS conversation_reasoning_windows (
-    conversation_id TEXT PRIMARY KEY NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-    payload TEXT NOT NULL CHECK(json_valid(payload) AND json_type(payload) = 'object')
-);
-
 CREATE TABLE IF NOT EXISTS conversation_workspaces (
     conversation_id TEXT PRIMARY KEY NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
     payload TEXT NOT NULL CHECK(json_valid(payload) AND json_type(payload) = 'object'),
@@ -148,6 +143,7 @@ class SQLiteCommunicationStore:
                                    "CHECK(memory_processed_at IS NULL OR (kind = 'task' "
                                    "AND typeof(memory_processed_at) = 'integer' AND memory_processed_at >= 0))")
             self._remove_legacy_retrieval(connection)
+            self._migrate_legacy_reasoning(connection)
             # 必须先迁移父表再创建子表，避免DROP父表触发新检索行级联删除。
             connection.execute(_RETRIEVAL_TABLE_SQL)
             for operation in ('INSERT', 'UPDATE OF record_id'):
@@ -613,28 +609,30 @@ class SQLiteCommunicationStore:
                 raise CommunicationStoreConflict("工作区版本已过期")
             return expected_revision + 1
 
-
-    def read_reasoning_window(self, conversation_id, *, owner_userid):
-        from app.schema.reasoning_window import ReasoningWindow
-        with self._connection() as connection:
-            self._owner(connection, conversation_id, owner_userid)
-            row = connection.execute('SELECT payload FROM conversation_reasoning_windows WHERE conversation_id = ?',
-                                     (conversation_id,)).fetchone()
-            return ReasoningWindow.model_validate_json(row['payload']) if row else ReasoningWindow()
-
-    def save_reasoning_window(self, conversation_id, *, owner_userid, window, expected_position):
-        """独立短事务保存窗口；旧副本不得覆盖新思考，删除会话时级联清理。"""
-        from app.schema.reasoning_window import ReasoningWindow
-        value = ReasoningWindow.model_validate(window)
-        with self._connection(write=True) as connection:
-            self._owner(connection, conversation_id, owner_userid)
-            row = connection.execute('SELECT payload FROM conversation_reasoning_windows WHERE conversation_id = ?',
-                                     (conversation_id,)).fetchone()
-            current = ReasoningWindow.model_validate_json(row['payload']) if row else ReasoningWindow()
-            if current == value:
-                return
-            if current.next_position != expected_position:
-                raise CommunicationStoreConflict('思考窗口位置冲突')
-            connection.execute('INSERT INTO conversation_reasoning_windows(conversation_id,payload) VALUES (?,?) '
-                'ON CONFLICT(conversation_id) DO UPDATE SET payload=excluded.payload',
-                (conversation_id,value.model_dump_json()))
+    @staticmethod
+    def _migrate_legacy_reasoning(connection):
+        """在同一初始化事务迁入可定位的旧思考后删表，不复活缺失任务。"""
+        if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversation_reasoning_windows'").fetchone() is None:
+            return
+        from app.agent.contract_communication.agent_core.native_messages import validate_native_messages
+        for row in connection.execute('SELECT conversation_id, payload FROM conversation_reasoning_windows').fetchall():
+            for entry in json.loads(row['payload']).get('entries', []):
+                record = connection.execute(
+                    "SELECT payload FROM conversation_records WHERE conversation_id=? AND record_id=? AND kind='task'",
+                    (row['conversation_id'], entry['task_id'])).fetchone()
+                if record is None:
+                    continue
+                payload = json.loads(record['payload'])
+                messages = payload.get('agent_messages', [])
+                for message in messages:
+                    calls = message.get('tool_calls', [])
+                    if message.get('role') == 'assistant' and len(calls) == 1 and calls[0].get('id') == entry['call_id']:
+                        for key, value in entry['fields'].items():
+                            if key not in ('reasoning', 'reasoning_content') or (key in message and message[key] != value):
+                                raise ValueError('旧原生思考与任务消息冲突')
+                            message[key] = value
+                        validate_native_messages(messages)
+                        connection.execute('UPDATE conversation_records SET payload=? WHERE record_id=? AND conversation_id=?',
+                            (json.dumps(payload, ensure_ascii=False), entry['task_id'], row['conversation_id']))
+                        break
+        connection.execute('DROP TABLE conversation_reasoning_windows')

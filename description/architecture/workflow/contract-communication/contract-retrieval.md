@@ -71,9 +71,9 @@ Core 筛选由启动期字段目录自动编译，详见[动态 Core 筛选工�
 
 ## 上下文、失败与配置
 
-提示词 `contract-retrieval-v12` 使用注入工具模板；启用模型思考，但成功历史只保留工具调用与计数回执，长思考仅留私有审计。每轮恰好一个工具，不带普通正文，所有参数经过本地兼容解析与 Schema 校验。连续错误使用 system-guidence 纠错，成功后清除失败链，审计保留原响应。
+提示词 `contract-retrieval-v14` 使用注入工具模板；启用模型思考，但成功历史只保留工具调用与计数回执，长思考仅留私有审计。每轮恰好一个原生工具；允许附带文本但只留私有审计，成功历史content=null，所有参数经过本地兼容解析与 Schema 校验。连续错误使用 system-guidence 纠错，成功后清除失败链，审计保留原响应。
 
-最多三次连续错误；`COMMUNICATION_CONTRACT_RETRIEVAL_MAX_ROUNDS` 默认 16，范围 1–64。达到上限、模型异常、会话释放均失败，不发布未收束的部分列表。主工具 SSE 为 local-search，返回普通引用回执；`view_contract_candidates` 为 thinking，返回 foldable 页面。
+最多三次连续错误；`COMMUNICATION_CONTRACT_RETRIEVAL_MAX_ROUNDS` 默认 16，范围 1–64。达到上限、模型异常、会话释放均失败，不发布未收束的部分列表。主工具 SSE 为 `local-search` / “正在查找合同候选：查询内容”，展示内容压平空白，超过2000字符（含前缀）时以省略号截断，实际检索仍使用完整 query，返回普通引用回执；`view_contract_candidates` 为 thinking，返回 foldable 页面。
 
 宿主将子图审计保存在会话工具状态的 search_audit 中，随会话释放。现有各检索 top_k、模型、分词和数据库配置不变；不新增数据库表或回填向量。
 
@@ -129,7 +129,7 @@ result_id 先解析为合同 ID 白名单，作为 ES 父文档 filter；省略�
 
 `prompt.py` 的 `render_business_definitions` 将权威定义分为 Core 字段和合同类别两大区，每个字段/类别独立标题加精简 YAML。保留名称、code、别名、含义与排除边界；Core 额外提供属性类型、基数、硬约束、转换规则；类别提供核心义务交换、包含条件与相邻类别区分。不注入路径、哈希、索引分词/日期配置或专家案例。正式应用由 bootstrap 经 CommunicationFileTools 注入启动期不可变目录快照；独立构图可按同一路径加载，不能从模型生成定义。
 
-业务对齐节点仍通过 `render_business_definitions` 注入 Core 与合同类型目录。后续查询智能体不再将两份配置重复追加到 system；Core 定义仅通过动态工具参数 Schema 提供。对齐节点与 Core 工具继续使用同一启动期字段快照，类别目录交给对齐节点与类型工具编译器。用户消息仍只承载查找需求和初始范围，工具注入位置不变。查询提示词版本为 `contract-retrieval-v12`。
+业务对齐节点仍通过 `render_business_definitions` 注入 Core 与合同类型目录。后续查询智能体不再将两份配置重复追加到 system；Core 定义仅通过动态工具参数 Schema 提供。对齐节点与 Core 工具继续使用同一启动期字段快照，类别目录交给对齐节点与类型工具编译器。用户消息仍只承载查找需求和初始范围，工具注入位置不变。查询提示词版本为 `contract-retrieval-v14`。
 
 查询提示词保留能力边界：合同类型通过独立 search_contracts_by_category 筛选，不能作为 Core 字段提交，也不能把名称或摘要命中描述为已完成类别筛选。
 
@@ -183,6 +183,10 @@ CandidatePool.filter 是 Core 工具使用的筛选入口。已有集合经精�
 
 ## 组合查询质量实验
 
-[实验方案](../../../../experiment/contract-retrieval-quality/README.md)提供29个常规、边界及协议恢复用例；其中26题可使用真实模型执行业务对齐与多轮工具选择，3题以离线故障脚本验证纠错。合成后端隔离生产数据，覆盖七种查询、AND/OR、金额/日期边界、同主体条件、空范围、非法枚举及熔断。通过结果只说明该可控后端上的调用策略，不代表真实ES/SQLite召回质量；逐次产物与人工分析位于实验output目录。
+> **本地验证记录：** 本文列出的 `experiment/`、`tests/` 或 `output/` 路径未随源码分发，仅保留历史追溯信息；本次文档核对未重新执行这些实验或核验缺失产物。
+
+实验方案（本地路径：`experiment/contract-retrieval-quality/README.md`）提供29个常规、边界及协议恢复用例；其中26题可使用真实模型执行业务对齐与多轮工具选择，3题以离线故障脚本验证纠错。合成后端隔离生产数据，覆盖七种查询、AND/OR、金额/日期边界、同主体条件、空范围、非法枚举及熔断。通过结果只说明该可控后端上的调用策略，不代表真实ES/SQLite召回质量；逐次产物与人工分析位于实验output目录。
 
 真实服务测试使用实验中的 `run_real.py`，包含明确路径引导、真实Embedding请求、SQLite两路命中和候选池融合分数记录。当前两份旧提取合同只验证旧数据上的运行与排名链路，不以历史中文币种/角色漏查评价新字段强约束；具体边界及复现见实验方案。
+
+查询Schema反馈保留已声明字段的类型和约束，不回显未知字段名或输入。对齐仍是纯JSON任务，目录/片段校验给出就近的安全诊断；不能把工具调用当作对齐结果。连续错误达到上限时向父工具传递最后安全反馈，feedback_delivered=false表示该提示没有下一次子模型请求承载。

@@ -677,7 +677,7 @@ class SQLiteContractMetadataStore:
                 raise ContractMetadataStateError('合同尚未完成入库')
             return row['summary']
 
-    def library_statistics(self, start_time=None, end_time=None) -> dict:
+    def library_statistics(self, start_time=None, end_time=None, *, document_ids=None) -> dict:
         """在一个 SQLite 读快照内统计；日期转 datetime 比较，兼容不同 UTC 偏移和微秒。"""
         from collections import Counter
         from contextlib import closing
@@ -685,6 +685,9 @@ class SQLiteContractMetadataStore:
             connection.execute('BEGIN')
             rows = connection.execute(
                 "SELECT document_id, uploader, ingested_at FROM contracts WHERE status='ready'").fetchall()
+            if document_ids is not None:
+                allowed = frozenset(document_ids)
+                rows = [r for r in rows if r['document_id'] in allowed]
             ready_ids = [r['document_id'] for r in rows]
             selected = [r for r in rows
                         if (start_time is None or datetime.fromisoformat(r['ingested_at']) >= start_time)

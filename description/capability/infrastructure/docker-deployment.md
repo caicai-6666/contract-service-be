@@ -16,6 +16,8 @@
 - Elasticsearch、Neo4j 就绪后启动后端，由应用校验索引、初始化 SQLite 和同步类别；详见[Elasticsearch 部署边界](elasticsearch-development.md)与[Neo4j 部署](neo4j-development.md)。
 - 健康检查路径为 `/knowledge-accumulation/contract/api/health`，不代表外部模型服务可用。
 - deploy 的前后端共用 `BIND_ADDRESS` 配置宿主机监听地址，分别通过 `FRONTEND_PORT` 和 `BACKEND_PORT` 配置宿主机端口；后端映射到容器固定端口 20000。外部代理须保留 `/knowledge-accumulation/contract/api/` 路径与鉴权头，支持 SSE，并限制宿主机端口的访问来源。
+- 前端镜像页面前缀为 `/knowledge-accumulation/contract/`；图片缓存秒数通过 deploy 的 `ICON_CACHE_MAX_AGE` 注入，默认 30 天。
+- deploy 环境模板同步提供网页图片候选、保留数量和单图字节上限，以及默认关闭的 A2A 配置。A2A 复用中间件连接，不新增公开端口，启用条件和内存边界见 [A2A 子平台任务运行时](../../architecture/workflow/contract-communication/a2a-runtime.md)。已移除的 `VLLM_MLLM_REASONING_WINDOW_ROUNDS` 不再配置，原生思考保留及旧库迁移见[原生思考随消息保留](../../architecture/workflow/contract-communication/reasoning-window.md)。
 
 Compose 入口为同级部署项目的 `docker-compose.yml`，构建上下文指向本仓库，使用根目录 `Dockerfile`。本仓库不再维护 `compose.yaml`。环境文件更新后须按部署说明重新创建容器，不能仅依靠热加载。
 

@@ -2,7 +2,7 @@
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 
-from app.schema.agent_tool_content import ToolPageReference
+from app.schema.agent_tool_content import ToolPageReference, ToolPageUnavailable
 from .context_rendering.page import render_tool_page_messages, render_tool_receipt
 from .subgraph.fifo_management.schema import FIFOExecutionResult
 
@@ -49,11 +49,17 @@ class PageDisplayWindow:
             if call_id in displayed:
                 raise ValueError('页面工具回执在当前上下文中重复')
             pages = {}
+            unavailable = []
             for ref in result.content.pages:
-                pages[ref.display_id] = await self._resolver(ref.model_copy(deep=True))
+                try:
+                    pages[ref.display_id] = await self._resolver(ref.model_copy(deep=True))
+                except ToolPageUnavailable as exc:
+                    # 资源LRU释放不是本次任务失败；保留真实限制，禁止用空图替代。
+                    unavailable.append({'role': 'user', 'content':
+                        f'以下资料当前不可读取，并非已核实内容：{ref.description}；{exc}'})
             rendered = render_tool_page_messages(result, visible_pages=pages, remaining_rounds=self._remaining[call_id])
-            message['content'] = render_tool_receipt(result, visible=True)
-            output.extend([message, *rendered])
+            message['content'] = render_tool_receipt(result, visible=True, visible_ids=set(pages))
+            output.extend([message, *rendered, *unavailable])
             displayed.append(call_id)
         if set(displayed) != set(self._pending):
             raise ValueError('待展示页面缺少原始工具回执，不能错位注入或默默丢失')

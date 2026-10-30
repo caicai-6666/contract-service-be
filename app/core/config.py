@@ -60,7 +60,6 @@ class MLLMSettings(BaseModel):
 
     progress_reminder_interval_seconds: float = Field(default=60, ge=0, allow_inf_nan=False, description='主模型中途反馈提醒间隔秒数；0关闭。成功emit_progress后重计，未响应提醒时每轮重注入。')
     page_display_rounds: int = Field(default=5, ge=1, description='临时页面保留的完整模型生成轮数；从首次展示开始计数，落盘仅保存隐藏占位。')
-    reasoning_window_rounds: int = Field(default=3, ge=0, description='独立思考 FIFO 的保留轮数，0 表示不回注。')
     provider: str = "vllm"
     base_url: str = "http://127.0.0.1:8000/v1"
     api_key: str | None = None
@@ -99,6 +98,13 @@ class MLLMSettings(BaseModel):
         return self.model_copy(update={"generation": self.generation.model_copy(update={
             "enable_thinking": True,
             "reasoning_effort": self.business_gate_reasoning_effort,
+        })})
+
+    def for_a2a_admission(self) -> Self:
+        """广播认领只做范围判断，以 low 快速响应，不改变后续单聊的共享配置。"""
+        return self.model_copy(update={"generation": self.generation.model_copy(update={
+            "enable_thinking": True,
+            "reasoning_effort": "low",
         })})
 
     def thinking_template_kwargs(self, enable_thinking: bool) -> dict:
@@ -256,6 +262,11 @@ class Settings(BaseModel):
     middleware_secret: SecretStr = Field(
         default=SecretStr(""), description="本平台对接中间件的登录 secret；作为敏感配置保存，未配置时为空。",
     )
+    a2a_enabled: bool = False
+    a2a_context_ttl_seconds: float = Field(default=1800, gt=0, allow_inf_nan=False)
+    a2a_context_capacity: int = Field(default=100, gt=0)
+    a2a_receipt_capacity: int = Field(default=1000, gt=0)
+    a2a_poll_interval_seconds: float = Field(default=2, gt=0, allow_inf_nan=False)
     app_env: str = "development"
     communication_trace_enabled: bool = False
     communication_database_file: Path = Path("data/communication/communication.db")
@@ -278,6 +289,9 @@ class Settings(BaseModel):
     communication_contract_notes_page_size: int = Field(default=5, gt=0, description='注意事项每页记录数，正整数。')
     communication_contract_search_cache_max_queries: int = Field(default=10, gt=0, description='每个会话合同检索结果集LRU容量。')
     communication_web_page_cache_max_entries: int = Field(default=10, gt=0, description='每个会话最多驻留的网页与关注重点精炼结果数。')
+    communication_web_image_max_candidates: int = Field(default=6, gt=0, description='每个网页最多下载并提供给精炼模型的候选图片数。')
+    communication_web_image_max_selected: int = Field(default=3, gt=0, description='每个网页最多保留给主模型查看的相关图片数。')
+    communication_web_image_max_bytes: int = Field(default=4194304, gt=0, description='单张网页图片下载及标准化PNG的字节上限。')
     communication_web_page_chars: int = Field(default=3000, gt=0, description='网页精炼内容每页最大字符数。')
     communication_web_search_cache_max_queries: int = Field(default=10, gt=0, description='每个会话驻留网页搜索结果集上限。')
     communication_web_search_page_size: int = Field(default=5, gt=0, description='网页搜索每页候选数量。')
@@ -456,6 +470,11 @@ def get_settings() -> Settings:
         middleware_request_timeout_seconds=_env("MIDDLEWARE_REQUEST_TIMEOUT_SECONDS", "10"),
         middleware_platform_code=_env("MIDDLEWARE_PLATFORM_CODE", "").strip(),
         middleware_secret=SecretStr(_env("MIDDLEWARE_SECRET", "")),
+        a2a_enabled=_env('A2A_ENABLED', 'false'),
+        a2a_context_ttl_seconds=_env('A2A_CONTEXT_TTL_SECONDS', '1800'),
+        a2a_context_capacity=_env('A2A_CONTEXT_CAPACITY', '100'),
+        a2a_receipt_capacity=_env('A2A_RECEIPT_CAPACITY', '1000'),
+        a2a_poll_interval_seconds=_env('A2A_POLL_INTERVAL_SECONDS', '2'),
         app_env=_env("APP_ENV", "development"),
         communication_trace_enabled=_env("COMMUNICATION_TRACE_ENABLED", "false"),
         communication_database_file=_env("COMMUNICATION_DATABASE_FILE", "data/communication/communication.db"),
@@ -474,6 +493,9 @@ def get_settings() -> Settings:
         communication_contract_notes_page_size=_env("COMMUNICATION_CONTRACT_NOTES_PAGE_SIZE", "5"),
         communication_contract_search_cache_max_queries=_env("COMMUNICATION_CONTRACT_SEARCH_CACHE_MAX_QUERIES", "10"),
         communication_web_page_cache_max_entries=_env("COMMUNICATION_WEB_PAGE_CACHE_MAX_ENTRIES", "10"),
+        communication_web_image_max_candidates=_env("COMMUNICATION_WEB_IMAGE_MAX_CANDIDATES", "6"),
+        communication_web_image_max_selected=_env("COMMUNICATION_WEB_IMAGE_MAX_SELECTED", "3"),
+        communication_web_image_max_bytes=_env("COMMUNICATION_WEB_IMAGE_MAX_BYTES", "4194304"),
         communication_web_page_chars=_env("COMMUNICATION_WEB_PAGE_CHARS", "3000"),
         communication_web_search_cache_max_queries=_env("COMMUNICATION_WEB_SEARCH_CACHE_MAX_QUERIES", "10"),
         communication_web_search_page_size=_env("COMMUNICATION_WEB_SEARCH_PAGE_SIZE", "5"),
@@ -593,7 +615,6 @@ def get_settings() -> Settings:
         mllm=MLLMSettings(
             progress_reminder_interval_seconds=_env("VLLM_MLLM_PROGRESS_REMINDER_INTERVAL_SECONDS", "60"),
             page_display_rounds=_env("VLLM_MLLM_PAGE_DISPLAY_ROUNDS", "5"),
-            reasoning_window_rounds=_env("VLLM_MLLM_REASONING_WINDOW_ROUNDS", "3"),
             provider=_env("VLLM_MLLM_PROVIDER", "vllm"),
             base_url=_env("VLLM_MLLM_BASE_URL", "http://127.0.0.1:8000/v1"),
             api_key=_optional_env("VLLM_MLLM_API_KEY"),

@@ -22,7 +22,7 @@
 
 每个工作流应以一个明确的业务目标命名，并包含：输入与输出契约、状态定义、节点拓扑、失败隔离、模型调用边界和必要的审计信息。
 
-- 工作流负责组织 Core、Clause、Retrieval Question、字段发现或审核节点的执行顺序与状态流转。
+- 工作流负责组织合同识别、查重、Core、Clause、Retrieval Question、会话门禁、问答与记忆加工节点的执行顺序与状态流转；当前不提供字段发现或治理流程。
 - 工作流通过依赖注入使用模型客户端、Elasticsearch 适配器或其他基础设施；不得在模块导入时创建网络连接。
 - 服务层负责选择并调用工作流，处理请求级权限、幂等性、结果落盘和外部副作用。
 - API 层负责将 HTTP 请求转换为服务层输入，并将领域结果或错误映射为响应。
@@ -37,7 +37,7 @@
 
 ```text
 app/agent/
-  contract_communication/    # 门禁仅初始化，智能体骨架待实现
+  contract_communication/    # 完整门禁、共享 Core、用户 SSE 与 A2A 交付
     __init__.py
     business_gate/
       __init__.py
@@ -45,6 +45,9 @@ app/agent/
       node.py
     agent_core/
       __init__.py
+    exploration/            # 用户 SSE、输出与历史适配
+    a2a/                    # 跨平台任务与内存响应链
+  conversation_memory/      # 三入口检索投影与向量加工
   contract_document_detection/
     __init__.py
     workflow.py

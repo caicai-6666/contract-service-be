@@ -42,4 +42,6 @@ arguments = validate_model_payload(Arguments, payload)
 
 强制 JSON 解析器使用 `validate_model_json(Output, response.content)`，业务节点仍负责拒答、截断、工具协议与纠错处理。自定义校验异常需要把兼容失败转换为已有错误反馈类型。不要在 MLLM 客户端直接改写响应，也不要将兼容转换当成工具执行成功。
 
-无需新增配置，依赖 Python 标准 JSON 与 Pydantic。针对性验证见 `tests/test_model_json.py`：递归容器、文本保真、工作区路径与引用、数值及重复键拒绝、门禁错误契约、真实摘要消费入口和原始审计保持。真实模型运行与历史参数回放见 [Agent Core 兼容复测](../../../experiment/agent-core-live/output/20260915T052913.534321Z/analysis.md)。
+> **本地验证记录：** 本文列出的 `experiment/`、`tests/` 或 `output/` 路径未随源码分发，仅保留历史追溯信息；本次文档核对未重新执行这些实验或核验缺失产物。
+
+无需新增配置，依赖 Python 标准 JSON 与 Pydantic。针对性验证见 `tests/test_model_json.py`：递归容器、文本保真、工作区路径与引用、数值及重复键拒绝、门禁错误契约、真实摘要消费入口和原始审计保持。真实模型运行与历史参数回放见 Agent Core 兼容复测（本地路径：`experiment/agent-core-live/output/20260915T052913.534321Z/analysis.md`）。

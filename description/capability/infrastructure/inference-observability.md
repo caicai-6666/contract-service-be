@@ -1,6 +1,8 @@
 # 模型推理指标观察能力
 
-> **用途：** 本文说明应用如何按异步任务隔离采集 MLLM 与 Embedding 的请求耗时、token 和 vLLM 逐请求指标。合同批量基线的实验方案见[合同提取质量与推理指标实验](../../../experiment/contract-extraction-quality/README.md)。
+> **本地验证记录：** 本文列出的 `experiment/`、`tests/` 或 `output/` 路径未随源码分发，仅保留历史追溯信息；本次文档核对未重新执行这些实验或核验缺失产物。
+
+> **用途：** 本文说明应用如何按异步任务隔离采集 MLLM 与 Embedding 的请求耗时、token 和 vLLM 逐请求指标。合同批量基线的实验方案见合同提取质量与推理指标实验（本地路径：`experiment/contract-extraction-quality/README.md`）。
 
 ---
 

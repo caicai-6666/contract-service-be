@@ -1,5 +1,6 @@
 """模型可见的三个工作区工具；纯校验与候选编辑和受权提交分离。"""
 
+from app.infrastructure.model_feedback import ModelFeedbackError
 from app.infrastructure.model_json import load_model_json, normalize_model_json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -43,9 +44,9 @@ class WorkspaceAddArguments(WorkspaceObject):
         types = {'/task_constraints/supplements': str, '/known_information': WorkspaceKnownInformation,
                  '/remaining_directions': WorkspaceRemainingDirection, '/explored_directions': ExplorationResult}
         if not isinstance(self.value, types[self.path]):
-            raise ValueError('value 类型与新增目标容器不一致')
+            raise ModelFeedbackError('value类型与新增容器不一致。', '补充传字符串；已知信息传content/source/status；规划传plan；探索结果传outcome/conclusion/information_ids。')
         if (self.path == '/explored_directions') != (self.direction_id is not None):
-            raise ValueError('direction_id 仅在新增已探索结果时必填，其他位置不得提供')
+            raise ModelFeedbackError('direction_id与新增目标不匹配。', '仅在新增已探索结果时传已有剩余方向ID，其他目标省略direction_id。')
         return self
 
 
@@ -71,7 +72,7 @@ def build_workspace_tools() -> list[dict]:
 def parse_workspace_tool_arguments(name: str, raw_arguments: str) -> BaseModel:
     """只解析真实工具调用参数；拒绝重复键与非标准数值，不降级解析普通文本。"""
     if name not in _MODELS:
-        raise ValueError('未知工作区工具')
+        raise ModelFeedbackError('不是当前工作区工具。', '只使用workspace_add、workspace_replace或workspace_delete。')
 
     decoded = load_model_json(raw_arguments)
     schema = _MODELS[name].model_json_schema()
@@ -118,7 +119,7 @@ def _locate(payload: dict, parts: list[str]):
     current = payload
     for part in parts:
         if not isinstance(current, dict) or part not in current:
-            raise ValueError('path 指向不存在的位置')
+            raise ModelFeedbackError('path对应的位置不存在。', '从最新工作区复制现有完整路径，不猜测ID；新增条目使用workspace_add。')
         current = current[part]
     return current
 
@@ -135,7 +136,7 @@ def prepare_workspace_edit(snapshot: WorkspaceSnapshot, name: str, raw_arguments
         if arguments.path == '/explored_directions':
             key = arguments.direction_id
             if key not in payload['remaining_directions']:
-                raise ValueError('direction_id 不在剩余规划中')
+                raise ModelFeedbackError('direction_id不属于当前剩余规划。', '从remaining_directions选择已有方向ID，不创建或重复收束不存在的规划。')
             direction = payload['remaining_directions'].pop(key)
             payload['explored_directions'][key] = {'plan': direction['plan'], **value}
             removed_path = f'/remaining_directions/{key}'
@@ -154,12 +155,12 @@ def prepare_workspace_edit(snapshot: WorkspaceSnapshot, name: str, raw_arguments
             allowed = entry or parts == ['task_constraints', 'task'] or (
                 len(parts) == 3 and parts[0] in _ENTRY_REGIONS)
             if not allowed:
-                raise ValueError('path 不是允许替换的字段或条目')
+                raise ModelFeedbackError('path不是允许替换的字段或完整条目。', '选择已有条目或其允许字段，禁止替换根、区域容器和数组下标。')
         elif not entry:
-            raise ValueError('path 不是允许删除的完整条目')
+            raise ModelFeedbackError('删除目标不是完整条目。', '只删除现有补充或业务区域中的完整条目，不删除根、区域和单独字段。')
         parent = _locate(payload, parts[:-1])
         if parts[-1] not in parent:
-            raise ValueError('path 指向不存在的位置')
+            raise ModelFeedbackError('path对应的位置不存在。', '从最新工作区复制现有完整路径，不猜测ID；新增条目使用workspace_add。')
         if isinstance(arguments, WorkspaceReplaceArguments):
             parent[parts[-1]] = arguments.model_dump()['value']
         else:

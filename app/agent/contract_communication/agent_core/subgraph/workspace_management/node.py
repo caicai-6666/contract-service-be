@@ -4,6 +4,7 @@ from copy import deepcopy
 from inspect import isawaitable
 
 from pydantic import ValidationError
+from app.infrastructure.model_feedback import ModelFeedbackError, schema_validation_feedback
 from app.schema.communication_workspace import WorkspacePayload, WorkspaceSnapshot
 from ...prompt.guidance import build_system_guidence_message
 from ...tool.workspace import prepare_workspace_edit
@@ -50,11 +51,13 @@ async def estimate_modified_tokens(state, *, counter=None):
         preview = prepare_workspace_edit(WorkspaceSnapshot(payload=original, revision=0, updated_at=0),
                                          request.operation.name, request.operation.arguments)
     except (ValueError, TypeError, KeyError) as exc:
-        # 不回显无效参数或模型原文，正式循环后续可按字段提炼更细的最小反馈。
-        location = ''
-        if isinstance(exc, ValidationError) and exc.errors():
-            location = '（字段：' + '.'.join(map(str, exc.errors()[0]['loc'])) + '）'
-        return {'branch': 'error', 'error': f'工作区操作未被接受{location}，请检查目标位置、参数类型和引用；本次未修改工作区。'}
+        if isinstance(exc, ModelFeedbackError):
+            reason = exc.public_text
+        elif isinstance(exc, ValidationError):
+            reason = schema_validation_feedback(exc, WorkspacePayload)
+        else:
+            reason = 'arguments不是有效的JSON对象，或目标路径/引用不符合工具定义。'
+        return {'branch':'error','error':reason+' 请按最新工作区和工具定义修正；本次未修改工作区。'}
     try:
         count = await _count(preview.payload, counter)
     except Exception:

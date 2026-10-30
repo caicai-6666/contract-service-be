@@ -1,12 +1,12 @@
 # 工作区管理子图
 
-> **当前状态：** 已构建可独立执行、可注入依赖的工作区管理子图，包含预演、容量分支、目标保护、应用操作和统一返回。节点 1 已默认通过 vLLM `/tokenize` 异步计数，压缩后的复核也使用同一计数接口。自动压缩子 Agent 的调用入口及前后校验已实现，多轮工具循环、原生思考、纠错清理和私有审计已接入；主助手执行入口及提交后的主任务轨迹接入尚未实现；依赖不可用时返回明确错误，不伪造成功。
+> **当前状态：** 已构建可独立执行、可注入依赖的工作区管理子图，包含预演、容量分支、目标保护、应用操作和统一返回。节点 1 已默认通过 vLLM `/tokenize` 异步计数，压缩后的复核也使用同一计数接口。自动压缩子 Agent 的调用入口及前后校验已实现，多轮工具循环、原生思考、纠错清理和私有审计已接入；主助手执行入口、受权版本提交及提交后的原生任务轨迹已接入；依赖不可用时返回明确错误，不伪造成功。
 
-FIFO 外层与工作区内层已通过注册表执行器装配，入口、提交与回执边界见[主助手工具执行](tool-execution.md)；正式模型循环仍待接入。
+FIFO 外层与工作区内层已通过注册表执行器装配，入口、提交与回执边界见[主助手工具执行](tool-execution.md)；正式模型循环已接入。
 
 所属模块见 [Agent Core](agent-core.md)，操作定义见[工作区管理工具](workspace-tools.md)，内容契约见 [SQLite 工作区](../../data/communication-sqlite.md#工作区-kv-内容)。代码入口是 [workspace_management](../../../../app/agent/contract_communication/agent_core/subgraph/workspace_management/__init__.py)。
 
-容量预算的统一输入、3:7 分配及累计摘要扣减见[上下文预算](context-budget.md)；纯计算方法已实现，正式上下文计数与自动装配尚待接入。
+容量预算的统一输入、3:7 分配及累计摘要扣减见[上下文预算](context-budget.md)；纯计算方法已实现，正式上下文计数与自动装配已接入。
 
 ---
 
@@ -135,7 +135,7 @@ output = WorkspaceManagementResult.model_validate(await graph.ainvoke({
 }))
 ```
 
-调用方只需提供工作区预算；默认计数和压缩子 Agent 均复用现有 MLLM 配置。如需显式绑定配置，可传入 `partial(count_workspace_tokens, settings=mllm_settings)`。现有 `execute_workspace_tool` 仍是原有独立适配，本次没有将它自动切换到子图，也未接入实际任务轨迹。
+调用方只需提供工作区预算；默认计数和压缩子 Agent 均复用现有 MLLM 配置。如需显式绑定配置，可传入 `partial(count_workspace_tokens, settings=mllm_settings)`。`execute_workspace_tool` 保留为独立适配；正式主循环使用 `tool/workspace.py` 的注册工具，通过本容量子图、受权版本提交与 Executor 保存已接受轨迹。
 
 
 
@@ -151,7 +151,7 @@ output = WorkspaceManagementResult.model_validate(await graph.ainvoke({
 
 循环先计数；即使初始副本已低于70%，仍需模型主动调用 finish_compression。其余每轮严格接受一个完整工具调用：工作区操作复用原有参数解析与纯预演工具，逐次校验保护项、预留 ID、引用和已有信息/探索状态（保留的原有信息 status 与探索 outcome 均不得改变）；不允许无实际变化的修改或伪造探索收束。计数成功后才更新隔离副本并写入成功反馈，副本达标后允许继续整理，只有合法完成工具调用才结束。不递归调用工作区管理子图。
 
-复用 ToolProtocolRecovery 管理连续失败范围；协议、参数及业务错误共用边界，正确动作通过全部校验后清除整段失败轨迹。错误响应的普通文本和原始参数不回显，使用最小 system-guidence 反馈；协议提示沿用当前注入模板。模型误调用已删除的工具时按普通非法工具处理，修正成功后清除失败轨迹。
+复用 ToolProtocolRecovery 管理连续失败范围；协议、参数及业务错误共用边界，正确动作通过全部校验后清除整段失败轨迹。合法单个原生调用附带文本只留私有审计，成功历史content=null。保护项、预留ID、确认状态与容量错误在各校验分支构造安全原因/修正动作/执行状态，通过ModelFeedbackError原样传递；外层不以通用失败覆盖。最后达到限额的诊断标记未送达子模型。错误响应的普通文本和原始参数不回显，使用最小 system-guidence 反馈；协议提示沿用当前注入模板。模型误调用已删除的工具时按普通非法工具处理，修正成功后清除失败轨迹。
 
 私有审计记录每轮原始调用参数、受长度限制的普通文本、响应与 token 指标、耗时、接受状态、工具反馈和系统提示，以及提示词/渲染版本和终止原因。CompressionResult.private_audit 不进入 model_dump，父图通过内部 compression_audit 保留，不能作为工具结果或主助手上下文。调用方也可传入独立 audit 列表，在取消或异常时保留已记录内容；当前未接入审计磁盘持久化。失败不输出循环中的半成品，取消正常传播，客户端按调用生命周期关闭。
 
@@ -160,7 +160,7 @@ output = WorkspaceManagementResult.model_validate(await graph.ainvoke({
 
 ### 压缩提示词初版
 
-`compression/prompt.py` 提供 `workspace-compression-v6`，独立于主助手工作区管理提示词。稳定规则说明低于 70% 的副本目标、四个区域的信息保留原则、保护项不可变、单工具调用、错误反馈和程序结束条件，并给出精简重复事实、保护条目及 70% 边界的示例。它不包含主助手的 80% 告警和 100% 自动压缩循环，不允许递归触发压缩。
+`compression/prompt.py` 提供 `workspace-compression-v8`，独立于主助手工作区管理提示词。稳定规则说明低于 70% 的副本目标、四个区域的信息保留原则、保护项不可变、单工具调用、错误反馈和程序结束条件，并给出精简重复事实、保护条目及 70% 边界的示例。它不包含主助手的 80% 告警和 100% 自动压缩循环，不允许递归触发压缩。
 
 - `build_workspace_compression_prompt(tool_call_template=...)`：生成稳定任务规则，工具调用格式来自可信配置注入，工具 JSON Schema 由 `build_compression_tools()` 生成并交给 vLLM 注入，不在提示词内复制。
 - `build_workspace_compression_task_prompt(request)`：生成本次固定要求，只包含 token_budget、target_tokens、protected_values 和 reserved_path。保护值以 JSON 数据提供；完整工作区与主助手待执行的原操作不重复加入。
@@ -192,9 +192,9 @@ task = build_workspace_compression_task_prompt(compression_request)
 
 ### 容量提示的分段规则
 
-`compression/feedback.py` 统一构造最新工作区消息和成功增删改反馈的容量提示：实际使用率达到或超过70%时强调继续压缩至严格低于70%；低于70%时明确“目前容量已经安全”，建议核对事实、来源和保护项后调用finish_compression，仅在确有必要时继续整理。判断使用整数token比例，不依据展示百分比的四舍五入值。
+容量提示已移入 `compression/runtime.py`，与finish校验共用target_tokens，就近构造最新工作区消息和成功增删改反馈：实际使用率达到或超过70%时强调继续压缩至严格低于70%；低于70%时明确“目前容量已经安全”，建议核对事实、来源和保护项后调用finish_compression，仅在确有必要时继续整理。判断使用整数token比例，不依据展示百分比的四舍五入值。
 
-容量安全提示只是建议，不自动结束，最终仍需完成工具通过验收。提示词版本为 workspace-compression-v6：保留容量分段建议及信息状态约束，删除显式 think 与连续调用提醒。旧实验结论仅对应其当时版本；原生思考版本的实测另见下文。
+容量安全提示只是建议，不自动结束，最终仍需完成工具通过验收。提示词版本为 workspace-compression-v8：保留容量分段建议及信息状态约束，删除显式 think 与连续调用提醒。旧实验结论仅对应其当时版本；原生思考版本的实测另见下文。
 
 ---
 
@@ -246,11 +246,13 @@ HTTP 连接按调用创建并关闭，使用现有超时和全局 MLLM 并发限
 
 `tests/test_workspace_management_integration.py` 从管理图默认入口验证完整链路，不传 counter 或 compressor，仅替换外部模型与分词服务：覆盖原生思考与精简工具清单、压缩达标后应用原操作、最终成功提示、循环失败与最终容量超限时不提交，以及未满分支不创建模型客户端。验证保留内部审计，外部结果不泄漏审计或子 Agent 调用轨迹；未连接远端服务。
 
-真实服务初次压缩质量验证已完成，见[工作区压缩实验](../../../../experiment/workspace-compression-quality/README.md)及[本次分析](../../../../experiment/workspace-compression-quality/output/20260914T091525.626938Z/analysis.md)。三例均通过容量与样例保真核验，不代表复杂真实合同压缩已完成全面验收。
+> **本地验证记录：** 本文列出的 `experiment/`、`tests/` 或 `output/` 路径未随源码分发，仅保留历史追溯信息；本次文档核对未重新执行这些实验或核验缺失产物。
 
-完成工具真实对照已完成，见[对照分析](../../../../experiment/workspace-compression-quality/output/20260914T092212.746068Z/analysis.md)：三个样例均主动结束且满足容量要求，最终内容更小，但调用数增加；逐字核验的两项差异已人工复核。
+真实服务初次压缩质量验证已完成，见工作区压缩实验（本地路径：`experiment/workspace-compression-quality/README.md`）及本次分析（本地路径：`experiment/workspace-compression-quality/output/20260914T091525.626938Z/analysis.md`）。三例均通过容量与样例保真核验，不代表复杂真实合同压缩已完成全面验收。
+
+完成工具真实对照已完成，见对照分析（本地路径：`experiment/workspace-compression-quality/output/20260914T092212.746068Z/analysis.md`）：三个样例均主动结束且满足容量要求，最终内容更小，但调用数增加；逐字核验的两项差异已人工复核。
 
 
 ### 原生思考与移除 think 的真实回归
 
-workspace-compression-v6 已使用当前 Qwen3.8 服务运行两轮、每轮三个虚构工作区，共54次生成；6/6完成压缩与原操作，未出现 think 误调用、错误工具轮或截断。保护项、引用、容量门槛通过，人工核对关键事实未见错误；旧字面核验对等义改写和信息合并仍会报差异。见[首轮分析](../../../../experiment/workspace-compression-quality/output/20260920T082955.554968Z/analysis.md)和[第二轮分析](../../../../experiment/workspace-compression-quality/output/20260920T083121.649292Z/analysis.md)。这属于小样本回归，不代表任意长工作区无损或长期稳定性保证。
+workspace-compression-v6 已使用当前 Qwen3.8 服务运行两轮、每轮三个虚构工作区，共54次生成；6/6完成压缩与原操作，未出现 think 误调用、错误工具轮或截断。保护项、引用、容量门槛通过，人工核对关键事实未见错误；旧字面核验对等义改写和信息合并仍会报差异。见首轮分析（本地路径：`experiment/workspace-compression-quality/output/20260920T082955.554968Z/analysis.md`）和第二轮分析（本地路径：`experiment/workspace-compression-quality/output/20260920T083121.649292Z/analysis.md`）。这属于小样本回归，不代表任意长工作区无损或长期稳定性保证。

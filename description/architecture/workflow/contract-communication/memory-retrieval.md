@@ -66,9 +66,9 @@ num_queries=1关闭额外查询扩写；每个检索器绑定本字段查询文�
 
 ---
 
-## 提示词与未接入边界
+## 提示词与主循环接入
 
-`prompt.py` 版本memory-retrieval-v1，`build_memory_retrieval_prompt(tool_template)` 注入真实工具协议模板；动态需求、参考时间、条件与轨迹由未来运行时提供。提示词区分任务时间与业务日期、任务终态与事项状态，规定三字段转写、事实边界及单轮单工具。
+`prompt.py` 版本memory-retrieval-v3，`build_memory_retrieval_prompt(tool_template)` 注入真实工具协议模板；动态需求、参考时间、条件与轨迹由已接入的检索运行时提供。提示词区分任务时间与业务日期、任务终态与事项状态，规定三字段转写、事实边界及单轮单工具。
 
 成功execute_query即结束，不设finish、不审核召回结果；真实空结果也结束。主模型search_memory入口、多轮检索Agent循环和查看结果工具均已接入，build_memory_retrieval_subgraph现在必须绑定result_pool。
 

@@ -83,6 +83,26 @@ SQLite 使用 `contracts`、`contract_category_metadata`、`contract_category_as
 
 [全部文件等级变更记录接口](../../api/contract.md#获取全部文件等级变更记录)通过 `list_file_level_history()` 直接读取本表，无合同 ID 参数、无分页，按 history_id 倒序返回公开投影；包含已删除合同与 skipped_missing 记录。接口不执行中间件拉取、确认或等级更新。
 
+### 用户注意事项
+
+`contract_notes` 以 note_id 为主键，通过 document_id 外键关联合同并在合同删除时级联清理；按合同和创建时间建立索引。它保存用户补充，不将注意事项视为合同原文或已核实事实。
+
+| 字段 | 类型与含义 |
+| --- | --- |
+| `note_id` / `document_id` | TEXT，注意事项 UUID 与所属合同 SHA-256。 |
+| `content` / `author_name` | TEXT，非空正文与服务端取得的撰写人姓名。 |
+| `created_at` | TEXT，带时区的创建时间。 |
+| `content_embedding` | BLOB，可空的 L2 归一化小端 float32 向量。 |
+| `embedding_model` / `embedding_version` / `embedding_dimensions` | TEXT / TEXT / INTEGER，向量的模型、编码版本与维度。 |
+
+新增、读取及单条删除见[合同注意事项 API](../../api/contract.md#获取合同注意事项列表)。旧记录向量允许为空，启动时补齐列，不自动编码历史正文。
+
+### 注意事项向量
+
+`app/service/contract_note.py` 在 SQLite 事务外逐条编码正文，不混入作者、时间、合同 ID 或摘要；采用统一文本指令 `generic-text-retrieval-en-v1`。校验模型、数量、维度、有限数值与非零范数后归一化，再在写事务内复核合同 ready 状态，原子保存正文及向量。Embedding 失败不新增记录，编码期间合同被删除或改变状态也拒绝提交。
+
+注意事项混合检索对正文执行 BM25 和向量召回，按合同归并后分页展示命中记录，见[用户备注混合检索](../workflow/contract-communication/contract-note-search.md)；编码指令的统一来源与迁移限制见[通用 Embedding 指令选择](../../capability/infrastructure/embedding-instruction-selection.md)。
+
 ### 合同内容摘要
 
 `contracts.summary` 与合同是一对一关系，直接融入元数据表，不另建摘要表，也不使用会话 FIFO 摘要记录。该字段与 `category` 类别摘要及类别关联中的 `reasoning_summary` 含义不同：它描述合同文件的主要内容，而不是分类结论或分类理由。

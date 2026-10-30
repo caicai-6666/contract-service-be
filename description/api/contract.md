@@ -18,7 +18,7 @@
 | [确认查重并继续](#确认查重并继续) | `POST` | `/knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}/continue` |
 | [订阅处理事件](#订阅处理事件) | `GET` | `/knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}/events` |
 | [重试失败阶段](#重试失败阶段) | `POST` | `/knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}/stages/{stage_code}/retry` |
-| [提交合同待审申请](#正式入库合同) | `POST` | `/knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}/ingestion` |
+| [提交合同待审申请](#提交合同待审申请) | `POST` | `/knowledge-accumulation/contract/api/contract/extraction-runs/{run_id}/ingestion` |
 | [获取合同注意事项列表](#获取合同注意事项列表) | `GET` | `/knowledge-accumulation/contract/api/contract/documents/{document_id}/notes` |
 | [新增合同注意事项](#新增合同注意事项) | `POST` | `/knowledge-accumulation/contract/api/contract/documents/{document_id}/notes` |
 | [获取合同内容摘要](#获取合同内容摘要) | `GET` | `/knowledge-accumulation/contract/api/contract/documents/{document_id}/summary` |
@@ -32,7 +32,7 @@
 
 ## 资源约定
 
-- 本文所有接口都必须携带 `Authorization: Bearer <用户 access_token>`；用户访问令牌通过[审核用户登录接口](auth.md)取得。
+- 本文所有接口都必须携带 `Authorization: Bearer <用户 access_token>`；用户访问令牌由统一登录平台签发，本平台仅[验证当前用户](auth.md)。
 - 所有已通过本平台访问验证的用户均可查看、新增和删除共享正式合同，以及维护共享注意事项。提取任务仍按所有者隔离；取消任务不等于删除正式合同。
 - `run_id` 是一次上传任务的唯一标识，不等同于合同 `document_id`。
 - 创建任务时，服务端以经中间件验证的 userid 绑定任务所有者；客户端不提交、也不能覆盖归属。用户名仅在提交入库等操作时冻结为人员展示快照。
@@ -87,7 +87,7 @@ GET /knowledge-accumulation/contract/api/contract/documents
 
 ```bash
 curl --header 'Authorization: Bearer <用户 access_token>' \
-  'http://127.0.0.1:20000/knowledge-accumulation/contract/api/contract/documents'
+  'http://127.0.0.1:17000/knowledge-accumulation/contract/api/contract/documents'
 ```
 
 缺少、无效或过期的 Bearer 用户访问令牌返回 `401`。
@@ -133,7 +133,7 @@ curl --header 'Authorization: Bearer <用户 access_token>' \
 **错误响应：** `401` 用户未登录或令牌无效；`403` 无本平台访问资格；`503` 认证服务或历史查询暂不可用。查询失败不会伪装为无记录，内部数据库错误不直接返回。
 
 ```bash
-curl 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/contract/file-level-history' \
+curl 'http://127.0.0.1:17000/knowledge-accumulation/contract/api/contract/file-level-history' \
   -H 'Authorization: Bearer <用户 access_token>'
 ```
 
@@ -189,7 +189,7 @@ curl 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/contract/file-l
 curl --request DELETE --header 'Authorization: Bearer replace-with-user-access-token' \
   --header 'Content-Type: application/json' \
   --data '{"note":"申请删除重复上传的合同"}' \
-  'http://127.0.0.1:20000/knowledge-accumulation/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  'http://127.0.0.1:17000/knowledge-accumulation/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 ```
 
 **行为与边界：** 在与正式入库/删除共享的文档锁内保存合同身份快照、上传人、当前删除提交人、申请备注及时间，然后将 `contracts.can_delete` 置为 false。合同仍保持 ready，可正常查看和检索，PDF、ES、Neo4j、注意事项均不清理。并发申请只有一份成功；成功后同一用户或其他用户再次申请均为409。
@@ -228,7 +228,7 @@ GET /knowledge-accumulation/contract/api/contract/categories
 
 ```bash
 curl --header 'Authorization: Bearer <用户 access_token>' \
-  'http://127.0.0.1:20000/knowledge-accumulation/contract/api/contract/categories'
+  'http://127.0.0.1:17000/knowledge-accumulation/contract/api/contract/categories'
 ```
 
 本接口仅提供类别选项，不查询合同列表，也不新增或修改类别。
@@ -370,7 +370,7 @@ Content-Type: application/pdf
 | Query | `file_name` | string | 是 | 前端展示使用的原始文件名，长度为 1～255。 |
 | Body | PDF 字节 | binary | 是 | 非空的原始 PDF 请求体。 |
 
-接口不接收服务器文件路径，也不使用 `multipart/form-data`。浏览器可以直接把 `File` 对象作为 `fetch` 的 `body`。请求不提供用户名字段；服务端使用当前 Bearer 用户访问令牌对应的审核人名称标记任务。
+接口不接收服务器文件路径，也不使用 `multipart/form-data`。浏览器可以直接把 `File` 对象作为 `fetch` 的 `body`。请求不提供用户名字段；服务端以当前 Bearer 用户令牌解析出的 userid 绑定任务所有者；username 仅用于人员展示快照。
 
 创建接口会等待内部 PDF 技术服务完成格式、加密状态、页数、视觉预算和页面渲染检查。该步骤只是创建任务的输入校验与标准化，不作为“合同预处理”用户阶段或 SSE 状态暴露。无法读取、损坏或加密的 PDF 不会创建任务，返回 `422`。文件大小、恶意内容和更细业务规则仍未实施独立上传策略。
 
@@ -953,7 +953,7 @@ Content-Type: application/json
 | `422` | 名称、摘要、note、完整 Core 或 Clause 不符合送审契约。 |
 | `502` | 待审 SQLite/PDF 保存或已保存回执读取失败；可用相同内容重试。 |
 
-中间件离线不会使已保存申请提交失败，后台发送服务等待可用令牌后处理。送审成功后的提取快照/PDF 运行资源不再可读；审核状态查询接口另行设计。本次只修改后端契约，前端需新增 note，并切换 status 与 SSE 终态处理。
+中间件离线不会使已保存申请提交失败，后台发送服务等待可用令牌后处理。送审成功后的提取快照/PDF 运行资源不再可读；审核状态通过[待入库申请 API](ingestion-review.md)查询。前端提交 note，按 status 与 SSE 终态恢复展示。
 
 完整流程见[待审提交与正式入库](../capability/application/contract-ingestion.md)。
 
@@ -1003,7 +1003,7 @@ Content-Type: application/json
 **调用示例：** 替换主机端口、用户访问令牌及文档标识。
 
 ```bash
-curl 'http://127.0.0.1:8000/knowledge-accumulation/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/notes' \
+curl 'http://127.0.0.1:17000/knowledge-accumulation/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/notes' \
   -H 'Authorization: Bearer YOUR_LOGIN_CODE'
 ```
 
@@ -1041,7 +1041,7 @@ curl 'http://127.0.0.1:8000/knowledge-accumulation/contract/api/contract/documen
 **调用示例：** 替换主机端口、用户访问令牌及文档标识。
 
 ```bash
-curl -X POST 'http://127.0.0.1:8000/knowledge-accumulation/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/notes' \
+curl -X POST 'http://127.0.0.1:17000/knowledge-accumulation/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/notes' \
   -H 'Authorization: Bearer YOUR_LOGIN_CODE' \
   -H 'Content-Type: application/json' \
   -d '{"content":"签约前核对履约担保期限。"}'
@@ -1073,7 +1073,7 @@ curl -X POST 'http://127.0.0.1:8000/knowledge-accumulation/contract/api/contract
 **调用示例：** 替换主机端口、用户访问令牌及文档标识。
 
 ```bash
-curl 'http://127.0.0.1:8000/knowledge-accumulation/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/summary' \
+curl 'http://127.0.0.1:17000/knowledge-accumulation/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/summary' \
   -H 'Authorization: Bearer YOUR_LOGIN_CODE'
 ```
 
@@ -1081,7 +1081,7 @@ curl 'http://127.0.0.1:8000/knowledge-accumulation/contract/api/contract/documen
 
 ---
 
-## 合同识别阶段的文件质量检查检查状态
+## 合同识别阶段的文件质量检查状态
 
 合同性质判断通过后，现已进入文件准入与质量检查节点，使用真实 MLLM 和强制 JSON 输出；生成失败或文件质量拒绝时停止查重。此调整沿用 `contract_document_detection` 阶段、原有失败事件和重试接口，不新增 API 或前端阶段。
 
@@ -1105,7 +1105,7 @@ curl 'http://127.0.0.1:8000/knowledge-accumulation/contract/api/contract/documen
 **错误响应：** `401` 未登录；`404` 合同不存在，或该合同下没有指定注意事项（包括已删除及属于其他合同）；`409` 合同尚未完成入库；`422` 路径格式错误；`503` SQLite暂时不可用。错误体使用标准 `detail`，不暴露内部数据库异常。
 
 ```bash
-curl -X DELETE 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/notes/a03e827d-8d9c-4dbb-9c2d-d5c6bf682394' \
+curl -X DELETE 'http://127.0.0.1:17000/knowledge-accumulation/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/notes/a03e827d-8d9c-4dbb-9c2d-d5c6bf682394' \
   -H 'Authorization: Bearer YOUR_LOGIN_CODE'
 ```
 
@@ -1162,7 +1162,7 @@ curl -X DELETE 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/contr
 **请求示例：** 替换合同 ID 和用户访问令牌。
 
 ```bash
-curl --request POST 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/contract/relations' \
+curl --request POST 'http://127.0.0.1:17000/knowledge-accumulation/contract/api/contract/relations' \
   --header 'Authorization: Bearer <用户 access_token>' \
   --header 'Content-Type: application/json' \
   --data '{"document_id_a":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","document_id_b":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","description":"主合同与交付补充协议。"}'
@@ -1200,7 +1200,7 @@ curl --request POST 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/
 
 ```bash
 curl --request DELETE \
-  'http://127.0.0.1:20000/knowledge-accumulation/contract/api/contract/relations/c514f63b-4526-4672-aa96-d960e5b1a006' \
+  'http://127.0.0.1:17000/knowledge-accumulation/contract/api/contract/relations/c514f63b-4526-4672-aa96-d960e5b1a006' \
   --header 'Authorization: Bearer <用户 access_token>'
 ```
 
@@ -1250,7 +1250,7 @@ curl --request DELETE \
 **请求示例：** 替换合同 ID 和用户访问令牌。
 
 ```bash
-curl 'http://127.0.0.1:20000/knowledge-accumulation/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/relations' \
+curl 'http://127.0.0.1:17000/knowledge-accumulation/contract/api/contract/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/relations' \
   --header 'Authorization: Bearer <用户 access_token>'
 ```
 

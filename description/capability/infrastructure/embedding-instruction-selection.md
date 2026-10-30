@@ -38,7 +38,9 @@ Represent this text for semantic retrieval. Preserve its topic, entities, relati
 
 ## 文本实验与选择
 
-完整方案及运行入口见[实验方案](../../../experiment/embedding-general-instruction/README.md)。132条候选材料、44个主题、88条有答案查询和4条无答案诊断题：摘要、备注和关系各12主题；另外8主题来自运维、教育、活动、归档等领域。每主题包含目标、近邻干扰和两条查询。
+> **本地验证记录：** 本文列出的 `experiment/`、`tests/` 或 `output/` 路径未随源码分发，仅保留历史追溯信息；本次文档核对未重新执行这些实验或核验缺失产物。
+
+完整方案及运行入口见实验方案（本地路径：`experiment/embedding-general-instruction/README.md`）。132条候选材料、44个主题、88条有答案查询和4条无答案诊断题：摘要、备注和关系各12主题；另外8主题来自运维、教育、活动、归档等领域。每主题包含目标、近邻干扰和两条查询。
 
 先在36条开发查询上比较当前专用基线与五套通用候选，再检查36条业务留出和16条跨领域留出。按主题划分，不以同主题的另一种改写冒充独立留出。选定候选后，另检查文件英文标签、多附件、多次输出、长答复及多问题融合的20条查询。
 
@@ -53,7 +55,7 @@ Represent this text for semantic retrieval. Preserve its topic, entities, relati
 
 选择依据是预先规定的开发集宏平均向量MRR，不用已经看过的留出集改选。推荐候选业务留出MRR为0.9398，当前为0.9537；差值95%主题配对bootstrap区间为[-0.0556,0.0278]。虽然满足预设经验退化容差，尚不能证明统计非劣或显著更优。
 
-真实Lindera BM25＋向量RRF的业务留出首位均33/36、MRR均0.9583。冻结后的20题确认，当前16/20、推荐18/20。各类确认题只有4条，不能据此承诺全面提升。证据见[文本主轮分析](../../../experiment/embedding-general-instruction/output/20261021T114606.749752Z/analysis.md)和[冻结确认分析](../../../experiment/embedding-general-instruction/output/confirm-20261021T114924.623165Z/analysis.md)。
+真实Lindera BM25＋向量RRF的业务留出首位均33/36、MRR均0.9583。冻结后的20题确认，当前16/20、推荐18/20。各类确认题只有4条，不能据此承诺全面提升。证据见文本主轮分析（本地路径：`experiment/embedding-general-instruction/output/20261021T114606.749752Z/analysis.md`）和冻结确认分析（本地路径：`experiment/embedding-general-instruction/output/confirm-20261021T114924.623165Z/analysis.md`）。
 
 ---
 
@@ -70,7 +72,7 @@ Represent this text for semantic retrieval. Preserve its topic, entities, relati
 | 通用视觉英文 | 12/12 | 12/12 | 6/6 | 0.02429 |
 | 通用视觉中文 | 12/12 | 12/12 | 6/6 | **0.02705** |
 
-在通用候选中，中文方案按开发集规则获选，留出间隔也高于通用英文和默认短指令；切换前专用指令的间隔仍更大。选择通用版是领域无关性与所测质量之间的取舍，不能表述为全面超过当前专用版。正负间隔是辅助指标，不等于生产误判率。见[图像初轮分析](../../../experiment/embedding-general-instruction/output/images-20261021T114739.678506Z/analysis.md)与[困难轮分析](../../../experiment/embedding-general-instruction/output/images-hard-20261021T115032.676232Z/analysis.md)。
+在通用候选中，中文方案按开发集规则获选，留出间隔也高于通用英文和默认短指令；切换前专用指令的间隔仍更大。选择通用版是领域无关性与所测质量之间的取舍，不能表述为全面超过当前专用版。正负间隔是辅助指标，不等于生产误判率。见图像初轮分析（本地路径：`experiment/embedding-general-instruction/output/images-20261021T114739.678506Z/analysis.md`）与困难轮分析（本地路径：`experiment/embedding-general-instruction/output/images-hard-20261021T115032.676232Z/analysis.md`）。
 
 ---
 
@@ -94,7 +96,7 @@ Represent this text for semantic retrieval. Preserve its topic, entities, relati
 脚本为单进程开发维护用途，不提供跨ES、SQLite与Neo4j的分布式事务；跨系统失败后应根据输出目录、备份及已完成步骤恢复，不自动覆盖既有目标索引。维护脚本和备份继续遵循Git忽略规则。
 
 
-2026-10-21 本机重建完成：3份合同摘要及两类ES融合向量、2条有效任务检索投影；另2条拒绝任务维持全空投影，备注与关系为空。当前 `.env` 指向 `contracts-v3-generic`，旧 `contracts-v2-date` 保留只读。3份合同的摘要检索和图片检索均通过实际服务回读。审核区5份终态快照未改动。完整备份及维护记录见[重建报告](../../../output/embedding-rebuild/20261021T120411.232128Z/analysis.md)。开发后端已重新启动以加载新索引及地址配置。
+2026-10-21 本机重建完成：3份合同摘要及两类ES融合向量、2条有效任务检索投影；另2条拒绝任务维持全空投影，备注与关系为空。当前 `.env` 指向 `contracts-v3-generic`，旧 `contracts-v2-date` 保留只读。3份合同的摘要检索和图片检索均通过实际服务回读。审核区5份终态快照未改动。完整备份及维护记录见重建报告（本地路径：`output/embedding-rebuild/20261021T120411.232128Z/analysis.md`）。开发后端已重新启动以加载新索引及地址配置。
 
 
 本次切换共97项相关回归通过，包含维护重建的准入筛选；后端健康检查200且中间件连接已恢复，见上述重建报告的最终检查。

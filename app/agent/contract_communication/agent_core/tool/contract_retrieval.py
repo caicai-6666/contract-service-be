@@ -49,7 +49,7 @@ class SearchContractsArguments(BaseModel):
     query: str=Field(min_length=1,max_length=10000,description='完整自然语言查找需求，保留已知主体、名称线索、业务条件、否定和不确定性，说明必须满足的条件；不需要自行选择内部查询方式。')
     result_id: str|None=Field(default=None,min_length=1,description='可选的当前会话图片检索结果集或最终合同候选结果集完整ID，用于限定初始合同范围；省略或null为全部ready合同。失效引用报错，不退回全库，不能传合同ID、关系结果ID或内部候选ID。')
 
-def build_contract_retrieval_registration(*,results,final_results,metadata_store,settings,authorize,es_client=None,client=None,audit=None,field_catalog=None,category_catalog=None):
+def build_contract_retrieval_registration(*,results,final_results,metadata_store,settings,authorize,es_client=None,client=None,audit=None,field_catalog=None,category_catalog=None,document_scope=None):
     async def execute(operation,args):
         try:
             await authorize()
@@ -62,13 +62,20 @@ def build_contract_retrieval_registration(*,results,final_results,metadata_store
                 else:
                     raise FileViewError('result_unavailable', '结果集类型不适用于合同范围，请使用图片或最终候选结果集ID。')
             scope=source_pool.document_ids(args.result_id) if source_pool is not None else None
+            if document_scope is not None:
+                allowed = frozenset(await document_scope())
+                scope = tuple(sorted(allowed)) if scope is None else tuple(doc for doc in scope if doc in allowed)
             async def guarded():
                 await authorize()
                 if source_pool is not None:source_pool.document_ids(args.result_id)
             graph=build_contract_retrieval_subgraph(metadata_store=metadata_store,settings=settings,authorize=guarded,es_client=es_client,client=client,audit=audit,field_catalog=field_catalog,category_catalog=category_catalog)
-            output=await graph.ainvoke({'request':ContractRetrievalRequest(query=args.query,initial_document_ids=scope,initial_ranking=source_pool.ranking_snapshot(args.result_id) if source_pool is not None else None)})
+            output=await graph.ainvoke({'request':ContractRetrievalRequest(query=args.query,initial_document_ids=scope,initial_ranking=tuple(r for r in source_pool.ranking_snapshot(args.result_id) if scope is None or r['document_id'] in scope) if source_pool is not None else None)})
             result=output['result']
             await guarded()
+            if document_scope is not None:
+                current_scope = frozenset(await document_scope())
+                if any(item.document_id not in current_scope for item in result.candidates):
+                    raise FileViewError('result_unavailable', '合同候选不可用，请重新查询。')
             if result.status=='error':return FIFOExecutionResult(status='failed',tool_result={'status':'error','message':result.error})
             if not result.candidates:
                 return FIFOExecutionResult(status='succeeded',tool_result={'status':'success','count':0,
@@ -81,8 +88,17 @@ def build_contract_retrieval_registration(*,results,final_results,metadata_store
             return FIFOExecutionResult(status='failed',tool_result={'status':'error','code':exc.code,'message':str(exc)})
         except Exception:
             return FIFOExecutionResult(status='failed',tool_result={'status':'error','message':'合同查询范围或会话不可用，请核对引用后重试。'})
+    def progress(args):
+        # 仅压平并截断展示文案，实际检索仍使用完整 query。
+        prefix = '正在查找合同候选：'
+        query = ' '.join(args.query.split())
+        limit = 2000 - len(prefix)
+        if len(query) > limit:
+            query = query[:limit - 1] + '…'
+        return ToolProgress('local-search', prefix + query)
+
     return RegisteredTool('search_contracts',SearchContractsArguments.__doc__,SearchContractsArguments,execute,
-        progress=ToolProgress('local-search','正在查找合同候选'))
+        progress=ToolProgress('local-search','正在查找合同候选'), progress_factory=progress)
 
 
 class ViewContractCandidatesArguments(BaseModel):

@@ -3,15 +3,18 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from functools import partial
 import re
+from typing import Literal
 
 from pydantic import BaseModel, ValidationError
 from app.schema.agent_tool_content import ToolContentType
+from app.infrastructure.model_feedback import ModelFeedbackError, schema_validation_feedback
 from app.infrastructure.model_json import load_model_json, validate_model_payload
 from ..subgraph.fifo_management.schema import FIFOOperation, FIFOExecutionResult
 
+from .execution import ToolExecution
 from .progress import DEFAULT_TOOL_PROGRESS, ToolProgress, ToolProgressPublisher
 
-ParsedToolHandler = Callable[[FIFOOperation, BaseModel], Awaitable[FIFOExecutionResult]]
+ParsedToolHandler = Callable[[FIFOOperation, BaseModel], Awaitable[FIFOExecutionResult | ToolExecution]]
 ArgumentParser = Callable[[str], BaseModel]
 
 
@@ -25,12 +28,14 @@ class RegisteredTool:
     return_types: tuple[ToolContentType, ...] = ('ordinary',)
     progress: ToolProgress = DEFAULT_TOOL_PROGRESS
     progress_factory: Callable[[BaseModel], ToolProgress] | None = None
+    output_kind: Literal["intermediate", "final"] | None = None
+    access_policy: object | None = None
 
     def definition(self) -> dict:
         return {'type': 'function', 'function': {'name': self.name,
             'description': self.description, 'parameters': self.arguments_model.model_json_schema(), 'strict': False}}
 
-    async def execute(self, operation: FIFOOperation, *, publish_progress: ToolProgressPublisher | None = None) -> FIFOExecutionResult:
+    async def execute(self, operation: FIFOOperation, *, publish_progress: ToolProgressPublisher | None = None) -> FIFOExecutionResult | ToolExecution:
         try:
             arguments = (self.parser(operation.arguments) if self.parser is not None else
                          validate_model_payload(self.arguments_model, load_model_json(operation.arguments)))
@@ -38,10 +43,15 @@ class RegisteredTool:
                 raise TypeError('解析器返回类型与注册契约不一致')
         except (ValueError, TypeError) as exc:
             # 只捕获解析阶段错误；执行异常交给 Executor 标记 unknown，禁止误称未生效。
-            fields = ('、'.join('.'.join(map(str, e['loc'])) or '整体参数' for e in exc.errors()[:5])
-                      if isinstance(exc, ValidationError) else '整体参数')
+            if isinstance(exc, ValidationError):
+                reason = schema_validation_feedback(exc, self.arguments_model)
+            elif isinstance(exc, ModelFeedbackError):
+                reason = exc.public_text
+            else:
+                reason = 'arguments不是有效JSON参数：需使用对象，禁止重复键、非有限数值和无法解码的嵌套容器。'
             return FIFOExecutionResult(status='failed', tool_result={
-                'error': f'工具参数校验失败（{fields}），请按工具定义修正；本次操作未执行。'})
+                'error': reason, 'required_action':'按已发布字段类型和约束修正本次调用，不要重复相同参数。',
+                'execution_state':'not_executed'})
         # 参数合法后才显示正在执行；回执重放在外层 Executor 短路，不重复发状态。
         if publish_progress is not None:
             progress = self.progress_factory(arguments) if self.progress_factory else self.progress
@@ -49,11 +59,14 @@ class RegisteredTool:
                 raise TypeError('动态工具状态必须返回 ToolProgress')
             await publish_progress(progress)
         try:
-            result = FIFOExecutionResult.model_validate(await self.handler(operation, arguments))
+            execution = await self.handler(operation, arguments)
+            result = FIFOExecutionResult.model_validate(execution.result if isinstance(execution, ToolExecution) else execution)
             # 返回校验在执行之后，失败不能声称副作用未发生；交给 Executor 保留 unknown 回执。
             # 工具即使只声明页面成功结果，参数/业务错误仍统一返回普通反馈。
             if result.status == 'succeeded' and result.content.type not in self.return_types:
                 raise ValueError('工具实际返回类型不在注册声明中')
+            if isinstance(execution, ToolExecution):
+                return ToolExecution(result, execution.after_commit)
             return result
         finally:
             if publish_progress is not None:
@@ -87,10 +100,16 @@ class ToolRegistry:
                 raise TypeError('动态工具状态构造器必须可调用')
             if not isinstance(entry.progress, ToolProgress):
                 raise TypeError('工具状态必须使用 ToolProgress 配置')
+            if entry.output_kind not in (None, 'intermediate', 'final'):
+                raise ValueError('输出工具必须声明有效的输出类别')
             schema = entry.definition()['function']['parameters']
             if schema.get('type') != 'object':
                 raise ValueError('工具参数顶层必须为对象')
             self._check_descriptions(schema, entry.name)
+            if entry.output_kind is not None:
+                content = schema.get('properties', {}).get('content', {})
+                if content.get('type') != 'string' or 'content' not in schema.get('required', []):
+                    raise ValueError('输出工具必须声明必填字符串 content')
 
     @staticmethod
     def _check_descriptions(value, path):
@@ -120,10 +139,9 @@ class ToolRegistry:
                 for entry in self._entries}
 
 
-def build_agent_tool_registry(*, workspace_handler, publish_output, additional_tools=()) -> ToolRegistry:
+def build_agent_tool_registry(*, workspace_handler, output_tools=(), additional_tools=()) -> ToolRegistry:
     """每轮绑定受权回调，内建和扩展工具统一拒绝名称冲突。"""
     from .workspace import build_workspace_registrations
-    from .interaction import build_interaction_registrations
     from .date_calculator import build_date_calculation_registration
     return ToolRegistry([build_date_calculation_registration(), *build_workspace_registrations(workspace_handler),
-                         *(build_interaction_registrations(publish_output) if publish_output is not None else []), *additional_tools])
+                         *output_tools, *additional_tools])
