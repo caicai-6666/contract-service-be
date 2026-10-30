@@ -115,6 +115,10 @@ python -m pip check
 
 热重载会重启唯一工作进程并清空内存合同任务，只适合本地开发。部署入口应由外部 ASGI 进程管理器加载 `app.main:app`，关闭热重载，并继续保持单 worker。
 
+开发入口必须在导入 `bootstrap`、路由或其他引用 `app.core.routing` 的模块之前设置 `APP_PATH_PREFIX=/dev`。前缀在模块首次导入时计算；关闭热重载时，Uvicorn 在当前进程再次导入 `app.main`，不会重算已缓存的 routing 常量。若设置过晚，带 `/dev` 的健康检查、`auth/me` 与 OpenAPI 都会返回路由级 404。修改后须重启开发进程，不能只刷新前端。
+
+本地 `tests/test_development_entrypoint.py` 通过独立进程覆盖直接运行脚本、`python -m app.main`、默认 ASGI 导入和显式 `/dev` 的 ASGI 导入；替换 Uvicorn 启动函数，不运行 lifespan 或连接外部服务，核验所有路由与文档前缀，并确认缺少用户令牌的 `auth/me` 返回 401。
+
 正式写入及启动同步使用 `ELASTICSEARCH_INDEX_NAME=contracts-v1`；入库验收只能使用 `ELASTICSEARCH_INGESTION_EXPERIMENT_INDEX_NAME=contracts-ingestion-experiment-v1`，可删除并按正式 mapping 重建，但绝不能触碰正式索引。向量维度、分片数和副本数分别由 `ELASTICSEARCH_VECTOR_DIMENSIONS`、`ELASTICSEARCH_NUMBER_OF_SHARDS` 和 `ELASTICSEARCH_NUMBER_OF_REPLICAS` 配置。启动同步只处理正式索引，不会自动创建或修改实验索引。
 
 ---

@@ -32,6 +32,8 @@ curl 'http://127.0.0.1:17000/knowledge-accumulation/contract/api/auth/me' \
   -H 'Authorization: Bearer replace-with-user-access-token'
 ```
 
+上例使用 ASGI/Compose 的生产路径。通过 `python -m app.main` 或 IDE 直接运行脚本时，地址为 `http://127.0.0.1:17000/dev/knowledge-accumulation/contract/api/auth/me`。若该地址返回路由级 404，而不带 `/dev` 的同一地址能命中认证分支，应检查开发前缀是否在路由首次导入前设置，并重启旧进程，见[启动配置](../capability/application/backend-application.md#配置与启动)。这类路径未命中不代表中间件拒绝用户登录。
+
 ---
 
 ## 放行条件与错误

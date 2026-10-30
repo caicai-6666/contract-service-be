@@ -174,7 +174,7 @@ APP_PATH_PREFIX=/dev uvicorn app.main:app --host 127.0.0.1 --port 17000 --worker
 
 健康检查为 `http://127.0.0.1:17000/dev/knowledge-accumulation/contract/api/health`，Swagger UI 为 `/dev/knowledge-accumulation/docs`，OpenAPI JSON 为 `/dev/knowledge-accumulation/openapi.json`。健康检查不探测模型和中间件是否可用；完整验证需执行真实提取、问答及送审请求。
 
-直接运行入口设置 `APP_PATH_PREFIX=/dev`，API、接口文档和审核附件链接均使用开发前缀；如自行开启热重载，子进程继承该配置。Docker 默认不设置此变量，继续监听内部 `20000` 并提供生产路径。
+直接运行入口在应用及路由首次导入前设置 `APP_PATH_PREFIX=/dev`，确保关闭热重载时同一进程仍使用开发前缀；API、接口文档和审核附件链接保持一致。如自行开启热重载，子进程继承该配置。Docker 默认不设置此变量，继续监听内部 `20000` 并提供生产路径。修改入口或前缀后需重启现有开发进程。
 
 ---
 

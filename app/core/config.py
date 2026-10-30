@@ -254,7 +254,8 @@ class Settings(BaseModel):
     middleware_base_url: HttpUrl | None = Field(
         default=None, description="中间件服务地址，包含 HTTP/HTTPS 协议、IP 和端口；未配置时为空。",
     )
-    middleware_retry_interval_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
+    middleware_retry_interval_seconds: float = Field(default=30, gt=0, allow_inf_nan=False,
+        description='未获服务端周期或登录凭证被拒绝时的重试兜底秒数；其他失败取此值与最近服务端心跳间隔的较小值，平台401及时重登。')
     middleware_request_timeout_seconds: float = Field(default=10, gt=0, allow_inf_nan=False)
     middleware_platform_code: str = Field(
         default="", description="本平台在中间件服务中登记的 platform_code；未配置时为空。",

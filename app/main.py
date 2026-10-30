@@ -9,6 +9,11 @@ if __name__ == "__main__" and not __package__:
 
 import os
 
+if __name__ == "__main__":
+    # 必须早于 bootstrap 和路由首次导入：关闭热重载时，Uvicorn 在同一进程
+    # 导入 app.main，会复用 core.routing 已计算的前缀，不能在启动前才补设。
+    os.environ["APP_PATH_PREFIX"] = "/dev"
+
 import uvicorn
 from fastapi import FastAPI
 
@@ -38,8 +43,6 @@ app = create_app()
 
 
 if __name__ == "__main__":
-    # 重载子进程继承开发前缀，API、接口文档和审核附件链接保持一致。
-    os.environ["APP_PATH_PREFIX"] = "/dev"
     # IDE 开发入口：需要调整监听地址、端口或热重载时直接修改此处。
     uvicorn.run(
         "app.main:app",
